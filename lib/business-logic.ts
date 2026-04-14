@@ -122,7 +122,7 @@ export function isOutOfStock(current: number): boolean {
 // ============================================================
 
 export function formatCurrency(amount: number): string {
-  return new Intl.NumberFormat("ar-SA", {
+  return new Intl.NumberFormat("en-US", {
     style: "decimal",
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
@@ -131,7 +131,7 @@ export function formatCurrency(amount: number): string {
 
 export function formatDate(dateStr: string): string {
   const d = new Date(dateStr);
-  return d.toLocaleDateString("ar-SA", {
+  return d.toLocaleDateString("ar-EG-u-nu-latn", {
     day: "2-digit",
     month: "short",
     year: "numeric",
@@ -140,7 +140,7 @@ export function formatDate(dateStr: string): string {
 
 export function formatTime(dateStr: string): string {
   const d = new Date(dateStr);
-  return d.toLocaleTimeString("ar-SA", {
+  return d.toLocaleTimeString("ar-EG-u-nu-latn", {
     hour: "2-digit",
     minute: "2-digit",
   });

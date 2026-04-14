@@ -28,9 +28,9 @@
   --color-success-deep: #2D6B2D;
 
   /* === FONTS === */
-  --font-display: "Bebas Neue", "Noto Kufi Arabic", sans-serif;
-  --font-body: "IBM Plex Sans Arabic", "DM Sans", sans-serif;
-  --font-mono: "DM Mono", "IBM Plex Sans Arabic", monospace;
+  --font-display: "Bebas Neue", "Cairo", sans-serif;
+  --font-body: "Cairo", "DM Sans", sans-serif;
+  --font-mono: "DM Mono", "Cairo", monospace;
 
   /* === TRANSITIONS === */
   --ease-ox: cubic-bezier(0.16, 1, 0.3, 1);
@@ -47,7 +47,7 @@
 html {
   background-color: #0A0A0A;
   color: #F0EDE6;
-  font-family: "IBM Plex Sans Arabic", "DM Sans", sans-serif;
+  font-family: "Cairo", "DM Sans", sans-serif;
   direction: rtl;
   scrollbar-width: thin;
   scrollbar-color: #252525 #0A0A0A;
@@ -75,13 +75,13 @@ body {
 
 /* === UTILITY CLASSES === */
 .font-display {
-  font-family: "Noto Kufi Arabic", "Bebas Neue", sans-serif;
+  font-family: "Cairo", "Bebas Neue", sans-serif;
 }
 .font-body {
-  font-family: "IBM Plex Sans Arabic", "DM Sans", sans-serif;
+  font-family: "Cairo", "DM Sans", sans-serif;
 }
 .font-mono {
-  font-family: "DM Mono", "IBM Plex Sans Arabic", monospace;
+  font-family: "DM Mono", "Cairo", monospace;
 }
 
 /* Gold glow */
@@ -178,7 +178,7 @@ body {
   background-color: #111111;
   border: 1px solid #2A2A2A;
   color: #F0EDE6;
-  font-family: "IBM Plex Sans Arabic", "DM Sans", sans-serif;
+  font-family: "Cairo", "DM Sans", sans-serif;
   font-size: 14px;
   padding: 8px 12px;
   border-radius: 2px;
@@ -198,7 +198,7 @@ body {
   background-color: #111111;
   border: 1px solid #2A2A2A;
   color: #F0EDE6;
-  font-family: "IBM Plex Sans Arabic", "DM Sans", sans-serif;
+  font-family: "Cairo", "DM Sans", sans-serif;
   font-size: 14px;
   padding: 8px 12px;
   border-radius: 2px;

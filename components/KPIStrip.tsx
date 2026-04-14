@@ -112,7 +112,7 @@ export default function KPIStrip({ kpi }: KPIStripProps) {
         {/* 1 — إيرادات اليوم */}
         <KPICard
           label="إيرادات اليوم"
-          value={`${formatCurrency(todayRevenue)} ر.س`}
+          value={`${formatCurrency(todayRevenue)} $`}
           icon={<DollarSign size={14} />}
           accent="gold"
         />
@@ -120,7 +120,7 @@ export default function KPIStrip({ kpi }: KPIStripProps) {
         {/* 2 — مصروفات اليوم */}
         <KPICard
           label="مصروفات اليوم"
-          value={`${formatCurrency(todayExpenses)} ر.س`}
+          value={`${formatCurrency(todayExpenses)} $`}
           icon={<Receipt size={14} />}
           accent="default"
         />
@@ -145,7 +145,7 @@ export default function KPIStrip({ kpi }: KPIStripProps) {
         {/* 5 — النقد المتوفر */}
         <KPICard
           label="النقد المتوفر"
-          value={`${formatCurrency(cashOnHand)} ر.س`}
+          value={`${formatCurrency(cashOnHand)} $`}
           icon={<Banknote size={14} />}
           accent="default"
         />
@@ -153,7 +153,7 @@ export default function KPIStrip({ kpi }: KPIStripProps) {
         {/* 6 — الربح الشهري */}
         <KPICard
           label="الربح الشهري"
-          value={`${profitPrefix}${formatCurrency(monthlyProfit)} ر.س`}
+          value={`${profitPrefix}${formatCurrency(monthlyProfit)} $`}
           icon={
             monthlyProfit >= 0 ? (
               <TrendingUp size={14} />

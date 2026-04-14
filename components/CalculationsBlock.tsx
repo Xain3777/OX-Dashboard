@@ -5,7 +5,7 @@ import {
   TrendingUp, ShoppingBag, Users, Percent, Receipt, Wrench,
   ChevronDown, ChevronUp,
 } from "lucide-react";
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import PriceTag from "@/components/PriceTag";
 
 interface CalculationsBlockProps {
@@ -61,8 +61,8 @@ function CalcCard({ title, icon, mainValue, details, accent = "text-gold" }: {
   );
 }
 
-const COLORS_REV = ["#F5C100", "#5CC45C", "#4A9EFF", "#FF8C42", "#9B59B6"];
-const COLORS_EXP = ["#8A6D00", "#D42B2B", "#777777", "#C49A00", "#555555", "#AAAAAA"];
+const COLORS_REV = ["#F5C100", "#5CC45C", "#4A9EFF", "#FF8C42", "#B07CFF"];
+const COLORS_EXP = ["#FF6B6B", "#4ECDC4", "#FFE66D", "#A8E6CF", "#95A5A6", "#DDA0DD"];
 
 export default function CalculationsBlock(props: CalculationsBlockProps) {
   const {
@@ -141,7 +141,8 @@ export default function CalculationsBlock(props: CalculationsBlockProps) {
     { name: "أخرى", value: otherExpense },
   ].filter((d) => d.value > 0);
 
-  const renderLabel = ({ percent }: { percent?: number }) => percent ? `${(percent * 100).toFixed(0)}%` : "";
+  const totalRev = revData.reduce((s, d) => s + d.value, 0);
+  const totalExp = expData.reduce((s, d) => s + d.value, 0);
 
   return (
     <div className="space-y-6">
@@ -150,33 +151,77 @@ export default function CalculationsBlock(props: CalculationsBlockProps) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-iron border border-gunmetal p-4">
-          <h4 className="font-display text-base tracking-wider text-offwhite mb-4">توزيع الإيرادات</h4>
+        {/* Revenue Chart */}
+        <div className="bg-iron border border-gunmetal p-5">
+          <h4 className="font-display text-base tracking-wider text-offwhite mb-2">توزيع الإيرادات</h4>
           {revData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={280}>
-              <PieChart>
-                <Pie data={revData} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={2} dataKey="value" label={renderLabel} labelLine={false}>
-                  {revData.map((_, i) => <Cell key={i} fill={COLORS_REV[i % COLORS_REV.length]} />)}
-                </Pie>
-                <Tooltip contentStyle={{ backgroundColor: "#1A1A1A", border: "1px solid #252525", color: "#F0EDE6", fontFamily: "IBM Plex Sans Arabic" }} formatter={(v) => [`$${v}`, ""]} />
-                <Legend wrapperStyle={{ fontFamily: "IBM Plex Sans Arabic", fontSize: 12, color: "#AAAAAA" }} />
-              </PieChart>
-            </ResponsiveContainer>
+            <div className="flex flex-col items-center">
+              <div className="relative">
+                <ResponsiveContainer width={240} height={240}>
+                  <PieChart>
+                    <Pie data={revData} cx="50%" cy="50%" innerRadius={72} outerRadius={108} paddingAngle={3} dataKey="value" stroke="none" cornerRadius={4}>
+                      {revData.map((_, i) => <Cell key={i} fill={COLORS_REV[i % COLORS_REV.length]} />)}
+                    </Pie>
+                    <Tooltip contentStyle={{ backgroundColor: "#1A1A1A", border: "1px solid #252525", color: "#F0EDE6", fontFamily: "Cairo", borderRadius: 8 }} formatter={(v) => [`$${v}`, ""]} />
+                  </PieChart>
+                </ResponsiveContainer>
+                {/* Center label */}
+                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                  <span className="font-mono text-2xl font-bold text-offwhite">${totalRev.toLocaleString()}</span>
+                  <span className="text-[10px] text-secondary">إجمالي الإيرادات</span>
+                </div>
+              </div>
+              {/* Custom legend */}
+              <div className="grid grid-cols-2 gap-x-6 gap-y-2 mt-4 w-full max-w-[280px]">
+                {revData.map((d, i) => {
+                  const pct = totalRev > 0 ? ((d.value / totalRev) * 100).toFixed(0) : "0";
+                  return (
+                    <div key={d.name} className="flex items-center gap-2">
+                      <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: COLORS_REV[i % COLORS_REV.length] }} />
+                      <span className="text-xs text-ghost flex-1 truncate">{d.name}</span>
+                      <span className="font-mono text-xs text-secondary">{pct}%</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           ) : <p className="text-center text-slate font-mono text-xs py-8">لا توجد بيانات</p>}
         </div>
 
-        <div className="bg-iron border border-gunmetal p-4">
-          <h4 className="font-display text-base tracking-wider text-offwhite mb-4">توزيع المصروفات</h4>
+        {/* Expense Chart */}
+        <div className="bg-iron border border-gunmetal p-5">
+          <h4 className="font-display text-base tracking-wider text-offwhite mb-2">توزيع المصروفات</h4>
           {expData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={280}>
-              <PieChart>
-                <Pie data={expData} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={2} dataKey="value" label={renderLabel} labelLine={false}>
-                  {expData.map((_, i) => <Cell key={i} fill={COLORS_EXP[i % COLORS_EXP.length]} />)}
-                </Pie>
-                <Tooltip contentStyle={{ backgroundColor: "#1A1A1A", border: "1px solid #252525", color: "#F0EDE6", fontFamily: "IBM Plex Sans Arabic" }} formatter={(v) => [`$${v}`, ""]} />
-                <Legend wrapperStyle={{ fontFamily: "IBM Plex Sans Arabic", fontSize: 12, color: "#AAAAAA" }} />
-              </PieChart>
-            </ResponsiveContainer>
+            <div className="flex flex-col items-center">
+              <div className="relative">
+                <ResponsiveContainer width={240} height={240}>
+                  <PieChart>
+                    <Pie data={expData} cx="50%" cy="50%" innerRadius={72} outerRadius={108} paddingAngle={3} dataKey="value" stroke="none" cornerRadius={4}>
+                      {expData.map((_, i) => <Cell key={i} fill={COLORS_EXP[i % COLORS_EXP.length]} />)}
+                    </Pie>
+                    <Tooltip contentStyle={{ backgroundColor: "#1A1A1A", border: "1px solid #252525", color: "#F0EDE6", fontFamily: "Cairo", borderRadius: 8 }} formatter={(v) => [`$${v}`, ""]} />
+                  </PieChart>
+                </ResponsiveContainer>
+                {/* Center label */}
+                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                  <span className="font-mono text-2xl font-bold text-red">${totalExp.toLocaleString()}</span>
+                  <span className="text-[10px] text-secondary">إجمالي المصروفات</span>
+                </div>
+              </div>
+              {/* Custom legend */}
+              <div className="grid grid-cols-2 gap-x-6 gap-y-2 mt-4 w-full max-w-[280px]">
+                {expData.map((d, i) => {
+                  const pct = totalExp > 0 ? ((d.value / totalExp) * 100).toFixed(0) : "0";
+                  return (
+                    <div key={d.name} className="flex items-center gap-2">
+                      <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: COLORS_EXP[i % COLORS_EXP.length] }} />
+                      <span className="text-xs text-ghost flex-1 truncate">{d.name}</span>
+                      <span className="font-mono text-xs text-secondary">{pct}%</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           ) : <p className="text-center text-slate font-mono text-xs py-8">لا توجد بيانات</p>}
         </div>
       </div>
