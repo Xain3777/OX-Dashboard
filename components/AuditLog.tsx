@@ -119,7 +119,7 @@ function formatHHMM(isoStr: string): string {
 
 function formatDateShort(isoStr: string): string {
   const d = new Date(isoStr);
-  return d.toLocaleDateString("ar-SA", {
+  return d.toLocaleDateString("ar-EG-u-nu-latn", {
     day: "2-digit",
     month: "short",
   });

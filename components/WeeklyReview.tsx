@@ -89,20 +89,20 @@ export default function WeeklyReview({ data }: WeeklyReviewProps) {
           label="الإيرادات"
           icon={<TrendingUp size={14} />}
           accent="success"
-          value={`ر.س ${formatCurrency(data.totalRevenue)}`}
+          value={`${formatCurrency(data.totalRevenue)}$`}
           sub={
             <div className="flex gap-2 flex-wrap">
               <span className="font-mono text-[10px] text-[#555555]">
                 اشتراكات:{" "}
                 <span className="text-[#AAAAAA]">
-                  ر.س {formatCurrency(data.subscriptionRevenue)}
+                  {formatCurrency(data.subscriptionRevenue)}$
                 </span>{" "}
                 <span className="text-[#555555]">({subPct}%)</span>
               </span>
               <span className="font-mono text-[10px] text-[#555555]">
                 المتجر:{" "}
                 <span className="text-[#AAAAAA]">
-                  ر.س {formatCurrency(data.storeRevenue)}
+                  {formatCurrency(data.storeRevenue)}$
                 </span>{" "}
                 <span className="text-[#555555]">({storePct}%)</span>
               </span>
@@ -115,7 +115,7 @@ export default function WeeklyReview({ data }: WeeklyReviewProps) {
           label="المصروفات"
           icon={<TrendingDown size={14} />}
           accent="red"
-          value={`ر.س ${formatCurrency(data.totalExpenses)}`}
+          value={`${formatCurrency(data.totalExpenses)}$`}
         />
 
         {/* اشتراكات جديدة */}
@@ -173,14 +173,14 @@ export default function WeeklyReview({ data }: WeeklyReviewProps) {
           <div className="flex items-center gap-3 flex-wrap text-xs font-mono text-[#555555]">
             <span>
               <span className="text-[#5CC45C]">
-                ر.س {formatCurrency(data.totalRevenue)}
+                {formatCurrency(data.totalRevenue)}$
               </span>{" "}
               إيرادات
             </span>
             <span className="text-[#252525]">—</span>
             <span>
               <span className="text-[#FF3333]">
-                ر.س {formatCurrency(data.totalExpenses)}
+                {formatCurrency(data.totalExpenses)}$
               </span>{" "}
               مصروفات
             </span>
@@ -195,7 +195,7 @@ export default function WeeklyReview({ data }: WeeklyReviewProps) {
                 netPositive ? "text-[#5CC45C]" : "text-[#FF3333]"
               }`}
             >
-              {netPositive ? "+" : ""}ر.س {formatCurrency(net)}
+              {netPositive ? "+" : ""}{formatCurrency(net)}$
             </span>
           </div>
         </div>

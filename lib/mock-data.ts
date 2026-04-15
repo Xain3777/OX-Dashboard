@@ -128,17 +128,17 @@ export const CASH_SESSION: CashSession = {
 };
 
 export const AUDIT_LOG: AuditEntry[] = [
-  { id: "a1", action: "session_opened", description: "تم فتح جلسة اليوم — الرصيد الافتتاحي: ١٬٢٥٠", entityType: "session", entityId: "cs1", userId: "s3", userName: "لينا", timestamp: "2026-04-14T06:30:00Z" },
-  { id: "a2", action: "sale_created", description: "بيع ٣× كوب بروتين (طازج) — ٤٥ ر.س", entityType: "sale", entityId: "sl1", userId: "s3", userName: "لينا", timestamp: "2026-04-14T07:30:00Z" },
-  { id: "a3", action: "sale_created", description: "بيع ٢× مشروب BCAA (بارد) — ٢٠ ر.س", entityType: "sale", entityId: "sl2", userId: "s3", userName: "لينا", timestamp: "2026-04-14T08:15:00Z" },
-  { id: "a4", action: "expense_created", description: "مناديل ورقية وصابون — ٤٥ ر.س (نقدي)", entityType: "expense", entityId: "e8", userId: "s4", userName: "يوسف", timestamp: "2026-04-14T08:00:00Z" },
-  { id: "a5", action: "sale_created", description: "بيع ١× واي بروتين ٢ كجم — ١٨٠ ر.س (بطاقة)", entityType: "sale", entityId: "sl3", userId: "s4", userName: "يوسف", timestamp: "2026-04-14T09:00:00Z" },
-  { id: "a6", action: "subscription_created", description: "اشتراك يومي — ليلى بدران — ٣٠ ر.س", entityType: "subscription", entityId: "sub8", userId: "s4", userName: "يوسف", timestamp: "2026-04-14T10:30:00Z" },
-  { id: "a7", action: "sale_created", description: "بيع ٢× قفازات رياضية — ٧٠ ر.س (نقدي)", entityType: "sale", entityId: "sl4", userId: "s3", userName: "لينا", timestamp: "2026-04-14T10:00:00Z" },
-  { id: "a8", action: "sale_created", description: "بيع ١× وجبة دجاج — ٢٥ ر.س (نقدي)", entityType: "sale", entityId: "sl5", userId: "s4", userName: "يوسف", timestamp: "2026-04-14T11:30:00Z" },
-  { id: "a9", action: "expense_created", description: "بدل غداء الموظفين — ٦٠ ر.س (نقدي)", entityType: "expense", entityId: "e4", userId: "s3", userName: "لينا", timestamp: "2026-04-14T12:30:00Z" },
-  { id: "a10", action: "sale_created", description: "بيع ١× كوب بروتين — ١٥ ر.س (نقدي)", entityType: "sale", entityId: "sl6", userId: "s3", userName: "لينا", timestamp: "2026-04-14T12:00:00Z" },
-  { id: "a11", action: "sale_created", description: "بيع ١× تانك توب OX — ٤٥ ر.س (بطاقة)", entityType: "sale", entityId: "sl7", userId: "s3", userName: "لينا", timestamp: "2026-04-14T13:45:00Z" },
+  { id: "a1", action: "session_opened", description: "تم فتح جلسة اليوم — الرصيد الافتتاحي: 1,250", entityType: "session", entityId: "cs1", userId: "s3", userName: "لينا", timestamp: "2026-04-14T06:30:00Z" },
+  { id: "a2", action: "sale_created", description: "بيع 3× كوب بروتين (طازج) — 45$", entityType: "sale", entityId: "sl1", userId: "s3", userName: "لينا", timestamp: "2026-04-14T07:30:00Z" },
+  { id: "a3", action: "sale_created", description: "بيع 2× مشروب BCAA (بارد) — 20$", entityType: "sale", entityId: "sl2", userId: "s3", userName: "لينا", timestamp: "2026-04-14T08:15:00Z" },
+  { id: "a4", action: "expense_created", description: "مناديل ورقية وصابون — 45$ (نقدي)", entityType: "expense", entityId: "e8", userId: "s4", userName: "يوسف", timestamp: "2026-04-14T08:00:00Z" },
+  { id: "a5", action: "sale_created", description: "بيع 1× واي بروتين 2 كجم — 180$ (بطاقة)", entityType: "sale", entityId: "sl3", userId: "s4", userName: "يوسف", timestamp: "2026-04-14T09:00:00Z" },
+  { id: "a6", action: "subscription_created", description: "اشتراك يومي — ليلى بدران — 30$", entityType: "subscription", entityId: "sub8", userId: "s4", userName: "يوسف", timestamp: "2026-04-14T10:30:00Z" },
+  { id: "a7", action: "sale_created", description: "بيع 2× قفازات رياضية — 70$ (نقدي)", entityType: "sale", entityId: "sl4", userId: "s3", userName: "لينا", timestamp: "2026-04-14T10:00:00Z" },
+  { id: "a8", action: "sale_created", description: "بيع 1× وجبة دجاج — 25$ (نقدي)", entityType: "sale", entityId: "sl5", userId: "s4", userName: "يوسف", timestamp: "2026-04-14T11:30:00Z" },
+  { id: "a9", action: "expense_created", description: "بدل غداء الموظفين — 60$ (نقدي)", entityType: "expense", entityId: "e4", userId: "s3", userName: "لينا", timestamp: "2026-04-14T12:30:00Z" },
+  { id: "a10", action: "sale_created", description: "بيع 1× كوب بروتين — 15$ (نقدي)", entityType: "sale", entityId: "sl6", userId: "s3", userName: "لينا", timestamp: "2026-04-14T12:00:00Z" },
+  { id: "a11", action: "sale_created", description: "بيع 1× تانك توب OX — 45$ (بطاقة)", entityType: "sale", entityId: "sl7", userId: "s3", userName: "لينا", timestamp: "2026-04-14T13:45:00Z" },
 ];
 
 export const KPI: DashboardKPI = {

@@ -189,7 +189,7 @@ export default function ExpensesBlock() {
               هذا الشهر:
             </span>
             <span className="font-mono tabular-nums text-[10px] text-[#F5C100]">
-              {formatCurrency(thisMonthTotal)} ر.س
+              {formatCurrency(thisMonthTotal)}$
             </span>
           </div>
         </div>
@@ -247,7 +247,7 @@ export default function ExpensesBlock() {
             {/* Amount */}
             <div className="flex flex-col gap-1">
               <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">
-                المبلغ (ر.س)
+                المبلغ ($)
               </label>
               <input
                 type="number"
@@ -334,7 +334,7 @@ export default function ExpensesBlock() {
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-[#252525] bg-[#111111]">
-              {["التاريخ", "الوصف", "التصنيف", "المبلغ (ر.س)", "الطريقة", "بواسطة", ""].map((h, i) => (
+              {["التاريخ", "الوصف", "التصنيف", "المبلغ ($)", "الطريقة", "بواسطة", ""].map((h, i) => (
                 <th
                   key={i}
                   className="px-4 py-2 text-left font-mono text-[10px] uppercase tracking-widest text-[#555555] whitespace-nowrap"
@@ -412,7 +412,7 @@ export default function ExpensesBlock() {
               هذا الشهر:
             </span>
             <span className="font-mono tabular-nums text-sm font-medium text-[#D42B2B]">
-              {formatCurrency(thisMonthTotal)} ر.س
+              {formatCurrency(thisMonthTotal)}$
             </span>
           </div>
         </div>

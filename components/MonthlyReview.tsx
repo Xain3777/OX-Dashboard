@@ -66,7 +66,7 @@ function PLCard({ label, amount, accent, icon }: PLCardProps) {
       <span
         className={`font-display text-2xl tracking-wider tabular-nums ${valueColor}`}
       >
-        {accent === "net" && amount >= 0 ? "+" : ""}ر.س {formatCurrency(amount)}
+        {accent === "net" && amount >= 0 ? "+" : ""}{formatCurrency(amount)}$
       </span>
     </div>
   );
@@ -90,7 +90,7 @@ function ExpenseRow({ label, amount, pct }: ExpenseRowProps) {
             {pct.toFixed(1)}%
           </span>
           <span className="font-mono text-xs text-[#F0EDE6] tabular-nums w-24 text-right">
-            ر.س {formatCurrency(amount)}
+            {formatCurrency(amount)}$
           </span>
         </div>
       </div>
@@ -195,7 +195,7 @@ export default function MonthlyReview({ data, onLock }: MonthlyReviewProps) {
                   اشتراكات
                 </span>
                 <span className="font-mono text-xs text-[#F0EDE6] tabular-nums ml-1">
-                  ر.س {formatCurrency(data.subscriptionRevenue)}{" "}
+                  {formatCurrency(data.subscriptionRevenue)}${" "}
                   <span className="text-[#555555]">({subRevPct.toFixed(1)}%)</span>
                 </span>
               </div>
@@ -203,7 +203,7 @@ export default function MonthlyReview({ data, onLock }: MonthlyReviewProps) {
                 <span className="w-2.5 h-2.5 rounded-sm bg-[#5CC45C]/60 shrink-0" />
                 <span className="font-mono text-xs text-[#AAAAAA]">المتجر</span>
                 <span className="font-mono text-xs text-[#F0EDE6] tabular-nums ml-1">
-                  ر.س {formatCurrency(data.storeRevenue)}{" "}
+                  {formatCurrency(data.storeRevenue)}${" "}
                   <span className="text-[#555555]">({storeRevPct.toFixed(1)}%)</span>
                 </span>
               </div>
@@ -242,7 +242,7 @@ export default function MonthlyReview({ data, onLock }: MonthlyReviewProps) {
                   الإجمالي
                 </span>
                 <span className="font-mono text-xs text-[#FF3333] tabular-nums">
-                  ر.س {formatCurrency(data.totalExpenses)}
+                  {formatCurrency(data.totalExpenses)}$
                 </span>
               </div>
             )}
@@ -286,7 +286,7 @@ export default function MonthlyReview({ data, onLock }: MonthlyReviewProps) {
                     i === 0 ? "text-[#F5C100]" : "text-[#777777]"
                   }`}
                 >
-                  ر.س {formatCurrency(p.revenue)}
+                  {formatCurrency(p.revenue)}$
                 </span>
               </div>
             ))}

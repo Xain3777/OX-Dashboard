@@ -129,20 +129,35 @@ export function formatCurrency(amount: number): string {
   }).format(amount);
 }
 
+const SYRIAN_MONTHS: string[] = [
+  "كانون الثاني",
+  "شباط",
+  "آذار",
+  "نيسان",
+  "أيار",
+  "حزيران",
+  "تموز",
+  "آب",
+  "أيلول",
+  "تشرين الأول",
+  "تشرين الثاني",
+  "كانون الأول",
+];
+
 export function formatDate(dateStr: string): string {
   const d = new Date(dateStr);
-  return d.toLocaleDateString("ar-EG-u-nu-latn", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
+  const day = d.getDate();
+  const month = SYRIAN_MONTHS[d.getMonth()];
+  const year = d.getFullYear();
+  return `${day} ${month} ${year}`;
 }
 
 export function formatTime(dateStr: string): string {
   const d = new Date(dateStr);
-  return d.toLocaleTimeString("ar-EG-u-nu-latn", {
+  return d.toLocaleTimeString("en-US", {
     hour: "2-digit",
     minute: "2-digit",
+    hour12: false,
   });
 }
 

@@ -233,7 +233,7 @@ export default function StoreBlock() {
         <table className="w-full text-xs">
           <thead>
             <tr className="border-y border-[#252525] bg-[#111111]">
-              {["اسم المنتج", "التصنيف", "التكلفة (ر.س)", "السعر (ر.س)", "المخزون", "هامش الربح"].map(h => (
+              {["اسم المنتج", "التصنيف", "التكلفة ($)", "السعر ($)", "المخزون", "هامش الربح"].map(h => (
                 <th
                   key={h}
                   className="px-4 py-2 text-left font-mono text-[10px] uppercase tracking-widest text-[#555555] whitespace-nowrap"
@@ -407,7 +407,7 @@ export default function StoreBlock() {
           إجمالي اليوم
         </span>
         <span className="font-mono tabular-nums text-sm font-medium text-[#F5C100] glow-gold-sm">
-          {formatCurrency(todayTotal)} ر.س
+          {formatCurrency(todayTotal)}$
         </span>
       </div>
 
@@ -437,7 +437,7 @@ export default function StoreBlock() {
                 <option key={p.id} value={p.id} disabled={isOutOfStock(p.stock)}>
                   {p.name}
                   {isOutOfStock(p.stock) ? " — نفد المخزون" : isLowStock(p.stock, p.lowStockThreshold) ? ` (${p.stock} متبقي)` : ""}
-                  {" · ر.س "}{p.price}
+                  {" · "}{p.price}{"$"}
                 </option>
               ))}
             </select>
@@ -481,7 +481,7 @@ export default function StoreBlock() {
                 الإجمالي
               </label>
               <div className="px-3 py-2 bg-[#0A0A0A] border border-[#252525]/60 rounded-sm font-mono tabular-nums text-xs text-[#F5C100]">
-                {formatCurrency(selectedProduct.price * saleQty)} ر.س
+                {formatCurrency(selectedProduct.price * saleQty)}$
               </div>
             </div>
           )}

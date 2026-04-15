@@ -323,7 +323,7 @@ function ClosedStateView({ session }: { session: CashSession }) {
           {session.closedAt && (
             <span className="flex items-center gap-1 font-mono text-[10px] text-secondary">
               <Clock size={10} />
-              تم الإغلاق في {new Date(session.closedAt).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" })}
+              تم الإغلاق في {new Date(session.closedAt).toLocaleTimeString("ar-EG-u-nu-latn", { hour: "2-digit", minute: "2-digit" })}
             </span>
           )}
         </div>
@@ -366,7 +366,7 @@ export default function ReconciliationBlock({
 
   const formattedDate = useMemo(() => {
     const d = new Date(session.date);
-    return d.toLocaleDateString("ar-SA", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
+    return d.toLocaleDateString("ar-EG-u-nu-latn", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
   }, [session.date]);
 
   return (
