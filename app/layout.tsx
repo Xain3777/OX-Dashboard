@@ -4,6 +4,10 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "OX GYM — لوحة التحكم المالية",
   description: "نظام المحاسبة والعمليات للنادي الرياضي",
+  icons: {
+    icon: "/logo-icon.png",
+    apple: "/logo-icon.png",
+  },
 };
 
 export default function RootLayout({
