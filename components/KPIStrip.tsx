@@ -84,9 +84,10 @@ function RedBadge({ count }: { count: number }) {
 
 interface KPIStripProps {
   kpi: DashboardKPI;
+  hideProfit?: boolean;
 }
 
-export default function KPIStrip({ kpi }: KPIStripProps) {
+export default function KPIStrip({ kpi, hideProfit }: KPIStripProps) {
   const {
     todayRevenue,
     todayExpenses,
@@ -150,19 +151,21 @@ export default function KPIStrip({ kpi }: KPIStripProps) {
           accent="default"
         />
 
-        {/* 6 — الربح الشهري */}
-        <KPICard
-          label="الربح الشهري"
-          value={`${profitPrefix}${formatCurrency(monthlyProfit)} $`}
-          icon={
-            monthlyProfit >= 0 ? (
-              <TrendingUp size={14} />
-            ) : (
-              <TrendingDown size={14} />
-            )
-          }
-          accent={profitAccent}
-        />
+        {/* 6 — الربح الشهري (manager only) */}
+        {!hideProfit && (
+          <KPICard
+            label="الربح الشهري"
+            value={`${profitPrefix}${formatCurrency(monthlyProfit)} $`}
+            icon={
+              monthlyProfit >= 0 ? (
+                <TrendingUp size={14} />
+              ) : (
+                <TrendingDown size={14} />
+              )
+            }
+            accent={profitAccent}
+          />
+        )}
 
         {/* 7 — مخزون منخفض */}
         <KPICard

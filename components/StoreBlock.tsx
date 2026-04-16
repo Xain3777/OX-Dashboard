@@ -25,6 +25,8 @@ import {
   isOutOfStock,
 } from "@/lib/business-logic";
 import { PRODUCTS, SALES, STAFF } from "@/lib/mock-data";
+import { useAuth } from "@/lib/auth-context";
+import BarcodeScanner, { ALL_CATALOG, type CatalogItem } from "@/components/BarcodeScanner";
 
 // ── Category badge colours ────────────────────────────────────────────────────
 
@@ -114,6 +116,8 @@ function MarginCell({ cost, price }: { cost: number; price: number }) {
 // ── Main Component ─────────────────────────────────────────────────────────────
 
 export default function StoreBlock() {
+  const { isManager } = useAuth();
+
   // ── State ──────────────────────────────────────────────────────────────────
   const [products, setProducts] = useState<Product[]>(PRODUCTS);
   const [sales,    setSales]    = useState<Sale[]>(SALES);
@@ -233,7 +237,14 @@ export default function StoreBlock() {
         <table className="w-full text-xs">
           <thead>
             <tr className="border-y border-[#252525] bg-[#111111]">
-              {["اسم المنتج", "التصنيف", "التكلفة ($)", "السعر ($)", "المخزون", "هامش الربح"].map(h => (
+              {[
+                "اسم المنتج",
+                "التصنيف",
+                ...(isManager ? ["التكلفة ($)"] : []),
+                "السعر ($)",
+                "المخزون",
+                ...(isManager ? ["هامش الربح"] : []),
+              ].map(h => (
                 <th
                   key={h}
                   className="px-4 py-2 text-left font-mono text-[10px] uppercase tracking-widest text-[#555555] whitespace-nowrap"
@@ -273,10 +284,12 @@ export default function StoreBlock() {
                   <td className="px-4 py-2.5">
                     <CategoryBadge category={product.category} />
                   </td>
-                  {/* Cost */}
-                  <td className="px-4 py-2.5 font-mono text-[#777777] tabular-nums">
-                    {formatCurrency(product.cost)}
-                  </td>
+                  {/* Cost — manager only */}
+                  {isManager && (
+                    <td className="px-4 py-2.5 font-mono text-[#777777] tabular-nums">
+                      {formatCurrency(product.cost)}
+                    </td>
+                  )}
                   {/* Price */}
                   <td className="px-4 py-2.5 font-mono text-[#F0EDE6] tabular-nums">
                     {formatCurrency(product.price)}
@@ -285,10 +298,12 @@ export default function StoreBlock() {
                   <td className="px-4 py-2.5">
                     <StockCell stock={product.stock} threshold={product.lowStockThreshold} />
                   </td>
-                  {/* Margin */}
-                  <td className="px-4 py-2.5">
-                    <MarginCell cost={product.cost} price={product.price} />
-                  </td>
+                  {/* Margin — manager only */}
+                  {isManager && (
+                    <td className="px-4 py-2.5">
+                      <MarginCell cost={product.cost} price={product.price} />
+                    </td>
+                  )}
                 </tr>
               );
             })}
@@ -420,6 +435,19 @@ export default function StoreBlock() {
           <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">
             بيع سريع
           </p>
+          <BarcodeScanner
+            onItemFound={(item: CatalogItem) => {
+              // Find matching product in our store products
+              const match = products.find(
+                (p) => p.name === item.name || p.id === item.id
+              );
+              if (match) {
+                setSaleProductId(match.id);
+                setSaleQty(1);
+                setSaleError("");
+              }
+            }}
+          />
         </div>
 
         <div className="flex flex-wrap items-end gap-2">

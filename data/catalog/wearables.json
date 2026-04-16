@@ -1,0 +1,93 @@
+[
+  {
+    "id": "wear-001",
+    "barcode": "6281000002001",
+    "name": "قفازات رياضية (زوج)",
+    "nameEn": "Gym Gloves (Pair)",
+    "brand": "OX GYM",
+    "category": "wearables",
+    "cost": 15,
+    "price": 35,
+    "unit": "pair",
+    "stock": 30,
+    "lowStockThreshold": 10
+  },
+  {
+    "id": "wear-002",
+    "barcode": "6281000002002",
+    "name": "تانك توب OX",
+    "nameEn": "OX Tank Top",
+    "brand": "OX GYM",
+    "category": "wearables",
+    "cost": 20,
+    "price": 45,
+    "unit": "piece",
+    "stock": 18,
+    "lowStockThreshold": 5
+  },
+  {
+    "id": "wear-003",
+    "barcode": "6281000002003",
+    "name": "حزام رفع أثقال",
+    "nameEn": "Weightlifting Belt",
+    "brand": "Rogue",
+    "category": "wearables",
+    "cost": 40,
+    "price": 85,
+    "unit": "piece",
+    "stock": 7,
+    "lowStockThreshold": 3
+  },
+  {
+    "id": "wear-004",
+    "barcode": "6281000002004",
+    "name": "شورت رياضي OX",
+    "nameEn": "OX Gym Shorts",
+    "brand": "OX GYM",
+    "category": "wearables",
+    "cost": 18,
+    "price": 40,
+    "unit": "piece",
+    "stock": 12,
+    "lowStockThreshold": 5
+  },
+  {
+    "id": "wear-005",
+    "barcode": "6281000002005",
+    "name": "هودي OX",
+    "nameEn": "OX Hoodie",
+    "brand": "OX GYM",
+    "category": "wearables",
+    "cost": 35,
+    "price": 75,
+    "unit": "piece",
+    "stock": 8,
+    "lowStockThreshold": 3
+  },
+  {
+    "id": "wear-006",
+    "barcode": "6281000002006",
+    "name": "لفافات معصم",
+    "nameEn": "Wrist Wraps",
+    "brand": "OX GYM",
+    "category": "wearables",
+    "cost": 8,
+    "price": 20,
+    "unit": "pair",
+    "stock": 25,
+    "lowStockThreshold": 8
+  },
+  {
+    "id": "wear-007",
+    "barcode": "6281000002007",
+    "name": "حقيبة رياضية OX",
+    "nameEn": "OX Gym Bag",
+    "brand": "OX GYM",
+    "category": "wearables",
+    "cost": 25,
+    "price": 55,
+    "unit": "piece",
+    "stock": 10,
+    "lowStockThreshold": 4
+  }
+]

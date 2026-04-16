@@ -14,6 +14,7 @@ import {
   MONTHLY_REVIEW,
 } from "@/lib/mock-data";
 import { CurrencyProvider, useCurrency } from "@/lib/currency-context";
+import { AuthProvider, useAuth } from "@/lib/auth-context";
 import ExchangeRateModal from "@/components/ExchangeRateModal";
 import KPIStrip from "@/components/KPIStrip";
 import AlertsBlock from "@/components/AlertsBlock";
@@ -26,11 +27,14 @@ import MonthlyReview from "@/components/MonthlyReview";
 import AuditLog from "@/components/AuditLog";
 import CalculationsBlock from "@/components/CalculationsBlock";
 import ExpenseRates from "@/components/ExpenseRates";
+import InBodyBlock from "@/components/InBodyBlock";
+import LoginScreen from "@/components/LoginScreen";
 import {
   Shield,
   ChevronDown,
   ChevronUp,
   DollarSign,
+  LogOut,
 } from "lucide-react";
 
 type Section =
@@ -38,6 +42,7 @@ type Section =
   | "reconciliation"
   | "subscriptions"
   | "store"
+  | "inbody"
   | "expenses"
   | "rates"
   | "calculations"
@@ -47,21 +52,46 @@ type Section =
 
 export default function DashboardPage() {
   return (
-    <CurrencyProvider>
+    <AuthProvider>
+      <CurrencyProvider>
+        <AppRouter />
+      </CurrencyProvider>
+    </AuthProvider>
+  );
+}
+
+function AppRouter() {
+  const { user } = useAuth();
+
+  if (!user) {
+    return <LoginScreen />;
+  }
+
+  return (
+    <>
       <DashboardContent />
       <ExchangeRateModal />
-    </CurrencyProvider>
+    </>
   );
 }
 
 function DashboardContent() {
   const { exchangeRate, openRateModal } = useCurrency();
+  const { user, logout, isManager } = useAuth();
+
+  const roleLabel =
+    user?.role === "owner"
+      ? "المالك"
+      : user?.role === "manager"
+      ? "مدير"
+      : "موظف استقبال";
 
   const [collapsed, setCollapsed] = useState<Record<Section, boolean>>({
     alerts: false,
     reconciliation: false,
     subscriptions: false,
     store: false,
+    inbody: false,
     expenses: false,
     rates: true,
     calculations: false,
@@ -114,18 +144,32 @@ function DashboardContent() {
           </div>
           <div className="flex items-center gap-2 px-3 py-1.5 bg-iron border border-gunmetal">
             <Shield size={14} className="text-gold-dim" />
-            <span className="font-mono text-xs text-ghost">لينا</span>
+            <span className="font-mono text-xs text-ghost">{user?.name}</span>
             <span className="font-mono text-[10px] text-slate">
-              موظفة استقبال
+              {roleLabel}
             </span>
           </div>
+          <button
+            onClick={logout}
+            className="flex items-center gap-1 px-2 py-1.5 text-[#777777] hover:text-[#FF3333] transition-colors cursor-pointer"
+            title="تسجيل الخروج"
+          >
+            <LogOut size={14} />
+          </button>
         </div>
       </nav>
 
       {/* === المحتوى الرئيسي === */}
       <main className="max-w-[1280px] mx-auto px-4 sm:px-6 py-6 space-y-6">
-        {/* شريط المؤشرات */}
-        <KPIStrip kpi={KPI} />
+        {/* شريط المؤشرات — hide monthly profit from employees */}
+        <KPIStrip
+          kpi={
+            isManager
+              ? KPI
+              : { ...KPI, monthlyProfit: 0 }
+          }
+          hideProfit={!isManager}
+        />
 
         {/* التنبيهات */}
         <CollapsibleSection
@@ -141,31 +185,33 @@ function DashboardContent() {
           />
         </CollapsibleSection>
 
-        {/* الحسابات السريعة — 6 buttons + pie charts */}
-        <CollapsibleSection
-          title="الحسابات السريعة"
-          collapsed={collapsed.calculations}
-          onToggle={() => toggle("calculations")}
-        >
-          <CalculationsBlock
-            subscriptionRevenue={MONTHLY_REVIEW.subscriptionRevenue}
-            storeRevenue={MONTHLY_REVIEW.storeRevenue}
-            supplementsRevenue={420}
-            wearablesRevenue={280}
-            mealsRevenue={300}
-            drinksRevenue={180}
-            totalExpenses={MONTHLY_REVIEW.totalExpenses}
-            salariesExpense={MONTHLY_REVIEW.expenseBreakdown.salaries}
-            rentExpense={MONTHLY_REVIEW.expenseBreakdown.rent}
-            productsExpense={350}
-            maintenanceExpense={MONTHLY_REVIEW.expenseBreakdown.maintenance}
-            suppliesExpense={MONTHLY_REVIEW.expenseBreakdown.supplies}
-            otherExpense={MONTHLY_REVIEW.expenseBreakdown.miscellaneous}
-            totalDiscounts={85}
-            cashOnHand={KPI.cashOnHand}
-            expectedCash={CASH_SESSION.expectedCash}
-          />
-        </CollapsibleSection>
+        {/* الحسابات السريعة — manager only */}
+        {isManager && (
+          <CollapsibleSection
+            title="الحسابات السريعة"
+            collapsed={collapsed.calculations}
+            onToggle={() => toggle("calculations")}
+          >
+            <CalculationsBlock
+              subscriptionRevenue={MONTHLY_REVIEW.subscriptionRevenue}
+              storeRevenue={MONTHLY_REVIEW.storeRevenue}
+              supplementsRevenue={420}
+              wearablesRevenue={280}
+              mealsRevenue={300}
+              drinksRevenue={180}
+              totalExpenses={MONTHLY_REVIEW.totalExpenses}
+              salariesExpense={MONTHLY_REVIEW.expenseBreakdown.salaries}
+              rentExpense={MONTHLY_REVIEW.expenseBreakdown.rent}
+              productsExpense={350}
+              maintenanceExpense={MONTHLY_REVIEW.expenseBreakdown.maintenance}
+              suppliesExpense={MONTHLY_REVIEW.expenseBreakdown.supplies}
+              otherExpense={MONTHLY_REVIEW.expenseBreakdown.miscellaneous}
+              totalDiscounts={85}
+              cashOnHand={KPI.cashOnHand}
+              expectedCash={CASH_SESSION.expectedCash}
+            />
+          </CollapsibleSection>
+        )}
 
         {/* تسوية الصندوق */}
         <CollapsibleSection
@@ -185,7 +231,7 @@ function DashboardContent() {
           />
         </CollapsibleSection>
 
-        {/* الاشتراكات — FULL WIDTH */}
+        {/* الاشتراكات */}
         <CollapsibleSection
           title="الاشتراكات"
           collapsed={collapsed.subscriptions}
@@ -194,7 +240,16 @@ function DashboardContent() {
           <SubscriptionsBlock />
         </CollapsibleSection>
 
-        {/* المتجر — FULL WIDTH */}
+        {/* جهاز InBody */}
+        <CollapsibleSection
+          title="جهاز InBody"
+          collapsed={collapsed.inbody}
+          onToggle={() => toggle("inbody")}
+        >
+          <InBodyBlock />
+        </CollapsibleSection>
+
+        {/* المتجر */}
         <CollapsibleSection
           title="المتجر والمخزون"
           collapsed={collapsed.store}
@@ -203,45 +258,51 @@ function DashboardContent() {
           <StoreBlock />
         </CollapsibleSection>
 
-        {/* المصروفات */}
-        <CollapsibleSection
-          title="المصروفات"
-          collapsed={collapsed.expenses}
-          onToggle={() => toggle("expenses")}
-        >
-          <ExpensesBlock />
-        </CollapsibleSection>
-
-        {/* جدول الأسعار والرواتب */}
-        <CollapsibleSection
-          title="جدول الأسعار والرواتب"
-          collapsed={collapsed.rates}
-          onToggle={() => toggle("rates")}
-        >
-          <ExpenseRates />
-        </CollapsibleSection>
-
-        {/* مراجعة أسبوعية + شهرية */}
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        {/* المصروفات — manager only */}
+        {isManager && (
           <CollapsibleSection
-            title="المراجعة الأسبوعية"
-            collapsed={collapsed.weekly}
-            onToggle={() => toggle("weekly")}
+            title="المصروفات"
+            collapsed={collapsed.expenses}
+            onToggle={() => toggle("expenses")}
           >
-            <WeeklyReview data={WEEKLY_REVIEW} />
+            <ExpensesBlock />
           </CollapsibleSection>
+        )}
 
+        {/* جدول الأسعار والرواتب — manager only */}
+        {isManager && (
           <CollapsibleSection
-            title="المراجعة الشهرية"
-            collapsed={collapsed.monthly}
-            onToggle={() => toggle("monthly")}
+            title="جدول الأسعار والرواتب"
+            collapsed={collapsed.rates}
+            onToggle={() => toggle("rates")}
           >
-            <MonthlyReview
-              data={MONTHLY_REVIEW}
-              onLock={() => console.log("تم قفل الشهر")}
-            />
+            <ExpenseRates />
           </CollapsibleSection>
-        </div>
+        )}
+
+        {/* مراجعة أسبوعية + شهرية — manager only */}
+        {isManager && (
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            <CollapsibleSection
+              title="المراجعة الأسبوعية"
+              collapsed={collapsed.weekly}
+              onToggle={() => toggle("weekly")}
+            >
+              <WeeklyReview data={WEEKLY_REVIEW} />
+            </CollapsibleSection>
+
+            <CollapsibleSection
+              title="المراجعة الشهرية"
+              collapsed={collapsed.monthly}
+              onToggle={() => toggle("monthly")}
+            >
+              <MonthlyReview
+                data={MONTHLY_REVIEW}
+                onLock={() => console.log("تم قفل الشهر")}
+              />
+            </CollapsibleSection>
+          </div>
+        )}
 
         {/* سجل المراجعة */}
         <CollapsibleSection

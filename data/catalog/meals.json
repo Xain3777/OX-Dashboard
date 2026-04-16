@@ -1,0 +1,93 @@
+[
+  {
+    "id": "meal-001",
+    "barcode": "6281000003001",
+    "name": "وجبة دجاج مشوي",
+    "nameEn": "Grilled Chicken Meal",
+    "brand": "OX Kitchen",
+    "category": "meals",
+    "cost": 12,
+    "price": 25,
+    "unit": "meal",
+    "stock": 8,
+    "lowStockThreshold": 5
+  },
+  {
+    "id": "meal-002",
+    "barcode": "6281000003002",
+    "name": "وجبة ستيك لحم",
+    "nameEn": "Beef Steak Meal",
+    "brand": "OX Kitchen",
+    "category": "meals",
+    "cost": 18,
+    "price": 35,
+    "unit": "meal",
+    "stock": 5,
+    "lowStockThreshold": 3
+  },
+  {
+    "id": "meal-003",
+    "barcode": "6281000003003",
+    "name": "سلطة بروتين",
+    "nameEn": "Protein Salad",
+    "brand": "OX Kitchen",
+    "category": "meals",
+    "cost": 8,
+    "price": 18,
+    "unit": "meal",
+    "stock": 10,
+    "lowStockThreshold": 5
+  },
+  {
+    "id": "meal-004",
+    "barcode": "6281000003004",
+    "name": "شوفان بالبروتين",
+    "nameEn": "Protein Oatmeal",
+    "brand": "OX Kitchen",
+    "category": "meals",
+    "cost": 6,
+    "price": 14,
+    "unit": "bowl",
+    "stock": 15,
+    "lowStockThreshold": 5
+  },
+  {
+    "id": "meal-005",
+    "barcode": "6281000003005",
+    "name": "سموذي موز وبروتين",
+    "nameEn": "Banana Protein Smoothie",
+    "brand": "OX Kitchen",
+    "category": "meals",
+    "cost": 5,
+    "price": 12,
+    "unit": "cup",
+    "stock": 20,
+    "lowStockThreshold": 8
+  },
+  {
+    "id": "meal-006",
+    "barcode": "6281000003006",
+    "name": "ساندويتش تونا",
+    "nameEn": "Tuna Sandwich",
+    "brand": "OX Kitchen",
+    "category": "meals",
+    "cost": 7,
+    "price": 15,
+    "unit": "piece",
+    "stock": 12,
+    "lowStockThreshold": 5
+  },
+  {
+    "id": "meal-007",
+    "barcode": "6281000003007",
+    "name": "بان كيك بروتين",
+    "nameEn": "Protein Pancakes",
+    "brand": "OX Kitchen",
+    "category": "meals",
+    "cost": 6,
+    "price": 13,
+    "unit": "plate",
+    "stock": 8,
+    "lowStockThreshold": 4
+  }
+]
