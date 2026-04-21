@@ -270,3 +270,85 @@ body {
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
+
+/* ── Tooltip helper ──────────────────────────────────────────────────────────
+   Use `group` on parent, then this class on the tooltip element.
+   Guarantees solid background, no bleed-through, always on top. */
+.ox-tooltip {
+  position: absolute;
+  z-index: 99999;
+  pointer-events: none;
+  background-color: #0A0A0A;
+  border: 1px solid rgba(245, 193, 0, 0.3);
+  border-radius: 3px;
+  padding: 4px 8px;
+  font-family: "DM Mono", "Cairo", monospace;
+  font-size: 10px;
+  color: #F0EDE6;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 150ms ease;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.8);
+  isolation: isolate;
+}
+.group:hover .ox-tooltip,
+.group:focus-within .ox-tooltip {
+  opacity: 1;
+}
+
+/* Recharts tooltip override — solid background on dark theme */
+.recharts-tooltip-wrapper {
+  z-index: 99999 !important;
+  isolation: isolate !important;
+}
+.recharts-default-tooltip {
+  background-color: #0A0A0A !important;
+  border: 1px solid rgba(245, 193, 0, 0.3) !important;
+  border-radius: 3px !important;
+  color: #F0EDE6 !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.8) !important;
+}
+.recharts-tooltip-label {
+  color: #F5C100 !important;
+  font-family: "DM Mono", "Cairo", monospace !important;
+  font-size: 11px !important;
+}
+.recharts-tooltip-item {
+  color: #AAAAAA !important;
+  font-family: "DM Mono", "Cairo", monospace !important;
+  font-size: 11px !important;
+}
+
+/* Dropdown / select options rendered above fixed navbars */
+select {
+  position: relative;
+  z-index: 1;
+}
+
+/* Ensure any absolute-positioned hover number box is solid */
+[data-tooltip] {
+  position: relative;
+}
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 50%;
+  transform: translateX(50%);
+  background-color: #0A0A0A;
+  border: 1px solid rgba(245, 193, 0, 0.3);
+  border-radius: 3px;
+  padding: 4px 8px;
+  font-family: "DM Mono", "Cairo", monospace;
+  font-size: 10px;
+  color: #F0EDE6;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 99999;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.8);
+  transition: opacity 150ms ease;
+}
+[data-tooltip]:hover::after {
+  opacity: 1;
+}

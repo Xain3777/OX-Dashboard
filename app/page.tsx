@@ -1,20 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import Image from "next/image";
+import * as XLSX from "xlsx";
 import {
   KPI,
   SUBSCRIPTIONS,
-  PRODUCTS,
-  SALES,
-  EXPENSES,
   CASH_SESSION,
-  AUDIT_LOG,
-  WEEKLY_REVIEW,
-  MONTHLY_REVIEW,
 } from "@/lib/mock-data";
 import { CurrencyProvider, useCurrency } from "@/lib/currency-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { StoreProvider, useStore } from "@/lib/store-context";
+import type { ActivityEntry, ActivityType } from "@/lib/store-context";
 import ExchangeRateModal from "@/components/ExchangeRateModal";
 import KPIStrip from "@/components/KPIStrip";
 import AlertsBlock from "@/components/AlertsBlock";
@@ -35,6 +32,14 @@ import {
   ChevronUp,
   DollarSign,
   LogOut,
+  FileSpreadsheet,
+  AlertTriangle,
+  X,
+  Activity,
+  ShoppingCart,
+  Dumbbell,
+  Receipt,
+  Tag,
 } from "lucide-react";
 
 type Section =
@@ -48,13 +53,18 @@ type Section =
   | "calculations"
   | "weekly"
   | "monthly"
-  | "audit";
+  | "audit"
+  | "livefeed";
+
+// ── Root ──────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
   return (
     <AuthProvider>
       <CurrencyProvider>
-        <AppRouter />
+        <StoreProvider>
+          <AppRouter />
+        </StoreProvider>
       </CurrencyProvider>
     </AuthProvider>
   );
@@ -62,11 +72,7 @@ export default function DashboardPage() {
 
 function AppRouter() {
   const { user } = useAuth();
-
-  if (!user) {
-    return <LoginScreen />;
-  }
-
+  if (!user) return <LoginScreen />;
   return (
     <>
       <DashboardContent />
@@ -75,16 +81,170 @@ function AppRouter() {
   );
 }
 
+// ── Logout confirmation modal ─────────────────────────────────────────────────
+
+function LogoutModal({ onConfirm, onCancel }: { onConfirm: () => void; onCancel: () => void }) {
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 backdrop-blur-sm" dir="rtl">
+      <div className="bg-[#1A1A1A] border border-[#252525] p-6 rounded-sm max-w-sm w-full mx-4 animate-fade-in">
+        <div className="flex items-center gap-3 mb-4">
+          <AlertTriangle size={18} className="text-[#F5C100] shrink-0" />
+          <h3 className="font-display text-lg tracking-wider text-[#F0EDE6]">تسجيل الخروج</h3>
+        </div>
+        <p className="font-body text-sm text-[#AAAAAA] mb-6 leading-relaxed">
+          هل أنت متأكد من تسجيل الخروج؟ سيتم إنهاء الجلسة الحالية.
+        </p>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onConfirm}
+            className="flex-1 px-4 py-2.5 bg-[#D42B2B] hover:bg-[#FF3333] text-white font-display text-sm tracking-widest transition-colors rounded-sm cursor-pointer"
+          >
+            خروج
+          </button>
+          <button
+            onClick={onCancel}
+            className="flex-1 px-4 py-2.5 border border-[#252525] text-[#777777] hover:text-[#F0EDE6] font-mono text-xs transition-colors rounded-sm cursor-pointer"
+          >
+            إلغاء
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Excel export ──────────────────────────────────────────────────────────────
+
+function exportMonthlyExcel(ctx: {
+  sales: ReturnType<typeof useStore>["sales"];
+  inBodySessions: ReturnType<typeof useStore>["inBodySessions"];
+  expenses: ReturnType<typeof useStore>["expenses"];
+  expenseRates: ReturnType<typeof useStore>["expenseRates"];
+  products: ReturnType<typeof useStore>["products"];
+  exchangeRate: number;
+}) {
+  const { sales, inBodySessions, expenses, expenseRates, products, exchangeRate } = ctx;
+
+  const wb = XLSX.utils.book_new();
+
+  // ── 1. ملخص شهري ──────────────────────────────────────────────────────────
+  const totalSaleUSD    = sales.filter(s => !s.isReversal).reduce((s, r) => s + r.total, 0);
+  const totalInBodySYP  = inBodySessions.reduce((s, r) => s + r.priceSYP, 0);
+  const totalInBodyUSD  = Math.round((totalInBodySYP / exchangeRate) * 100) / 100;
+  const totalExpenses   = expenses.reduce((s, r) => s + r.amount, 0);
+  const totalSalaries   = expenseRates.filter(r => r.category === "salary" && r.active).reduce((s, r) => s + r.amount, 0);
+
+  const summaryData = [
+    ["البند", "المبلغ ($)"],
+    ["إجمالي مبيعات المتجر", totalSaleUSD],
+    ["إجمالي جلسات InBody (بالدولار)", totalInBodyUSD],
+    ["إجمالي الإيرادات", totalSaleUSD + totalInBodyUSD],
+    ["", ""],
+    ["إجمالي المصروفات", totalExpenses],
+    ["إجمالي الرواتب", totalSalaries],
+    ["", ""],
+    ["صافي الربح التقديري", (totalSaleUSD + totalInBodyUSD) - totalExpenses],
+    ["سعر الصرف (ل.س/$)", exchangeRate],
+  ];
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
+  XLSX.utils.book_append_sheet(wb, wsSummary, "الملخص الشهري");
+
+  // ── 2. جلسات InBody ────────────────────────────────────────────────────────
+  const inBodyRows = [
+    ["التاريخ", "الوقت", "الاسم", "النوع", "السعر (ل.س)", "السعر ($)", "طريقة الدفع", "الموظف"],
+    ...inBodySessions.map(s => {
+      const d = new Date(s.createdAt);
+      return [
+        d.toLocaleDateString("ar-SY"),
+        d.toLocaleTimeString("ar-SY", { hour: "2-digit", minute: "2-digit" }),
+        s.memberName,
+        s.memberType === "gym_member" ? "عضو النادي" : "زيارة خارجية",
+        s.priceSYP,
+        Math.round((s.priceSYP / exchangeRate) * 100) / 100,
+        s.paymentMethod === "cash" ? "نقدي" : s.paymentMethod === "card" ? "بطاقة" : "تحويل",
+        s.createdByName,
+      ];
+    }),
+  ];
+  const wsInBody = XLSX.utils.aoa_to_sheet(inBodyRows);
+  XLSX.utils.book_append_sheet(wb, wsInBody, "جلسات InBody");
+
+  // ── 3. مبيعات المتجر ───────────────────────────────────────────────────────
+  const storeRows = [
+    ["التاريخ", "الوقت", "المنتج", "الكمية", "سعر الوحدة ($)", "الإجمالي ($)", "الطريقة", "ملاحظات"],
+    ...sales.map(s => {
+      const d = new Date(s.createdAt);
+      return [
+        d.toLocaleDateString("ar-SY"),
+        d.toLocaleTimeString("ar-SY", { hour: "2-digit", minute: "2-digit" }),
+        s.productName,
+        s.quantity,
+        s.unitPrice,
+        s.isReversal ? -s.total : s.total,
+        s.paymentMethod === "cash" ? "نقدي" : s.paymentMethod === "card" ? "بطاقة" : "تحويل",
+        s.isReversal ? "مُسترجع" : "",
+      ];
+    }),
+  ];
+  const wsStore = XLSX.utils.aoa_to_sheet(storeRows);
+  XLSX.utils.book_append_sheet(wb, wsStore, "مبيعات المتجر");
+
+  // ── 4. المصروفات ───────────────────────────────────────────────────────────
+  const expenseRows = [
+    ["التاريخ", "الوصف", "التصنيف", "المبلغ ($)", "الطريقة"],
+    ...expenses.map(e => [
+      e.date,
+      e.description,
+      e.category,
+      e.amount,
+      e.paymentMethod === "cash" ? "نقدي" : e.paymentMethod === "card" ? "بطاقة" : "تحويل",
+    ]),
+  ];
+  const wsExpenses = XLSX.utils.aoa_to_sheet(expenseRows);
+  XLSX.utils.book_append_sheet(wb, wsExpenses, "المصروفات");
+
+  // ── 5. الرواتب والمصروفات الثابتة ────────────────────────────────────────
+  const rateRows = [
+    ["الوصف", "التصنيف", "المبلغ ($)", "التكرار", "الحالة"],
+    ...expenseRates.map(r => [
+      r.label,
+      r.category === "salary" ? "راتب" : r.category === "rent" ? "إيجار" : r.category === "utility" ? "مرافق" : "خدمات",
+      r.amount,
+      r.frequency === "monthly" ? "شهري" : r.frequency === "weekly" ? "أسبوعي" : "يومي",
+      r.active ? "فعّال" : "متوقف",
+    ]),
+  ];
+  const wsRates = XLSX.utils.aoa_to_sheet(rateRows);
+  XLSX.utils.book_append_sheet(wb, wsRates, "الرواتب والمصروفات الثابتة");
+
+  // ── 6. المخزون ─────────────────────────────────────────────────────────────
+  const stockRows = [
+    ["المنتج", "التصنيف", "التكلفة ($)", "سعر البيع ($)", "هامش الربح %", "المخزون"],
+    ...products.map(p => {
+      const margin = p.price > 0 ? Math.round(((p.price - p.cost) / p.price) * 100) : 0;
+      return [p.name, p.category, p.cost, p.price, `${margin}%`, p.stock];
+    }),
+  ];
+  const wsStock = XLSX.utils.aoa_to_sheet(stockRows);
+  XLSX.utils.book_append_sheet(wb, wsStock, "المخزون");
+
+  // ── Save ───────────────────────────────────────────────────────────────────
+  const month = new Date().toLocaleDateString("ar-SY", { month: "long", year: "numeric" });
+  XLSX.writeFile(wb, `ملخص_OX_GYM_${month}.xlsx`);
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+
 function DashboardContent() {
   const { exchangeRate, openRateModal } = useCurrency();
   const { user, logout, isManager } = useAuth();
+  const store = useStore();
+
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
 
   const roleLabel =
-    user?.role === "owner"
-      ? "المالك"
-      : user?.role === "manager"
-      ? "مدير"
-      : "موظف استقبال";
+    user?.role === "owner" ? "المالك" :
+    user?.role === "manager" ? "مدير" : "موظف استقبال";
 
   const [collapsed, setCollapsed] = useState<Record<Section, boolean>>({
     alerts: false,
@@ -93,31 +253,40 @@ function DashboardContent() {
     store: false,
     inbody: false,
     expenses: false,
-    rates: true,
+    rates: false,
     calculations: false,
     weekly: true,
     monthly: true,
     audit: false,
+    livefeed: false,
   });
 
   const toggle = (section: Section) =>
     setCollapsed((prev) => ({ ...prev, [section]: !prev[section] }));
 
+  const handleLogoutConfirm = useCallback(() => {
+    setShowLogoutModal(false);
+    logout();
+  }, [logout]);
+
   return (
     <div className="min-h-screen bg-void" dir="rtl">
+
+      {/* Logout confirmation */}
+      {showLogoutModal && (
+        <LogoutModal
+          onConfirm={handleLogoutConfirm}
+          onCancel={() => setShowLogoutModal(false)}
+        />
+      )}
+
       {/* === شريط التنقل === */}
       <nav
-        className="sticky top-0 bg-charcoal/95 backdrop-blur-sm border-b border-gunmetal px-6 py-3 flex items-center justify-between"
-        style={{ zIndex: 100 }}
+        className="sticky top-0 bg-charcoal border-b border-gunmetal px-6 py-3 flex items-center justify-between"
+        style={{ zIndex: 100, overflow: "visible" }}
       >
         <div className="flex items-center gap-3">
-          <Image
-            src="/logo-full.png"
-            alt="OX GYM"
-            width={48}
-            height={48}
-            className="h-10 w-auto"
-          />
+          <Image src="/logo-full.png" alt="OX GYM" width={48} height={48} className="h-10 w-auto" />
           <div>
             <h1 className="font-display text-xl tracking-wider text-offwhite leading-none">
               لوحة التحكم المالية
@@ -128,58 +297,67 @@ function DashboardContent() {
           </div>
         </div>
         <div className="flex items-center gap-4">
-          {/* Exchange Rate Display */}
-          <button
-            onClick={openRateModal}
-            className="flex items-center gap-2 px-3 py-1.5 bg-iron border border-gunmetal hover:border-gold/30 transition-colors cursor-pointer"
-            title="اضغط لتعديل سعر الصرف"
-          >
-            <DollarSign size={14} className="text-gold" />
-            <span className="font-mono text-xs text-gold">1$ = {exchangeRate.toLocaleString()} ل.س</span>
-          </button>
+          {/* Exchange Rate */}
+          <div className="relative group">
+            <button
+              onClick={openRateModal}
+              className="flex items-center gap-2 px-3 py-1.5 bg-iron border border-gunmetal hover:border-gold/30 transition-colors cursor-pointer"
+            >
+              <DollarSign size={14} className="text-gold" />
+              <span className="font-mono text-xs text-gold">1$ = {exchangeRate.toLocaleString()} ل.س</span>
+            </button>
+            {/* Custom tooltip */}
+            <div className="absolute top-full mt-2 right-0 px-2 py-1 bg-[#0A0A0A] border border-[#F5C100]/30 rounded text-[10px] font-mono text-[#F0EDE6] whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity" style={{ zIndex: 99999, boxShadow: "0 4px 16px rgba(0,0,0,0.8)" }}>
+              اضغط لتعديل سعر الصرف
+            </div>
+          </div>
 
           <div className="flex items-center gap-2 text-xs text-secondary font-mono">
             <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
             الجلسة مفتوحة
           </div>
+
           <div className="flex items-center gap-2 px-3 py-1.5 bg-iron border border-gunmetal">
             <Shield size={14} className="text-gold-dim" />
             <span className="font-mono text-xs text-ghost">{user?.name}</span>
-            <span className="font-mono text-[10px] text-slate">
-              {roleLabel}
-            </span>
+            <span className="font-mono text-[10px] text-slate">{roleLabel}</span>
           </div>
-          <button
-            onClick={logout}
-            className="flex items-center gap-1 px-2 py-1.5 text-[#777777] hover:text-[#FF3333] transition-colors cursor-pointer"
-            title="تسجيل الخروج"
-          >
-            <LogOut size={14} />
-          </button>
+
+          {/* Logout button with custom tooltip */}
+          <div className="relative group">
+            <button
+              onClick={() => setShowLogoutModal(true)}
+              className="flex items-center gap-1 px-2 py-1.5 text-[#777777] hover:text-[#FF3333] transition-colors cursor-pointer"
+            >
+              <LogOut size={14} />
+            </button>
+            <div className="absolute top-full mt-2 right-0 px-2 py-1 bg-[#0A0A0A] border border-[#F5C100]/30 rounded text-[10px] font-mono text-[#F0EDE6] whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity" style={{ zIndex: 99999, boxShadow: "0 4px 16px rgba(0,0,0,0.8)" }}>
+              تسجيل الخروج
+            </div>
+          </div>
         </div>
       </nav>
 
       {/* === المحتوى الرئيسي === */}
       <main className="max-w-[1280px] mx-auto px-4 sm:px-6 py-6 space-y-6">
-        {/* شريط المؤشرات — hide monthly profit from employees */}
+
         <KPIStrip
-          kpi={
-            isManager
-              ? KPI
-              : { ...KPI, monthlyProfit: 0 }
-          }
+          kpi={isManager ? KPI : { ...KPI, monthlyProfit: 0 }}
           hideProfit={!isManager}
         />
 
+        {/* نشاط مباشر — manager only */}
+        {isManager && (
+          <CollapsibleSection title="النشاط المباشر — ما يفعله الفريق الآن" collapsed={collapsed.livefeed} onToggle={() => toggle("livefeed")}>
+            <LiveFeedPanel feed={store.activityFeed} />
+          </CollapsibleSection>
+        )}
+
         {/* التنبيهات */}
-        <CollapsibleSection
-          title="التنبيهات والتحذيرات"
-          collapsed={collapsed.alerts}
-          onToggle={() => toggle("alerts")}
-        >
+        <CollapsibleSection title="التنبيهات والتحذيرات" collapsed={collapsed.alerts} onToggle={() => toggle("alerts")}>
           <AlertsBlock
             subscriptions={SUBSCRIPTIONS}
-            products={PRODUCTS}
+            products={store.products}
             cashSession={CASH_SESSION}
             unresolvedDiscrepancies={KPI.unresolvedDiscrepancies}
           />
@@ -187,25 +365,21 @@ function DashboardContent() {
 
         {/* الحسابات السريعة — manager only */}
         {isManager && (
-          <CollapsibleSection
-            title="الحسابات السريعة"
-            collapsed={collapsed.calculations}
-            onToggle={() => toggle("calculations")}
-          >
+          <CollapsibleSection title="الحسابات السريعة" collapsed={collapsed.calculations} onToggle={() => toggle("calculations")}>
             <CalculationsBlock
-              subscriptionRevenue={MONTHLY_REVIEW.subscriptionRevenue}
-              storeRevenue={MONTHLY_REVIEW.storeRevenue}
+              subscriptionRevenue={420}
+              storeRevenue={store.sales.filter(s => !s.isReversal).reduce((a, b) => a + b.total, 0)}
               supplementsRevenue={420}
               wearablesRevenue={280}
               mealsRevenue={300}
               drinksRevenue={180}
-              totalExpenses={MONTHLY_REVIEW.totalExpenses}
-              salariesExpense={MONTHLY_REVIEW.expenseBreakdown.salaries}
-              rentExpense={MONTHLY_REVIEW.expenseBreakdown.rent}
+              totalExpenses={store.expenses.reduce((a, b) => a + b.amount, 0)}
+              salariesExpense={store.expenseRates.filter(r => r.category === "salary" && r.active).reduce((a, b) => a + b.amount, 0)}
+              rentExpense={store.expenseRates.filter(r => r.category === "rent" && r.active).reduce((a, b) => a + b.amount, 0)}
               productsExpense={350}
-              maintenanceExpense={MONTHLY_REVIEW.expenseBreakdown.maintenance}
-              suppliesExpense={MONTHLY_REVIEW.expenseBreakdown.supplies}
-              otherExpense={MONTHLY_REVIEW.expenseBreakdown.miscellaneous}
+              maintenanceExpense={320}
+              suppliesExpense={120}
+              otherExpense={60}
               totalDiscounts={85}
               cashOnHand={KPI.cashOnHand}
               expectedCash={CASH_SESSION.expectedCash}
@@ -214,90 +388,59 @@ function DashboardContent() {
         )}
 
         {/* تسوية الصندوق */}
-        <CollapsibleSection
-          title="تسوية الصندوق اليومية"
-          collapsed={collapsed.reconciliation}
-          onToggle={() => toggle("reconciliation")}
-          accent
-        >
+        <CollapsibleSection title="تسوية الصندوق اليومية" collapsed={collapsed.reconciliation} onToggle={() => toggle("reconciliation")} accent>
           <ReconciliationBlock
             session={CASH_SESSION}
             onCloseDay={(data) => console.log("تم إغلاق اليوم:", data)}
-            totalTransactions={SALES.length + EXPENSES.length}
+            totalTransactions={store.sales.length + store.expenses.length}
             cardTransferSales={
-              SALES.filter((s) => s.paymentMethod === "card" || s.paymentMethod === "transfer")
+              store.sales
+                .filter(s => s.paymentMethod === "card" || s.paymentMethod === "transfer")
                 .reduce((sum, s) => sum + s.total, 0)
             }
           />
         </CollapsibleSection>
 
         {/* الاشتراكات */}
-        <CollapsibleSection
-          title="الاشتراكات"
-          collapsed={collapsed.subscriptions}
-          onToggle={() => toggle("subscriptions")}
-        >
+        <CollapsibleSection title="الاشتراكات" collapsed={collapsed.subscriptions} onToggle={() => toggle("subscriptions")}>
           <SubscriptionsBlock />
         </CollapsibleSection>
 
         {/* جهاز InBody */}
-        <CollapsibleSection
-          title="جهاز InBody"
-          collapsed={collapsed.inbody}
-          onToggle={() => toggle("inbody")}
-        >
+        <CollapsibleSection title="جهاز InBody" collapsed={collapsed.inbody} onToggle={() => toggle("inbody")}>
           <InBodyBlock />
         </CollapsibleSection>
 
         {/* المتجر */}
-        <CollapsibleSection
-          title="المتجر والمخزون"
-          collapsed={collapsed.store}
-          onToggle={() => toggle("store")}
-        >
+        <CollapsibleSection title="المتجر والمخزون" collapsed={collapsed.store} onToggle={() => toggle("store")}>
           <StoreBlock />
         </CollapsibleSection>
 
         {/* المصروفات — manager only */}
         {isManager && (
-          <CollapsibleSection
-            title="المصروفات"
-            collapsed={collapsed.expenses}
-            onToggle={() => toggle("expenses")}
-          >
+          <CollapsibleSection title="المصروفات" collapsed={collapsed.expenses} onToggle={() => toggle("expenses")}>
             <ExpensesBlock />
           </CollapsibleSection>
         )}
 
-        {/* جدول الأسعار والرواتب — manager only */}
-        {isManager && (
-          <CollapsibleSection
-            title="جدول الأسعار والرواتب"
-            collapsed={collapsed.rates}
-            onToggle={() => toggle("rates")}
-          >
-            <ExpenseRates />
-          </CollapsibleSection>
-        )}
+        {/* جدول الأسعار والرواتب — everyone sees it; editing is manager-only (enforced inside) */}
+        <CollapsibleSection
+          title={isManager ? "جدول الأسعار والرواتب" : "الرواتب والمصروفات الثابتة"}
+          collapsed={collapsed.rates}
+          onToggle={() => toggle("rates")}
+        >
+          <ExpenseRates />
+        </CollapsibleSection>
 
         {/* مراجعة أسبوعية + شهرية — manager only */}
         {isManager && (
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-            <CollapsibleSection
-              title="المراجعة الأسبوعية"
-              collapsed={collapsed.weekly}
-              onToggle={() => toggle("weekly")}
-            >
-              <WeeklyReview data={WEEKLY_REVIEW} />
+            <CollapsibleSection title="المراجعة الأسبوعية" collapsed={collapsed.weekly} onToggle={() => toggle("weekly")}>
+              <WeeklyReview data={{ weekStart: "2026-04-07", weekEnd: "2026-04-13", totalRevenue: 2850, totalExpenses: 780, subscriptionRevenue: 1630, storeRevenue: 1220, newSubscriptions: 2, expiredSubscriptions: 1, expiringThisWeek: 2, pendingPayments: 1, stockMovements: 34, unresolvedDiscrepancies: 0 }} />
             </CollapsibleSection>
-
-            <CollapsibleSection
-              title="المراجعة الشهرية"
-              collapsed={collapsed.monthly}
-              onToggle={() => toggle("monthly")}
-            >
+            <CollapsibleSection title="المراجعة الشهرية" collapsed={collapsed.monthly} onToggle={() => toggle("monthly")}>
               <MonthlyReview
-                data={MONTHLY_REVIEW}
+                data={{ month: "أبريل", year: 2026, totalRevenue: 8620, totalExpenses: 12350, netProfit: -3730, subscriptionRevenue: 5790, storeRevenue: store.sales.filter(s => !s.isReversal).reduce((a, b) => a + b.total, 0), expenseBreakdown: { salaries: 6700, rent: 5000, equipment: 0, maintenance: 320, utilities: 150, supplies: 120, marketing: 0, miscellaneous: 60 }, topProducts: [{ name: "كوب بروتين (طازج)", quantity: 48, revenue: 720 }, { name: "مشروب BCAA (بارد)", quantity: 38, revenue: 380 }, { name: "واي بروتين ٢ كجم", quantity: 6, revenue: 1080 }], activeSubscriptions: 7, expiredSubscriptions: 1, locked: false }}
                 onLock={() => console.log("تم قفل الشهر")}
               />
             </CollapsibleSection>
@@ -305,36 +448,118 @@ function DashboardContent() {
         )}
 
         {/* سجل المراجعة */}
-        <CollapsibleSection
-          title="سجل المراجعة"
-          collapsed={collapsed.audit}
-          onToggle={() => toggle("audit")}
-        >
-          <AuditLog entries={AUDIT_LOG} />
+        <CollapsibleSection title="سجل المراجعة" collapsed={collapsed.audit} onToggle={() => toggle("audit")}>
+          <AuditLog entries={[]} />
         </CollapsibleSection>
 
-        {/* التذييل */}
-        <footer className="border-t border-gunmetal pt-4 pb-8 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Image
-              src="/logo-icon.png"
-              alt="OX"
-              width={20}
-              height={20}
-              className="h-5 w-auto"
-            />
+        {/* ════════════════════════════════════════════════════════════
+            التذييل — Monthly Excel Export
+        ════════════════════════════════════════════════════════════ */}
+        <footer className="border-t border-gunmetal pt-6 pb-8">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-2">
+              <Image src="/logo-icon.png" alt="OX" width={20} height={20} className="h-5 w-auto" />
+              <span className="font-mono text-[10px] text-slate">
+                نظام OX GYM المالي — الإصدار 1.0
+              </span>
+            </div>
+
+            {/* Monthly summary export button */}
+            <button
+              onClick={() =>
+                exportMonthlyExcel({
+                  sales:         store.sales,
+                  inBodySessions: store.inBodySessions,
+                  expenses:      store.expenses,
+                  expenseRates:  store.expenseRates,
+                  products:      store.products,
+                  exchangeRate,
+                })
+              }
+              className="flex items-center gap-2 px-5 py-2.5 bg-[#1A1A1A] border border-[#252525] hover:border-[#F5C100]/40 hover:bg-[#F5C100]/5 text-[#AAAAAA] hover:text-[#F5C100] font-mono text-xs tracking-wider transition-colors rounded-sm cursor-pointer clip-corner-sm"
+            >
+              <FileSpreadsheet size={14} />
+              تصدير الملخص الشهري — Excel
+            </button>
+
             <span className="font-mono text-[10px] text-slate">
-              نظام OX GYM المالي - الإصدار 1.0
+              جميع السجلات غير قابلة للتعديل ومُراجَعة
             </span>
           </div>
-          <span className="font-mono text-[10px] text-slate">
-            جميع السجلات غير قابلة للتعديل ومُراجَعة
-          </span>
         </footer>
       </main>
     </div>
   );
 }
+
+// ── Live feed panel (manager view of all staff actions) ───────────────────────
+
+const FEED_ICON: Record<ActivityType, React.ReactNode> = {
+  sale:       <ShoppingCart size={12} className="text-[#5CC45C]" />,
+  inbody:     <Dumbbell size={12} className="text-[#F5C100]" />,
+  expense:    <Receipt size={12} className="text-[#D42B2B]" />,
+  subscription: <Activity size={12} className="text-[#AAAAAA]" />,
+  price_edit: <Tag size={12} className="text-[#F5C100]" />,
+};
+
+const FEED_TYPE_LABEL: Record<ActivityType, string> = {
+  sale: "بيع", inbody: "InBody", expense: "مصروف", subscription: "اشتراك", price_edit: "تعديل سعر",
+};
+
+function LiveFeedPanel({ feed }: { feed: ActivityEntry[] }) {
+  if (feed.length === 0) {
+    return (
+      <div className="bg-[#1A1A1A] border border-[#252525] rounded-sm px-5 py-8 text-center">
+        <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">
+          لا يوجد نشاط حتى الآن — سيظهر هنا كل ما يسجله الفريق فوراً
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-[#1A1A1A] border border-[#252525] rounded-sm overflow-hidden">
+      <div className="flex items-center gap-3 px-5 py-3 border-b border-[#252525] bg-[#111111]">
+        <Activity size={13} className="text-[#F5C100]" />
+        <span className="font-display tracking-widest text-sm text-[#F0EDE6] uppercase">سجل النشاط المباشر</span>
+        <span className="w-2 h-2 rounded-full bg-[#5CC45C] animate-pulse" />
+        <span className="font-mono text-[10px] text-[#555555]">{feed.length} إدخال</span>
+      </div>
+      <div className="divide-y divide-[#252525]/60">
+        {feed.slice(0, 30).map((entry) => {
+          const time = new Date(entry.timestamp).toLocaleTimeString("ar-SY", { hour: "2-digit", minute: "2-digit" });
+          const date = new Date(entry.timestamp).toLocaleDateString("ar-SY", { month: "short", day: "numeric" });
+          return (
+            <div key={entry.id} className="flex items-center gap-3 px-5 py-2.5 hover:bg-[#252525]/30 transition-colors">
+              <div className="shrink-0 w-5 h-5 flex items-center justify-center">
+                {FEED_ICON[entry.type]}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-[#F0EDE6] truncate">{entry.description}</p>
+                <p className="font-mono text-[10px] text-[#555555]">{entry.userName}</p>
+              </div>
+              <div className="shrink-0 text-left">
+                {(entry.amountUSD != null || entry.amountSYP != null) && (
+                  <p className="font-mono text-xs text-[#F5C100] tabular-nums">
+                    {entry.amountSYP
+                      ? `${entry.amountSYP.toLocaleString("ar-SY")} ل.س`
+                      : `${entry.amountUSD?.toFixed(2)}$`}
+                  </p>
+                )}
+                <p className="font-mono text-[10px] text-[#555555]">{date} {time}</p>
+              </div>
+              <span className="shrink-0 inline-block px-1.5 py-0.5 bg-[#252525] border border-[#555555]/30 rounded text-[9px] font-mono text-[#777777] uppercase tracking-wide">
+                {FEED_TYPE_LABEL[entry.type]}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Collapsible section ────────────────────────────────────────────────────────
 
 function CollapsibleSection({
   title,
