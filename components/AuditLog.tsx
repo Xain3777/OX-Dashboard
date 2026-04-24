@@ -86,17 +86,30 @@ const ACTION_META: Record<
     borderColor: "border-l-[#F5C100]",
     icon: <Lock size={13} />,
   },
+  inbody_session: {
+    label: "جلسة InBody",
+    color: "text-[#F5C100]",
+    borderColor: "border-l-[#F5C100]",
+    icon: <Activity size={13} />,
+  },
+  price_edit: {
+    label: "تعديل سعر",
+    color: "text-[#FFD740]",
+    borderColor: "border-l-[#FFD740]",
+    icon: <BarChart2 size={13} />,
+  },
 };
 
 // ── FILTER TABS ───────────────────────────────────────────────
 
-type FilterTab = "all" | "sales" | "subscriptions" | "expenses" | "sessions";
+type FilterTab = "all" | "sales" | "subscriptions" | "expenses" | "inbody" | "sessions";
 
 const FILTER_TABS: { key: FilterTab; label: string }[] = [
   { key: "all", label: "الكل" },
   { key: "sales", label: "المبيعات" },
   { key: "subscriptions", label: "الاشتراكات" },
   { key: "expenses", label: "المصروفات" },
+  { key: "inbody", label: "InBody" },
   { key: "sessions", label: "الجلسات" },
 ];
 
@@ -105,6 +118,7 @@ const FILTER_ACTIONS: Record<FilterTab, AuditAction[] | null> = {
   sales: ["sale_created", "sale_reversed"],
   subscriptions: ["subscription_created"],
   expenses: ["expense_created"],
+  inbody: ["inbody_session"],
   sessions: ["session_opened", "session_closed", "discrepancy_resolved"],
 };
 

@@ -9,20 +9,23 @@ import {
   useRef,
   ReactNode,
 } from "react";
-import { Product, Sale, Expense, PaymentMethod } from "./types";
-import { PRODUCTS, SALES, EXPENSES } from "./mock-data";
+import { Product, Sale, Expense, PaymentMethod, Subscription } from "./types";
+import { PRODUCTS, SALES, EXPENSES, SUBSCRIPTIONS } from "./mock-data";
 import { generateId } from "./business-logic";
 
 // ─── InBody ───────────────────────────────────────────────────────────────────
 
 export type InBodyMemberType = "gym_member" | "non_member";
 
+export type InBodySessionType = "single" | "package_5" | "package_10";
+
 export interface InBodySession {
   id: string;
   memberType: InBodyMemberType;
   memberId?: string;   // only for gym_member
   memberName: string;
-  priceSYP: number;    // 60000 or 100000
+  sessionType: InBodySessionType;
+  priceSYP: number;
   currency: "usd" | "syp";
   paymentMethod: PaymentMethod;
   createdAt: string;
@@ -62,10 +65,11 @@ export interface ExpenseRate {
 export interface StoreState {
   products: Product[];
   sales: Sale[];
+  subscriptions: Subscription[];
   inBodySessions: InBodySession[];
   expenses: Expense[];
   activityFeed: ActivityEntry[];
-  inBodyPrices: { member: number; nonMember: number }; // SYP
+  inBodyPrices: { single: number; package_5: number; package_10: number }; // SYP
   expenseRates: ExpenseRate[];
   exchangeRate: number; // 1 USD = X SYP
 }
@@ -79,9 +83,11 @@ export interface StoreContextType extends StoreState {
   updateProductCost: (productId: string, cost: number) => void;
   updateProductPrice: (productId: string, cost: number, price: number) => void;
   adjustStock: (productId: string, delta: number) => void;
+  // Subscriptions
+  addSubscription: (sub: Omit<Subscription, "id" | "createdAt">) => void;
   // InBody
   addInBodySession: (session: Omit<InBodySession, "id" | "createdAt">) => void;
-  updateInBodyPrices: (member: number, nonMember: number) => void;
+  updateInBodyPrices: (single: number, package_5: number, package_10: number) => void;
   // Expenses
   addExpense: (expense: Omit<Expense, "id" | "createdAt">) => void;
   // Rates
@@ -90,6 +96,8 @@ export interface StoreContextType extends StoreState {
   toggleExpenseRate: (id: string) => void;
   // Currency
   setExchangeRate: (rate: number) => void;
+  // Activity
+  pushActivity: (entry: Omit<ActivityEntry, "id" | "timestamp">) => void;
 }
 
 // ─── Initial data ─────────────────────────────────────────────────────────────
@@ -100,7 +108,8 @@ const INITIAL_SESSIONS: InBodySession[] = [
     memberType: "gym_member",
     memberId: "m1",
     memberName: "أحمد الراشد",
-    priceSYP: 60000,
+    sessionType: "package_5",
+    priceSYP: 250000,
     currency: "syp",
     paymentMethod: "cash",
     createdAt: "2026-04-14T09:30:00Z",
@@ -112,6 +121,7 @@ const INITIAL_SESSIONS: InBodySession[] = [
     memberType: "gym_member",
     memberId: "m3",
     memberName: "خالد حسن",
+    sessionType: "single",
     priceSYP: 60000,
     currency: "syp",
     paymentMethod: "cash",
@@ -138,15 +148,16 @@ const INITIAL_RATES: ExpenseRate[] = [
 const INITIAL_STATE: StoreState = {
   products: PRODUCTS,
   sales: SALES,
+  subscriptions: SUBSCRIPTIONS,
   inBodySessions: INITIAL_SESSIONS,
   expenses: EXPENSES,
   activityFeed: [],
-  inBodyPrices: { member: 60000, nonMember: 100000 },
+  inBodyPrices: { single: 60000, package_5: 250000, package_10: 450000 },
   expenseRates: INITIAL_RATES,
   exchangeRate: 13200,
 };
 
-const STORAGE_KEY = "ox_store_v2";
+const STORAGE_KEY = "ox_store_v3";
 
 function loadState(): StoreState {
   if (typeof window === "undefined") return INITIAL_STATE;
@@ -175,6 +186,7 @@ const StoreContext = createContext<StoreContextType>({
   updateProductCost: () => {},
   updateProductPrice: () => {},
   adjustStock: () => {},
+  addSubscription: () => {},
   addInBodySession: () => {},
   updateInBodyPrices: () => {},
   addExpense: () => {},
@@ -182,6 +194,7 @@ const StoreContext = createContext<StoreContextType>({
   addExpenseRate: () => {},
   toggleExpenseRate: () => {},
   setExchangeRate: () => {},
+  pushActivity: () => {},
 });
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -225,11 +238,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const addSale = useCallback((sale: Omit<Sale, "id" | "createdAt">) => {
     const full: Sale = { ...sale, id: generateId(), createdAt: new Date().toISOString() };
+    const cur = sale.currency ?? "usd";
+    const amountLabel = cur === "syp"
+      ? `${sale.total.toLocaleString("en-US")} ل.س`
+      : `${sale.total}$`;
     const entry: ActivityEntry = {
       id: generateId(),
       type: "sale",
-      description: `بيع ${sale.quantity}× ${sale.productName} — ${sale.total}$`,
-      amountUSD: sale.total,
+      description: `بيع ${sale.quantity}× ${sale.productName} — ${amountLabel}`,
+      amountUSD: cur === "usd" ? sale.total : undefined,
+      amountSYP: cur === "syp" ? sale.total : undefined,
       userId: sale.createdBy,
       userName: sale.createdBy,
       timestamp: new Date().toISOString(),
@@ -312,12 +330,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       };
       const rate = stateRef.current.exchangeRate || 13200;
       const amountUSD = Math.round((session.priceSYP / rate) * 100) / 100;
+      const amountLabel = session.currency === "usd"
+        ? `${amountUSD}$`
+        : `${session.priceSYP.toLocaleString("en-US")} ل.س`;
       const entry: ActivityEntry = {
         id: generateId(),
         type: "inbody",
-        description: `جلسة InBody — ${session.memberName} (${session.memberType === "gym_member" ? "عضو" : "زيارة خارجية"})`,
-        amountSYP: session.priceSYP,
-        amountUSD,
+        description: `جلسة InBody — ${session.memberName} — ${amountLabel}`,
+        amountSYP: session.currency === "syp" ? session.priceSYP : undefined,
+        amountUSD: session.currency === "usd" ? amountUSD : undefined,
         userId: session.createdBy,
         userName: session.createdByName,
         timestamp: new Date().toISOString(),
@@ -332,10 +353,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   );
 
   const updateInBodyPrices = useCallback(
-    (member: number, nonMember: number) => {
+    (single: number, package_5: number, package_10: number) => {
       setState((prev) => ({
         ...prev,
-        inBodyPrices: { member, nonMember },
+        inBodyPrices: { single, package_5, package_10 },
       }));
     },
     [setState]
@@ -343,11 +364,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const addExpense = useCallback((expense: Omit<Expense, "id" | "createdAt">) => {
     const full: Expense = { ...expense, id: generateId(), createdAt: new Date().toISOString() };
+    const cur = expense.currency ?? "usd";
+    const amountLabel = cur === "syp"
+      ? `${expense.amount.toLocaleString("en-US")} ل.س`
+      : `${expense.amount}$`;
     const entry: ActivityEntry = {
       id: generateId(),
       type: "expense",
-      description: `مصروف: ${expense.description} — ${expense.amount}$`,
-      amountUSD: expense.amount,
+      description: `مصروف: ${expense.description} — ${amountLabel}`,
+      amountUSD: cur === "usd" ? expense.amount : undefined,
+      amountSYP: cur === "syp" ? expense.amount : undefined,
       userId: expense.createdBy,
       userName: expense.createdBy,
       timestamp: new Date().toISOString(),
@@ -398,6 +424,51 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, exchangeRate: rate }));
   }, [setState]);
 
+  const addSubscription = useCallback(
+    (sub: Omit<Subscription, "id" | "createdAt">) => {
+      const full: Subscription = {
+        ...sub,
+        id: generateId(),
+        createdAt: new Date().toISOString(),
+      };
+      const cur = sub.currency ?? "usd";
+      const amountLabel = cur === "syp"
+        ? `${sub.amount.toLocaleString("en-US")} ل.س`
+        : `${sub.amount}$`;
+      const entry: ActivityEntry = {
+        id: generateId(),
+        type: "subscription",
+        description: `اشتراك جديد — ${sub.memberName} (${amountLabel})`,
+        amountUSD: cur === "usd" ? sub.amount : undefined,
+        amountSYP: cur === "syp" ? sub.amount : undefined,
+        userId: sub.createdBy,
+        userName: sub.createdBy,
+        timestamp: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        subscriptions: [full, ...prev.subscriptions],
+        activityFeed: [entry, ...prev.activityFeed].slice(0, 100),
+      }));
+    },
+    [setState]
+  );
+
+  const pushActivity = useCallback(
+    (entry: Omit<ActivityEntry, "id" | "timestamp">) => {
+      const full: ActivityEntry = {
+        ...entry,
+        id: generateId(),
+        timestamp: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        activityFeed: [full, ...prev.activityFeed].slice(0, 100),
+      }));
+    },
+    [setState]
+  );
+
   // ── Provide ────────────────────────────────────────────────────────────────
 
   const value: StoreContextType = {
@@ -407,6 +478,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     updateProductCost,
     updateProductPrice,
     adjustStock,
+    addSubscription,
     addInBodySession,
     updateInBodyPrices,
     addExpense,
@@ -414,6 +486,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     addExpenseRate,
     toggleExpenseRate,
     setExchangeRate,
+    pushActivity,
   };
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

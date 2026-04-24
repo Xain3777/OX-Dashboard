@@ -12,6 +12,7 @@ import { CurrencyProvider, useCurrency } from "@/lib/currency-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { StoreProvider, useStore } from "@/lib/store-context";
 import type { ActivityEntry, ActivityType } from "@/lib/store-context";
+import type { AuditEntry, AuditAction } from "@/lib/types";
 import ExchangeRateModal from "@/components/ExchangeRateModal";
 import KPIStrip from "@/components/KPIStrip";
 import AlertsBlock from "@/components/AlertsBlock";
@@ -117,13 +118,15 @@ function LogoutModal({ onConfirm, onCancel }: { onConfirm: () => void; onCancel:
 
 function exportMonthlyExcel(ctx: {
   sales: ReturnType<typeof useStore>["sales"];
+  subscriptions: ReturnType<typeof useStore>["subscriptions"];
   inBodySessions: ReturnType<typeof useStore>["inBodySessions"];
   expenses: ReturnType<typeof useStore>["expenses"];
   expenseRates: ReturnType<typeof useStore>["expenseRates"];
   products: ReturnType<typeof useStore>["products"];
   exchangeRate: number;
 }) {
-  const { sales, inBodySessions, expenses, expenseRates, products, exchangeRate } = ctx;
+  const { sales, subscriptions, inBodySessions, expenses, expenseRates, products, exchangeRate } = ctx;
+  const curLabel = (c?: string) => c === "syp" ? "ل.س" : "$";
 
   const wb = XLSX.utils.book_new();
 
@@ -151,7 +154,7 @@ function exportMonthlyExcel(ctx: {
 
   // ── 2. جلسات InBody ────────────────────────────────────────────────────────
   const inBodyRows = [
-    ["التاريخ", "الوقت", "الاسم", "النوع", "السعر (ل.س)", "السعر ($)", "طريقة الدفع", "الموظف"],
+    ["التاريخ", "الوقت", "الاسم", "النوع", "نوع الجلسة", "السعر (ل.س)", "السعر ($)", "العملة", "الموظف"],
     ...inBodySessions.map(s => {
       const d = new Date(s.createdAt);
       return [
@@ -159,9 +162,10 @@ function exportMonthlyExcel(ctx: {
         d.toLocaleTimeString("ar-SY", { hour: "2-digit", minute: "2-digit" }),
         s.memberName,
         s.memberType === "gym_member" ? "عضو النادي" : "زيارة خارجية",
+        s.sessionType ?? "single",
         s.priceSYP,
         Math.round((s.priceSYP / exchangeRate) * 100) / 100,
-        s.paymentMethod === "cash" ? "نقدي" : s.paymentMethod === "card" ? "بطاقة" : "تحويل",
+        curLabel(s.currency),
         s.createdByName,
       ];
     }),
@@ -171,7 +175,7 @@ function exportMonthlyExcel(ctx: {
 
   // ── 3. مبيعات المتجر ───────────────────────────────────────────────────────
   const storeRows = [
-    ["التاريخ", "الوقت", "المنتج", "الكمية", "سعر الوحدة ($)", "الإجمالي ($)", "الطريقة", "ملاحظات"],
+    ["التاريخ", "الوقت", "المنتج", "الكمية", "سعر الوحدة", "الإجمالي", "العملة", "ملاحظات"],
     ...sales.map(s => {
       const d = new Date(s.createdAt);
       return [
@@ -181,7 +185,7 @@ function exportMonthlyExcel(ctx: {
         s.quantity,
         s.unitPrice,
         s.isReversal ? -s.total : s.total,
-        s.paymentMethod === "cash" ? "نقدي" : s.paymentMethod === "card" ? "بطاقة" : "تحويل",
+        curLabel(s.currency),
         s.isReversal ? "مُسترجع" : "",
       ];
     }),
@@ -191,17 +195,36 @@ function exportMonthlyExcel(ctx: {
 
   // ── 4. المصروفات ───────────────────────────────────────────────────────────
   const expenseRows = [
-    ["التاريخ", "الوصف", "التصنيف", "المبلغ ($)", "الطريقة"],
+    ["التاريخ", "الوصف", "التصنيف", "المبلغ", "العملة"],
     ...expenses.map(e => [
       e.date,
       e.description,
       e.category,
       e.amount,
-      e.paymentMethod === "cash" ? "نقدي" : e.paymentMethod === "card" ? "بطاقة" : "تحويل",
+      curLabel(e.currency),
     ]),
   ];
   const wsExpenses = XLSX.utils.aoa_to_sheet(expenseRows);
   XLSX.utils.book_append_sheet(wb, wsExpenses, "المصروفات");
+
+  // ── 4b. الاشتراكات ─────────────────────────────────────────────────────────
+  const subRows = [
+    ["تاريخ الإنشاء", "العضو", "الخطة", "المبلغ", "العملة", "حالة الدفع", "الحالة"],
+    ...subscriptions.map(s => {
+      const d = new Date(s.createdAt);
+      return [
+        d.toLocaleDateString("ar-SY"),
+        s.memberName,
+        s.planType,
+        s.amount,
+        curLabel(s.currency),
+        s.paymentStatus,
+        s.status,
+      ];
+    }),
+  ];
+  const wsSubs = XLSX.utils.aoa_to_sheet(subRows);
+  XLSX.utils.book_append_sheet(wb, wsSubs, "الاشتراكات");
 
   // ── 5. الرواتب والمصروفات الثابتة ────────────────────────────────────────
   const rateRows = [
@@ -231,6 +254,29 @@ function exportMonthlyExcel(ctx: {
   // ── Save ───────────────────────────────────────────────────────────────────
   const month = new Date().toLocaleDateString("ar-SY", { month: "long", year: "numeric" });
   XLSX.writeFile(wb, `ملخص_OX_GYM_${month}.xlsx`);
+}
+
+// ── Activity → Audit converter ────────────────────────────────────────────────
+
+const ACTIVITY_TO_AUDIT_ACTION: Record<ActivityType, AuditAction> = {
+  sale: "sale_created",
+  inbody: "inbody_session",
+  expense: "expense_created",
+  subscription: "subscription_created",
+  price_edit: "price_edit",
+};
+
+function activityFeedToAuditEntries(feed: ActivityEntry[]): AuditEntry[] {
+  return feed.map((e) => ({
+    id: e.id,
+    action: ACTIVITY_TO_AUDIT_ACTION[e.type],
+    description: e.description,
+    entityType: e.type,
+    entityId: e.id,
+    userId: e.userId,
+    userName: e.userName,
+    timestamp: e.timestamp,
+  }));
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -449,7 +495,7 @@ function DashboardContent() {
 
         {/* سجل المراجعة */}
         <CollapsibleSection title="سجل المراجعة" collapsed={collapsed.audit} onToggle={() => toggle("audit")}>
-          <AuditLog entries={[]} />
+          <AuditLog entries={activityFeedToAuditEntries(store.activityFeed)} />
         </CollapsibleSection>
 
         {/* ════════════════════════════════════════════════════════════
@@ -468,11 +514,12 @@ function DashboardContent() {
             <button
               onClick={() =>
                 exportMonthlyExcel({
-                  sales:         store.sales,
+                  sales:          store.sales,
+                  subscriptions:  store.subscriptions,
                   inBodySessions: store.inBodySessions,
-                  expenses:      store.expenses,
-                  expenseRates:  store.expenseRates,
-                  products:      store.products,
+                  expenses:       store.expenses,
+                  expenseRates:   store.expenseRates,
+                  products:       store.products,
                   exchangeRate,
                 })
               }

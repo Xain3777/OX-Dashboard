@@ -19,6 +19,7 @@ import {
   generateId,
 } from "@/lib/business-logic";
 import PriceTag from "@/components/PriceTag";
+import { useStore } from "@/lib/store-context";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -100,6 +101,8 @@ type FilterTab = "all" | "active" | "expiring" | "unpaid" | "expired";
 
 // ─── Form state ───────────────────────────────────────────────────────────────
 
+type FormCurrency = "syp" | "usd";
+
 interface FormState {
   memberName: string;
   phone: string;
@@ -107,7 +110,7 @@ interface FormState {
   offer: OfferType;
   startDate: string;
   amount: string;
-  paymentMethod: "cash" | "card" | "transfer";
+  currency: FormCurrency;
   paymentStatus: PaymentStatus;
   paidAmount: string;
 }
@@ -119,7 +122,7 @@ const DEFAULT_FORM: FormState = {
   offer: "none",
   startDate: TODAY,
   amount: String(PLAN_BASE_PRICES["1_month"]),
-  paymentMethod: "cash",
+  currency: "usd",
   paymentStatus: "paid",
   paidAmount: "",
 };
@@ -308,6 +311,7 @@ function Toast({ message, onDone }: { message: string; onDone: () => void }) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function SubscriptionsBlock() {
+  const { pushActivity } = useStore();
   const [subscriptions, setSubscriptions] = useState<Subscription[]>(SEED_SUBSCRIPTIONS);
   const [activeFilter, setActiveFilter] = useState<FilterTab>("all");
   const [sortMode, setSortMode] = useState<SortMode>("alpha");
@@ -405,7 +409,8 @@ export default function SubscriptionsBlock() {
       amount,
       paidAmount: paidAmt,
       paymentStatus: form.paymentStatus,
-      paymentMethod: form.paymentMethod,
+      paymentMethod: form.currency === "syp" ? "cash" : "transfer",
+      currency: form.currency,
       status: remaining > 0 ? "active" : "expired",
       createdAt: new Date().toISOString(),
       createdBy: "admin",
@@ -413,6 +418,18 @@ export default function SubscriptionsBlock() {
     };
 
     setSubscriptions((prev) => [sub, ...prev]);
+    const cur = sub.currency ?? "usd";
+    const amountLabel = cur === "syp"
+      ? `${sub.amount.toLocaleString("en-US")} ل.س`
+      : `${sub.amount}$`;
+    pushActivity({
+      type: "subscription",
+      description: `اشتراك جديد — ${sub.memberName} (${getPlanLabel(sub.planType)}) — ${amountLabel}`,
+      amountUSD: cur === "usd" ? sub.amount : undefined,
+      amountSYP: cur === "syp" ? sub.amount : undefined,
+      userId: sub.createdBy,
+      userName: sub.createdBy,
+    });
     setForm(DEFAULT_FORM);
     setFormOpen(false);
     setToastMessage("تم حفظ الاشتراك بنجاح");
@@ -595,24 +612,23 @@ export default function SubscriptionsBlock() {
                 </div>
               </div>
 
-              {/* Row 4: Payment method / Payment status */}
+              {/* Row 4: Currency / Payment status */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className={labelCls}>طريقة الدفع</label>
+                  <label className={labelCls}>العملة</label>
                   <div className="relative">
                     <select
                       className={selectCls}
-                      value={form.paymentMethod}
+                      value={form.currency}
                       onChange={(e) =>
                         setForm((p) => ({
                           ...p,
-                          paymentMethod: e.target.value as FormState["paymentMethod"],
+                          currency: e.target.value as FormCurrency,
                         }))
                       }
                     >
-                      <option value="cash">نقداً</option>
-                      <option value="card">بطاقة</option>
-                      <option value="transfer">تحويل</option>
+                      <option value="usd">دولار</option>
+                      <option value="syp">ليرة سورية</option>
                     </select>
                     <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-secondary">
                       <ChevronIcon open={false} />

@@ -11,18 +11,16 @@ import {
   CheckCircle,
 } from "lucide-react";
 import {
-  Expense,
   ExpenseCategory,
-  PaymentMethod,
+  Currency,
 } from "@/lib/types";
 import {
   formatCurrency,
   formatDate,
   getCategoryLabel,
-  getPaymentMethodLabel,
-  generateId,
 } from "@/lib/business-logic";
-import { EXPENSES } from "@/lib/mock-data";
+import { useStore } from "@/lib/store-context";
+import { useAuth } from "@/lib/auth-context";
 
 // ── Category badge colours ────────────────────────────────────────────────────
 
@@ -37,11 +35,14 @@ const CATEGORY_STYLES: Record<ExpenseCategory, string> = {
   miscellaneous: "bg-[#555555]/20 text-[#AAAAAA] border border-[#555555]/30",
 };
 
-const METHOD_STYLES: Record<PaymentMethod, string> = {
-  cash:     "bg-[#5CC45C]/12 text-[#5CC45C] border border-[#5CC45C]/25",
-  card:     "bg-[#F5C100]/12 text-[#F5C100] border border-[#F5C100]/25",
-  transfer: "bg-[#AAAAAA]/12 text-[#AAAAAA] border border-[#AAAAAA]/25",
-  other:    "bg-[#252525] text-[#777777] border border-[#555555]/30",
+const CURRENCY_STYLES: Record<Currency, string> = {
+  syp: "bg-[#5CC45C]/12 text-[#5CC45C] border border-[#5CC45C]/25",
+  usd: "bg-[#F5C100]/12 text-[#F5C100] border border-[#F5C100]/25",
+};
+
+const CURRENCY_LABEL: Record<Currency, string> = {
+  syp: "ل.س",
+  usd: "$",
 };
 
 const CURRENT_MONTH = "2026-04";
@@ -68,10 +69,10 @@ function CategoryBadge({ category }: { category: ExpenseCategory }) {
   );
 }
 
-function MethodBadge({ method }: { method: PaymentMethod }) {
+function CurrencyBadge({ currency }: { currency: Currency }) {
   return (
-    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-wide ${METHOD_STYLES[method]}`}>
-      {getPaymentMethodLabel(method)}
+    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-wide ${CURRENCY_STYLES[currency]}`}>
+      {CURRENCY_LABEL[currency]}
     </span>
   );
 }
@@ -79,26 +80,27 @@ function MethodBadge({ method }: { method: PaymentMethod }) {
 // ── Form state type ───────────────────────────────────────────────────────────
 
 interface ExpenseFormState {
-  description:   string;
-  category:      ExpenseCategory;
-  amount:        string;
-  paymentMethod: PaymentMethod;
-  date:          string;
+  description: string;
+  category:    ExpenseCategory;
+  amount:      string;
+  currency:    Currency;
+  date:        string;
 }
 
 const EMPTY_FORM: ExpenseFormState = {
-  description:   "",
-  category:      "miscellaneous",
-  amount:        "",
-  paymentMethod: "cash",
-  date:          TODAY_DATE,
+  description: "",
+  category:    "miscellaneous",
+  amount:      "",
+  currency:    "usd",
+  date:        TODAY_DATE,
 };
 
 // ── Main Component ─────────────────────────────────────────────────────────────
 
 export default function ExpensesBlock() {
   // ── State ──────────────────────────────────────────────────────────────────
-  const [expenses,    setExpenses]    = useState<Expense[]>(EXPENSES);
+  const { expenses, addExpense } = useStore();
+  const { user } = useAuth();
   const [formOpen,    setFormOpen]    = useState<boolean>(false);
   const [form,        setForm]        = useState<ExpenseFormState>(EMPTY_FORM);
   const [formError,   setFormError]   = useState<string>("");
@@ -137,7 +139,7 @@ export default function ExpensesBlock() {
     setFormError("");
     setFormSuccess(false);
 
-    const { description, category, amount, paymentMethod, date } = form;
+    const { description, category, amount, currency, date } = form;
 
     if (!description.trim()) {
       setFormError("الوصف مطلوب.");
@@ -155,19 +157,17 @@ export default function ExpensesBlock() {
 
     const now = new Date().toISOString();
 
-    const newExpense: Expense = {
-      id:            generateId(),
+    addExpense({
       description:   description.trim(),
       category,
       amount:        parsedAmount,
-      paymentMethod,
+      paymentMethod: currency === "syp" ? "cash" : "transfer",
+      currency,
       date,
-      createdAt:     now,
-      createdBy:     "s3", // active session user
-      lockedAt:      now,  // all saved expenses are immediately locked
-    };
+      createdBy:     user?.id ?? "s3",
+      lockedAt:      now,
+    });
 
-    setExpenses(prev => [newExpense, ...prev]);
     setForm(EMPTY_FORM);
     setFormSuccess(true);
     setTimeout(() => setFormSuccess(false), 2500);
@@ -260,20 +260,18 @@ export default function ExpensesBlock() {
               />
             </div>
 
-            {/* Payment Method */}
+            {/* Currency */}
             <div className="flex flex-col gap-1">
               <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">
-                طريقة الدفع
+                العملة
               </label>
               <select
-                value={form.paymentMethod}
-                onChange={e => updateForm("paymentMethod", e.target.value)}
+                value={form.currency}
+                onChange={e => updateForm("currency", e.target.value)}
                 className="bg-[#0A0A0A] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] font-body focus:outline-none focus:border-[#F5C100]/50 transition-colors"
               >
-                <option value="cash">نقدي</option>
-                <option value="card">بطاقة</option>
-                <option value="transfer">تحويل</option>
-                <option value="other">أخرى</option>
+                <option value="usd">دولار</option>
+                <option value="syp">ليرة سورية</option>
               </select>
             </div>
 
@@ -334,7 +332,7 @@ export default function ExpensesBlock() {
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-[#252525] bg-[#111111]">
-              {["التاريخ", "الوصف", "التصنيف", "المبلغ ($)", "الطريقة", "بواسطة", ""].map((h, i) => (
+              {["التاريخ", "الوصف", "التصنيف", "المبلغ", "العملة", "بواسطة", ""].map((h, i) => (
                 <th
                   key={i}
                   className="px-4 py-2 text-left font-mono text-[10px] uppercase tracking-widest text-[#555555] whitespace-nowrap"
@@ -377,7 +375,7 @@ export default function ExpensesBlock() {
                   </td>
                   {/* Method */}
                   <td className="px-4 py-2.5">
-                    <MethodBadge method={expense.paymentMethod} />
+                    <CurrencyBadge currency={(expense.currency as Currency) ?? "usd"} />
                   </td>
                   {/* Recorded By */}
                   <td className="px-4 py-2.5 text-[10px] text-[#777777] whitespace-nowrap">

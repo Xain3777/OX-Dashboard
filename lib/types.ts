@@ -48,6 +48,7 @@ export interface Subscription {
   paidAmount: number;
   paymentStatus: PaymentStatus;
   paymentMethod: PaymentMethod;
+  currency?: Currency;
   status: SubStatus;
   createdAt: string;
   createdBy: string;
@@ -82,6 +83,7 @@ export interface Sale {
   unitPrice: number;
   total: number;
   paymentMethod: PaymentMethod;
+  currency?: Currency;
   createdAt: string;
   createdBy: string;
   isReversal: boolean;
@@ -102,12 +104,15 @@ export type ExpenseCategory =
 
 export type PaymentMethod = "cash" | "card" | "transfer" | "other";
 
+export type Currency = "syp" | "usd";
+
 export interface Expense {
   id: string;
   description: string;
   category: ExpenseCategory;
   amount: number;
   paymentMethod: PaymentMethod;
+  currency?: Currency;
   date: string;
   createdAt: string;
   createdBy: string;
@@ -146,6 +151,8 @@ export type AuditAction =
   | "discrepancy_resolved"
   | "product_added"
   | "stock_adjusted"
+  | "inbody_session"
+  | "price_edit"
   | "monthly_locked";
 
 export interface AuditEntry {

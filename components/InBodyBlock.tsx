@@ -8,82 +8,61 @@ import {
   AlertTriangle,
   Users,
 } from "lucide-react";
-import { formatCurrency, generateId } from "@/lib/business-logic";
-import type { PaymentMethod } from "@/lib/types";
+import { formatCurrency } from "@/lib/business-logic";
 import { MEMBERS } from "@/lib/mock-data";
 import { useAuth } from "@/lib/auth-context";
+import { useStore, type InBodySessionType } from "@/lib/store-context";
 
-interface InBodySession {
-  id: string;
-  memberId: string;
-  memberName: string;
-  sessionType: "single" | "package_5" | "package_10";
-  price: number;
-  paymentMethod: PaymentMethod;
-  createdAt: string;
-  createdBy: string;
+type Currency = "syp" | "usd";
+
+const SESSION_LABELS: Record<InBodySessionType, string> = {
+  single: "جلسة واحدة",
+  package_5: "باقة 5 جلسات",
+  package_10: "باقة 10 جلسات",
+};
+
+const CURRENCY_STYLES: Record<Currency, string> = {
+  syp: "bg-[#5CC45C]/12 text-[#5CC45C] border border-[#5CC45C]/25",
+  usd: "bg-[#F5C100]/12 text-[#F5C100] border border-[#F5C100]/25",
+};
+
+const CURRENCY_LABELS: Record<Currency, string> = {
+  syp: "ل.س",
+  usd: "$",
+};
+
+function formatPrice(amount: number, currency: Currency): string {
+  if (currency === "syp") {
+    return `${amount.toLocaleString("en-US")} ل.س`;
+  }
+  return `$${formatCurrency(amount)}`;
 }
 
-const SESSION_PRICES: Record<string, { label: string; price: number }> = {
-  single: { label: "جلسة واحدة", price: 15 },
-  package_5: { label: "باقة 5 جلسات", price: 60 },
-  package_10: { label: "باقة 10 جلسات", price: 100 },
-};
-
-const METHOD_STYLES: Record<PaymentMethod, string> = {
-  cash: "bg-[#5CC45C]/12 text-[#5CC45C] border border-[#5CC45C]/25",
-  card: "bg-[#F5C100]/12 text-[#F5C100] border border-[#F5C100]/25",
-  transfer: "bg-[#AAAAAA]/12 text-[#AAAAAA] border border-[#AAAAAA]/25",
-  other: "bg-[#252525] text-[#777777] border border-[#555555]/30",
-};
-
-const METHOD_LABELS: Record<PaymentMethod, string> = {
-  cash: "نقدي",
-  card: "بطاقة",
-  transfer: "تحويل",
-  other: "أخرى",
-};
-
-const INITIAL_SESSIONS: InBodySession[] = [
-  {
-    id: "ib1",
-    memberId: "m1",
-    memberName: "أحمد الراشد",
-    sessionType: "package_5",
-    price: 60,
-    paymentMethod: "cash",
-    createdAt: "2026-04-14T09:30:00Z",
-    createdBy: "s3",
-  },
-  {
-    id: "ib2",
-    memberId: "m3",
-    memberName: "خالد حسن",
-    sessionType: "single",
-    price: 15,
-    paymentMethod: "cash",
-    createdAt: "2026-04-14T11:00:00Z",
-    createdBy: "s4",
-  },
-];
-
 export default function InBodyBlock() {
-  const { isManager } = useAuth();
-  const [sessions, setSessions] = useState<InBodySession[]>(INITIAL_SESSIONS);
+  const { user } = useAuth();
+  const {
+    inBodySessions,
+    inBodyPrices,
+    addInBodySession,
+    exchangeRate,
+  } = useStore();
 
   // Form state
   const [memberId, setMemberId] = useState("");
-  const [sessionType, setSessionType] = useState<string>("single");
-  const [payMethod, setPayMethod] = useState<PaymentMethod>("cash");
+  const [sessionType, setSessionType] = useState<InBodySessionType>("single");
+  const [currency, setCurrency] = useState<Currency>("syp");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
 
-  const todayTotal = useMemo(
-    () => sessions.reduce((sum, s) => sum + s.price, 0),
-    [sessions]
-  );
+  const priceSYP = inBodyPrices[sessionType];
+  const displayPrice = currency === "syp"
+    ? priceSYP
+    : Math.round((priceSYP / exchangeRate) * 100) / 100;
 
-  const selected = SESSION_PRICES[sessionType];
+  const todayTotalSYP = useMemo(
+    () => inBodySessions.reduce((sum, s) => sum + s.priceSYP, 0),
+    [inBodySessions]
+  );
 
   function handleRecord() {
     setError("");
@@ -95,18 +74,18 @@ export default function InBodyBlock() {
       return;
     }
 
-    const newSession: InBodySession = {
-      id: generateId(),
+    addInBodySession({
+      memberType: "gym_member",
       memberId: member.id,
       memberName: member.name,
-      sessionType: sessionType as InBodySession["sessionType"],
-      price: selected.price,
-      paymentMethod: payMethod,
-      createdAt: new Date().toISOString(),
-      createdBy: "s3",
-    };
+      sessionType,
+      priceSYP,
+      currency,
+      paymentMethod: currency === "syp" ? "cash" : "transfer",
+      createdBy: user?.id ?? "s3",
+      createdByName: user?.name ?? "موظف",
+    });
 
-    setSessions((prev) => [...prev, newSession]);
     setMemberId("");
     setSuccess(true);
     setTimeout(() => setSuccess(false), 2500);
@@ -122,7 +101,7 @@ export default function InBodyBlock() {
             جهاز InBody
           </h2>
           <span className="px-2 py-0.5 bg-[#252525] border border-[#555555]/40 rounded text-[10px] font-mono text-[#AAAAAA]">
-            {sessions.length} جلسة
+            {inBodySessions.length} جلسة
           </span>
         </div>
       </div>
@@ -134,27 +113,33 @@ export default function InBodyBlock() {
         </p>
       </div>
       <div className="px-5 grid grid-cols-3 gap-3 pb-4">
-        {Object.entries(SESSION_PRICES).map(([key, { label, price }]) => (
-          <div
-            key={key}
-            className={`p-3 border rounded-sm text-center transition-colors cursor-pointer ${
-              sessionType === key
-                ? "border-[#F5C100]/50 bg-[#F5C100]/5"
-                : "border-[#252525] bg-[#111111] hover:border-[#555555]"
-            }`}
-            onClick={() => setSessionType(key)}
-          >
-            <p className="font-body text-xs text-[#AAAAAA]">{label}</p>
-            <p className="font-display text-xl text-[#F5C100] tracking-wider mt-1">
-              {formatCurrency(price)}$
-            </p>
-            {key !== "single" && (
-              <p className="font-mono text-[10px] text-[#555555] mt-0.5">
-                {formatCurrency(Math.round(price / (key === "package_5" ? 5 : 10)))}$/جلسة
+        {(Object.keys(SESSION_LABELS) as InBodySessionType[]).map((key) => {
+          const price = inBodyPrices[key];
+          const perSession = key === "package_5" ? Math.round(price / 5)
+            : key === "package_10" ? Math.round(price / 10) : null;
+          return (
+            <div
+              key={key}
+              className={`p-3 border rounded-sm text-center transition-colors cursor-pointer ${
+                sessionType === key
+                  ? "border-[#F5C100]/50 bg-[#F5C100]/5"
+                  : "border-[#252525] bg-[#111111] hover:border-[#555555]"
+              }`}
+              onClick={() => setSessionType(key)}
+            >
+              <p className="font-body text-xs text-[#AAAAAA]">{SESSION_LABELS[key]}</p>
+              <p className="font-display text-xl text-[#F5C100] tracking-wider mt-1">
+                {price.toLocaleString("en-US")}
+                <span className="text-xs text-[#AAAAAA] mr-1">ل.س</span>
               </p>
-            )}
-          </div>
-        ))}
+              {perSession != null && (
+                <p className="font-mono text-[10px] text-[#555555] mt-0.5">
+                  {perSession.toLocaleString("en-US")} ل.س/جلسة
+                </p>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {/* Today's sessions */}
@@ -163,7 +148,7 @@ export default function InBodyBlock() {
           جلسات اليوم
         </p>
         <span className="font-mono text-[10px] text-[#555555]">
-          {sessions.length} جلسة
+          {inBodySessions.length} جلسة
         </span>
       </div>
 
@@ -171,7 +156,7 @@ export default function InBodyBlock() {
         <table className="w-full text-xs">
           <thead>
             <tr className="border-y border-[#252525] bg-[#111111]">
-              {["العضو", "النوع", "السعر", "الطريقة"].map((h) => (
+              {["العضو", "النوع", "السعر", "العملة"].map((h) => (
                 <th
                   key={h}
                   className="px-4 py-2 text-left font-mono text-[10px] uppercase tracking-widest text-[#555555] whitespace-nowrap"
@@ -182,7 +167,7 @@ export default function InBodyBlock() {
             </tr>
           </thead>
           <tbody>
-            {sessions.length === 0 ? (
+            {inBodySessions.length === 0 ? (
               <tr>
                 <td
                   colSpan={4}
@@ -192,7 +177,7 @@ export default function InBodyBlock() {
                 </td>
               </tr>
             ) : (
-              sessions.map((s) => (
+              inBodySessions.map((s) => (
                 <tr
                   key={s.id}
                   className="border-b border-[#252525]/60 hover:bg-[#252525]/30 transition-colors"
@@ -204,16 +189,21 @@ export default function InBodyBlock() {
                     </div>
                   </td>
                   <td className="px-4 py-2.5 font-mono text-[#AAAAAA]">
-                    {SESSION_PRICES[s.sessionType]?.label}
+                    {SESSION_LABELS[s.sessionType ?? "single"]}
                   </td>
                   <td className="px-4 py-2.5 font-mono tabular-nums text-[#F0EDE6]">
-                    {formatCurrency(s.price)}$
+                    {formatPrice(
+                      s.currency === "usd"
+                        ? Math.round((s.priceSYP / exchangeRate) * 100) / 100
+                        : s.priceSYP,
+                      (s.currency as Currency) ?? "syp"
+                    )}
                   </td>
                   <td className="px-4 py-2.5">
                     <span
-                      className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-wide ${METHOD_STYLES[s.paymentMethod]}`}
+                      className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-wide ${CURRENCY_STYLES[(s.currency as Currency) ?? "syp"]}`}
                     >
-                      {METHOD_LABELS[s.paymentMethod]}
+                      {CURRENCY_LABELS[(s.currency as Currency) ?? "syp"]}
                     </span>
                   </td>
                 </tr>
@@ -229,7 +219,7 @@ export default function InBodyBlock() {
           إجمالي اليوم
         </span>
         <span className="font-mono tabular-nums text-sm font-medium text-[#F5C100] glow-gold-sm">
-          {formatCurrency(todayTotal)}$
+          {todayTotalSYP.toLocaleString("en-US")} ل.س
         </span>
       </div>
 
@@ -265,33 +255,30 @@ export default function InBodyBlock() {
             </select>
           </div>
 
-          {/* Payment method */}
-          <div className="flex flex-col gap-1 w-28">
+          {/* Currency */}
+          <div className="flex flex-col gap-1 w-32">
             <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">
-              الطريقة
+              العملة
             </label>
             <select
-              value={payMethod}
-              onChange={(e) => setPayMethod(e.target.value as PaymentMethod)}
+              value={currency}
+              onChange={(e) => setCurrency(e.target.value as Currency)}
               className="bg-[#111111] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] font-body focus:outline-none focus:border-[#F5C100]/50 transition-colors"
             >
-              <option value="cash">نقدي</option>
-              <option value="card">بطاقة</option>
-              <option value="transfer">تحويل</option>
+              <option value="syp">ليرة سورية</option>
+              <option value="usd">دولار</option>
             </select>
           </div>
 
           {/* Price preview */}
-          {selected && (
-            <div className="flex flex-col gap-1">
-              <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">
-                السعر
-              </label>
-              <div className="px-3 py-2 bg-[#0A0A0A] border border-[#252525]/60 rounded-sm font-mono tabular-nums text-xs text-[#F5C100]">
-                {formatCurrency(selected.price)}$
-              </div>
+          <div className="flex flex-col gap-1">
+            <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">
+              السعر
+            </label>
+            <div className="px-3 py-2 bg-[#0A0A0A] border border-[#252525]/60 rounded-sm font-mono tabular-nums text-xs text-[#F5C100] whitespace-nowrap">
+              {formatPrice(displayPrice, currency)}
             </div>
-          )}
+          </div>
 
           {/* Submit */}
           <button

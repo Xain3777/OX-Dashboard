@@ -15,13 +15,12 @@ import {
   Product,
   Sale,
   ProductCategory,
-  PaymentMethod,
+  Currency,
 } from "@/lib/types";
 import {
   formatCurrency,
   formatTime,
   getProductCategoryLabel,
-  getPaymentMethodLabel,
   isLowStock,
   isOutOfStock,
 } from "@/lib/business-logic";
@@ -41,12 +40,24 @@ const CATEGORY_STYLES: Record<ProductCategory, string> = {
   other:        "bg-[#252525] text-[#777777] border border-[#555555]/30",
 };
 
-const METHOD_STYLES: Record<PaymentMethod, string> = {
-  cash:     "bg-[#5CC45C]/12 text-[#5CC45C] border border-[#5CC45C]/25",
-  card:     "bg-[#F5C100]/12 text-[#F5C100] border border-[#F5C100]/25",
-  transfer: "bg-[#AAAAAA]/12 text-[#AAAAAA] border border-[#AAAAAA]/25",
-  other:    "bg-[#252525] text-[#777777] border border-[#555555]/30",
+const CURRENCY_STYLES: Record<Currency, string> = {
+  syp: "bg-[#5CC45C]/12 text-[#5CC45C] border border-[#5CC45C]/25",
+  usd: "bg-[#F5C100]/12 text-[#F5C100] border border-[#F5C100]/25",
 };
+
+const CURRENCY_LABEL: Record<Currency, string> = {
+  syp: "ل.س",
+  usd: "$",
+};
+
+const CATEGORY_GROUP_ORDER: ProductCategory[] = [
+  "supplements",
+  "protein_cups",
+  "bca_drinks",
+  "meals",
+  "wearables",
+  "other",
+];
 
 const TODAY = new Date().toISOString().slice(0, 10);
 
@@ -62,10 +73,10 @@ function CategoryBadge({ category }: { category: ProductCategory }) {
   );
 }
 
-function MethodBadge({ method }: { method: PaymentMethod }) {
+function CurrencyBadge({ currency }: { currency: Currency }) {
   return (
-    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-wide ${METHOD_STYLES[method]}`}>
-      {getPaymentMethodLabel(method)}
+    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-wide ${CURRENCY_STYLES[currency]}`}>
+      {CURRENCY_LABEL[currency]}
     </span>
   );
 }
@@ -189,7 +200,7 @@ export default function StoreBlock() {
   // Quick-sale form state
   const [saleProductId, setSaleProductId] = useState<string>(products[0]?.id ?? "");
   const [saleQty,       setSaleQty]       = useState<number>(1);
-  const [saleMethod,    setSaleMethod]    = useState<PaymentMethod>("cash");
+  const [saleCurrency,  setSaleCurrency]  = useState<Currency>("usd");
   const [saleError,     setSaleError]     = useState<string>("");
   const [saleSuccess,   setSaleSuccess]   = useState<boolean>(false);
 
@@ -244,7 +255,8 @@ export default function StoreBlock() {
       quantity:      saleQty,
       unitPrice:     product.price,
       total:         product.price * saleQty,
-      paymentMethod: saleMethod,
+      paymentMethod: saleCurrency === "syp" ? "cash" : "transfer",
+      currency:      saleCurrency,
       createdBy:     user?.id ?? "s3",
       isReversal:    false,
     });
@@ -253,6 +265,15 @@ export default function StoreBlock() {
     setSaleSuccess(true);
     setTimeout(() => setSaleSuccess(false), 2500);
   }
+
+  // Group products by category for the sale select
+  const productsByCategory = useMemo(() => {
+    const groups: Partial<Record<ProductCategory, Product[]>> = {};
+    for (const p of products) {
+      (groups[p.category] ||= []).push(p);
+    }
+    return groups;
+  }, [products]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -274,6 +295,102 @@ export default function StoreBlock() {
           )}
         </div>
         <TrendingUp size={13} className="text-[#555555]" />
+      </div>
+
+      {/* ════════════ QUICK SALE FORM (placed first) ════════════ */}
+      <div className="px-5 py-4 border-b border-[#252525] bg-[#111111]/40">
+        <div className="flex items-center gap-2 mb-3">
+          <ShoppingCart size={12} className="text-[#F5C100]" />
+          <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">تسجيل بيع</p>
+          <BarcodeScanner
+            onItemFound={(item: CatalogItem) => {
+              const match = products.find(p => p.name === item.name || p.id === item.id);
+              if (match) { setSaleProductId(match.id); setSaleQty(1); setSaleError(""); }
+            }}
+          />
+        </div>
+
+        <div className="flex flex-wrap items-end gap-2">
+          {/* Product select — grouped by category */}
+          <div className="flex flex-col gap-1 min-w-[220px] flex-1">
+            <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">المنتج</label>
+            <select
+              value={saleProductId}
+              onChange={e => { setSaleProductId(e.target.value); setSaleError(""); }}
+              className="bg-[#111111] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] font-body focus:outline-none focus:border-[#F5C100]/50 transition-colors"
+            >
+              {CATEGORY_GROUP_ORDER.map(cat => {
+                const list = productsByCategory[cat];
+                if (!list || list.length === 0) return null;
+                return (
+                  <optgroup key={cat} label={`— ${getProductCategoryLabel(cat)} —`}>
+                    {list.map(p => (
+                      <option key={p.id} value={p.id} disabled={isOutOfStock(p.stock)}>
+                        {p.name}
+                        {isOutOfStock(p.stock) ? " — نفد المخزون" : isLowStock(p.stock, p.lowStockThreshold) ? ` (${p.stock} متبقي)` : ""}
+                        {" · "}{p.price}{"$"}
+                      </option>
+                    ))}
+                  </optgroup>
+                );
+              })}
+            </select>
+          </div>
+
+          {/* Quantity */}
+          <div className="flex flex-col gap-1 w-20">
+            <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">الكمية</label>
+            <input
+              type="number" min={1} max={selectedProduct?.stock ?? 999}
+              value={saleQty}
+              onChange={e => { setSaleQty(Number(e.target.value)); setSaleError(""); }}
+              className="bg-[#111111] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] font-mono tabular-nums focus:outline-none focus:border-[#F5C100]/50 transition-colors text-center"
+            />
+          </div>
+
+          {/* Currency */}
+          <div className="flex flex-col gap-1 w-32">
+            <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">العملة</label>
+            <select
+              value={saleCurrency}
+              onChange={e => setSaleCurrency(e.target.value as Currency)}
+              className="bg-[#111111] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] font-body focus:outline-none focus:border-[#F5C100]/50 transition-colors"
+            >
+              <option value="usd">دولار</option>
+              <option value="syp">ليرة سورية</option>
+            </select>
+          </div>
+
+          {/* Total preview */}
+          {selectedProduct && saleQty > 0 && (
+            <div className="flex flex-col gap-1">
+              <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">الإجمالي</label>
+              <div className="px-3 py-2 bg-[#0A0A0A] border border-[#252525]/60 rounded-sm font-mono tabular-nums text-xs text-[#F5C100] whitespace-nowrap">
+                {formatCurrency(selectedProduct.price * saleQty)}$
+              </div>
+            </div>
+          )}
+
+          {/* Submit */}
+          <button
+            onClick={handleRecordSale}
+            className="flex items-center gap-1.5 px-4 py-2 bg-[#F5C100] hover:bg-[#FFD740] active:bg-[#C49A00] text-[#0A0A0A] font-display tracking-widest text-xs uppercase rounded-sm transition-colors clip-corner-sm shrink-0 self-end cursor-pointer"
+          >
+            <ShoppingCart size={12} />
+            تسجيل بيع
+          </button>
+        </div>
+
+        {saleError && (
+          <div className="mt-2.5 flex items-center gap-1.5 text-[11px] font-mono text-[#FF3333]">
+            <AlertTriangle size={11} />{saleError}
+          </div>
+        )}
+        {saleSuccess && (
+          <div className="mt-2.5 flex items-center gap-1.5 text-[11px] font-mono text-[#5CC45C]">
+            <Check size={11} />تم تسجيل البيع بنجاح.
+          </div>
+        )}
       </div>
 
       {/* ════════════ A) INVENTORY TABLE ════════════ */}
@@ -405,7 +522,7 @@ export default function StoreBlock() {
         <table className="w-full text-xs">
           <thead>
             <tr className="border-y border-[#252525] bg-[#111111]">
-              {["الوقت", "المنتج", "الكمية", "سعر الوحدة", "الإجمالي", "الطريقة", "الموظف"].map(h => (
+              {["الوقت", "المنتج", "الكمية", "سعر الوحدة", "الإجمالي", "العملة", "الموظف"].map(h => (
                 <th key={h} className="px-4 py-2 text-right font-mono text-[10px] uppercase tracking-widest text-[#555555] whitespace-nowrap">
                   {h}
                 </th>
@@ -445,7 +562,7 @@ export default function StoreBlock() {
                         : <span className="text-[#F0EDE6]">{formatCurrency(sale.total)}</span>}
                     </td>
                     <td className="px-4 py-2.5 text-right">
-                      <MethodBadge method={sale.paymentMethod} />
+                      <CurrencyBadge currency={(sale.currency as Currency) ?? "usd"} />
                     </td>
                     <td className="px-4 py-2.5 text-[#777777] whitespace-nowrap text-right">
                       <div className="flex items-center gap-1.5 justify-end">
@@ -471,95 +588,6 @@ export default function StoreBlock() {
         <span className="font-mono tabular-nums text-sm font-medium text-[#F5C100] glow-gold-sm">
           {formatCurrency(todayTotal)}$
         </span>
-      </div>
-
-      {/* ════════════ QUICK SALE FORM ════════════ */}
-      <div className="border-t border-[#252525] px-5 py-4">
-        <div className="flex items-center gap-2 mb-3">
-          <ShoppingCart size={12} className="text-[#F5C100]" />
-          <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">بيع سريع</p>
-          <BarcodeScanner
-            onItemFound={(item: CatalogItem) => {
-              const match = products.find(p => p.name === item.name || p.id === item.id);
-              if (match) { setSaleProductId(match.id); setSaleQty(1); setSaleError(""); }
-            }}
-          />
-        </div>
-
-        <div className="flex flex-wrap items-end gap-2">
-          {/* Product select */}
-          <div className="flex flex-col gap-1 min-w-[180px] flex-1">
-            <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">المنتج</label>
-            <select
-              value={saleProductId}
-              onChange={e => { setSaleProductId(e.target.value); setSaleError(""); }}
-              className="bg-[#111111] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] font-body focus:outline-none focus:border-[#F5C100]/50 transition-colors"
-            >
-              {products.map(p => (
-                <option key={p.id} value={p.id} disabled={isOutOfStock(p.stock)}>
-                  {p.name}
-                  {isOutOfStock(p.stock) ? " — نفد المخزون" : isLowStock(p.stock, p.lowStockThreshold) ? ` (${p.stock} متبقي)` : ""}
-                  {" · "}{p.price}{"$"}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Quantity */}
-          <div className="flex flex-col gap-1 w-20">
-            <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">الكمية</label>
-            <input
-              type="number" min={1} max={selectedProduct?.stock ?? 999}
-              value={saleQty}
-              onChange={e => { setSaleQty(Number(e.target.value)); setSaleError(""); }}
-              className="bg-[#111111] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] font-mono tabular-nums focus:outline-none focus:border-[#F5C100]/50 transition-colors text-center"
-            />
-          </div>
-
-          {/* Payment method */}
-          <div className="flex flex-col gap-1 w-28">
-            <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">الطريقة</label>
-            <select
-              value={saleMethod}
-              onChange={e => setSaleMethod(e.target.value as PaymentMethod)}
-              className="bg-[#111111] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] font-body focus:outline-none focus:border-[#F5C100]/50 transition-colors"
-            >
-              <option value="cash">نقدي</option>
-              <option value="card">بطاقة</option>
-              <option value="transfer">تحويل</option>
-            </select>
-          </div>
-
-          {/* Total preview */}
-          {selectedProduct && saleQty > 0 && (
-            <div className="flex flex-col gap-1">
-              <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">الإجمالي</label>
-              <div className="px-3 py-2 bg-[#0A0A0A] border border-[#252525]/60 rounded-sm font-mono tabular-nums text-xs text-[#F5C100]">
-                {formatCurrency(selectedProduct.price * saleQty)}$
-              </div>
-            </div>
-          )}
-
-          {/* Submit */}
-          <button
-            onClick={handleRecordSale}
-            className="flex items-center gap-1.5 px-4 py-2 bg-[#F5C100] hover:bg-[#FFD740] active:bg-[#C49A00] text-[#0A0A0A] font-display tracking-widest text-xs uppercase rounded-sm transition-colors clip-corner-sm shrink-0 self-end cursor-pointer"
-          >
-            <ShoppingCart size={12} />
-            تسجيل بيع
-          </button>
-        </div>
-
-        {saleError && (
-          <div className="mt-2.5 flex items-center gap-1.5 text-[11px] font-mono text-[#FF3333]">
-            <AlertTriangle size={11} />{saleError}
-          </div>
-        )}
-        {saleSuccess && (
-          <div className="mt-2.5 flex items-center gap-1.5 text-[11px] font-mono text-[#5CC45C]">
-            <Check size={11} />تم تسجيل البيع بنجاح.
-          </div>
-        )}
       </div>
 
       {/* Live activity feed */}
