@@ -20,6 +20,8 @@ import SubscriptionsBlock from "@/components/SubscriptionsBlock";
 import StoreBlock from "@/components/StoreBlock";
 import ExpensesBlock from "@/components/ExpensesBlock";
 import ReconciliationBlock from "@/components/ReconciliationBlock";
+import CashSessionBlock from "@/components/CashSessionBlock";
+import ManagerReportBlock from "@/components/ManagerReportBlock";
 import WeeklyReview from "@/components/WeeklyReview";
 import MonthlyReview from "@/components/MonthlyReview";
 import AuditLog from "@/components/AuditLog";
@@ -283,14 +285,12 @@ function activityFeedToAuditEntries(feed: ActivityEntry[]): AuditEntry[] {
 
 function DashboardContent() {
   const { exchangeRate, openRateModal } = useCurrency();
-  const { user, logout, isManager } = useAuth();
+  const { user, signOut, isManager } = useAuth();
   const store = useStore();
 
   const [showLogoutModal, setShowLogoutModal] = useState(false);
 
-  const roleLabel =
-    user?.role === "owner" ? "المالك" :
-    user?.role === "manager" ? "مدير" : "موظف استقبال";
+  const roleLabel = user?.role === "manager" ? "مدير" : "موظف استقبال";
 
   const [collapsed, setCollapsed] = useState<Record<Section, boolean>>({
     alerts: false,
@@ -312,8 +312,8 @@ function DashboardContent() {
 
   const handleLogoutConfirm = useCallback(() => {
     setShowLogoutModal(false);
-    logout();
-  }, [logout]);
+    void signOut();
+  }, [signOut]);
 
   return (
     <div className="min-h-screen bg-void" dir="rtl">
@@ -365,7 +365,7 @@ function DashboardContent() {
 
           <div className="flex items-center gap-2 px-3 py-1.5 bg-iron border border-gunmetal">
             <Shield size={14} className="text-gold-dim" />
-            <span className="font-mono text-xs text-ghost">{user?.name}</span>
+            <span className="font-mono text-xs text-ghost">{user?.displayName}</span>
             <span className="font-mono text-[10px] text-slate">{roleLabel}</span>
           </div>
 
@@ -391,6 +391,12 @@ function DashboardContent() {
           kpi={isManager ? KPI : { ...KPI, monthlyProfit: 0 }}
           hideProfit={!isManager}
         />
+
+        {/* Cash session — top of page for the active user */}
+        <CashSessionBlock />
+
+        {/* Manager-only: per-reception report */}
+        {isManager && <ManagerReportBlock />}
 
         {/* نشاط مباشر — manager only */}
         {isManager && (

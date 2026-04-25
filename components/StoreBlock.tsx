@@ -27,6 +27,7 @@ import {
 import { STAFF } from "@/lib/mock-data";
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
+import { pushSale } from "@/lib/supabase/intake";
 import BarcodeScanner, { type CatalogItem } from "@/components/BarcodeScanner";
 
 // ── Category badge colours ────────────────────────────────────────────────────
@@ -260,6 +261,18 @@ export default function StoreBlock() {
       createdBy:     user?.id ?? "s3",
       isReversal:    false,
     });
+
+    if (user) {
+      void pushSale({
+        user: { id: user.id, displayName: user.displayName },
+        productName: product.name,
+        quantity: saleQty,
+        unitPrice: product.price,
+        total: product.price * saleQty,
+        currency: saleCurrency,
+        source: product.category === "meals" ? "kitchen" : "store",
+      });
+    }
 
     setSaleQty(1);
     setSaleSuccess(true);

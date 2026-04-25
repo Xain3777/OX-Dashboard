@@ -12,6 +12,7 @@ import { formatCurrency } from "@/lib/business-logic";
 import { MEMBERS } from "@/lib/mock-data";
 import { useAuth } from "@/lib/auth-context";
 import { useStore, type InBodySessionType } from "@/lib/store-context";
+import { pushInBody } from "@/lib/supabase/intake";
 
 type Currency = "syp" | "usd";
 
@@ -83,8 +84,19 @@ export default function InBodyBlock() {
       currency,
       paymentMethod: currency === "syp" ? "cash" : "transfer",
       createdBy: user?.id ?? "s3",
-      createdByName: user?.name ?? "موظف",
+      createdByName: user?.displayName ?? "موظف",
     });
+
+    // shadow-write to Supabase if signed in
+    if (user) {
+      void pushInBody({
+        user: { id: user.id, displayName: user.displayName },
+        memberName: member.name,
+        sessionType,
+        amount: currency === "syp" ? priceSYP : displayPrice,
+        currency,
+      });
+    }
 
     setMemberId("");
     setSuccess(true);
