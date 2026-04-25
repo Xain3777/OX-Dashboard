@@ -250,7 +250,7 @@ export async function pushSale(opts: {
 export async function pushInBody(opts: {
   user: CurrentUser;
   memberName: string;
-  sessionType: "single" | "package_5" | "package_10";
+  memberType: "gym_member" | "non_member";
   amount: number;
   currency: Currency;
   exchangeRate: number;
@@ -269,7 +269,7 @@ export async function pushInBody(opts: {
       .from("inbody_sessions")
       .insert({
         member_name: opts.memberName,
-        session_type: opts.sessionType,
+        session_type: opts.memberType,
         amount: opts.amount,
         currency: opts.currency,
         exchange_rate: opts.exchangeRate,

@@ -17,14 +17,14 @@ import { generateId } from "./business-logic";
 
 export type InBodyMemberType = "gym_member" | "non_member";
 
-export type InBodySessionType = "single" | "package_5" | "package_10";
+export type InBodySessionType = "single" | "package_5" | "package_10" | "gym_member" | "non_member";
 
 export interface InBodySession {
   id: string;
   memberType: InBodyMemberType;
-  memberId?: string;   // only for gym_member
+  memberId?: string;
   memberName: string;
-  sessionType: InBodySessionType;
+  sessionType?: InBodySessionType;
   priceSYP: number;
   currency: "usd" | "syp";
   paymentMethod: PaymentMethod;
@@ -69,7 +69,7 @@ export interface StoreState {
   inBodySessions: InBodySession[];
   expenses: Expense[];
   activityFeed: ActivityEntry[];
-  inBodyPrices: { single: number; package_5: number; package_10: number }; // SYP
+  inBodyPrices: { member: number; nonMember: number }; // SYP
   expenseRates: ExpenseRate[];
   exchangeRate: number; // 1 USD = X SYP
 }
@@ -87,7 +87,7 @@ export interface StoreContextType extends StoreState {
   addSubscription: (sub: Omit<Subscription, "id" | "createdAt">) => void;
   // InBody
   addInBodySession: (session: Omit<InBodySession, "id" | "createdAt">) => void;
-  updateInBodyPrices: (single: number, package_5: number, package_10: number) => void;
+  updateInBodyPrices: (member: number, nonMember: number) => void;
   // Expenses
   addExpense: (expense: Omit<Expense, "id" | "createdAt">) => void;
   // Rates
@@ -152,7 +152,7 @@ const INITIAL_STATE: StoreState = {
   inBodySessions: INITIAL_SESSIONS,
   expenses: EXPENSES,
   activityFeed: [],
-  inBodyPrices: { single: 60000, package_5: 250000, package_10: 450000 },
+  inBodyPrices: { member: 60000, nonMember: 100000 },
   expenseRates: INITIAL_RATES,
   exchangeRate: 13200,
 };
@@ -353,10 +353,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   );
 
   const updateInBodyPrices = useCallback(
-    (single: number, package_5: number, package_10: number) => {
+    (member: number, nonMember: number) => {
       setState((prev) => ({
         ...prev,
-        inBodyPrices: { single, package_5, package_10 },
+        inBodyPrices: { member, nonMember },
       }));
     },
     [setState]

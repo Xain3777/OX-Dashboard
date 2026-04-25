@@ -4,8 +4,8 @@ import {
 } from "./types";
 
 export const STAFF: StaffUser[] = [
-  { id: "s1", name: "أدهم (المالك)", role: "owner", active: true },
-  { id: "s2", name: "حيدر", role: "manager", active: true },
+  { id: "s1", name: "كوتش ادهم", role: "owner", active: true },
+  { id: "s2", name: "محمد", role: "manager", active: true },
   { id: "s3", name: "لينا", role: "receptionist", active: true },
   { id: "s4", name: "يوسف", role: "receptionist", active: true },
 ];
@@ -109,8 +109,8 @@ export const EXPENSES: Expense[] = [
   { id: "e3", description: "استبدال حزام جهاز المشي", category: "maintenance", amount: 320, paymentMethod: "transfer", date: "2026-04-12", createdAt: "2026-04-12T14:00:00Z", createdBy: "s2" },
   { id: "e4", description: "بدل غداء الموظفين", category: "miscellaneous", amount: 60, paymentMethod: "cash", date: "2026-04-14", createdAt: "2026-04-14T12:30:00Z", createdBy: "s3" },
   { id: "e5", description: "إيجار النادي (أبريل)", category: "rent", amount: 5000, paymentMethod: "transfer", date: "2026-04-01", createdAt: "2026-04-01T07:00:00Z", createdBy: "s1" },
-  { id: "e6", description: "راتب المدرب — علي", category: "salaries", amount: 3500, paymentMethod: "transfer", date: "2026-04-05", createdAt: "2026-04-05T08:00:00Z", createdBy: "s1" },
-  { id: "e7", description: "راتب المدرب — حسن", category: "salaries", amount: 3200, paymentMethod: "transfer", date: "2026-04-05", createdAt: "2026-04-05T08:05:00Z", createdBy: "s1" },
+  { id: "e6", description: "راتب محمد (مدرب)", category: "salaries", amount: 3500, paymentMethod: "transfer", date: "2026-04-05", createdAt: "2026-04-05T08:00:00Z", createdBy: "s1" },
+  { id: "e7", description: "راتب لينا (استقبال)", category: "salaries", amount: 3200, paymentMethod: "transfer", date: "2026-04-05", createdAt: "2026-04-05T08:05:00Z", createdBy: "s1" },
   { id: "e8", description: "مناديل ورقية وصابون", category: "supplies", amount: 45, paymentMethod: "cash", date: "2026-04-14", createdAt: "2026-04-14T08:00:00Z", createdBy: "s4" },
 ];
 
