@@ -28,7 +28,7 @@ const admin = createClient(url, serviceKey, {
 });
 
 // ── default password (CHANGE BEFORE PROD!) ──────────────────
-const DEFAULT_PASSWORD = process.env.SEED_DEFAULT_PASSWORD || "ox2026";
+const DEFAULT_PASSWORD = process.env.SEED_DEFAULT_PASSWORD || "123456";
 
 // ── users to create ─────────────────────────────────────────
 const USERS = [
