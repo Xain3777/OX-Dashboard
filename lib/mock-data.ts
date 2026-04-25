@@ -4,8 +4,8 @@ import {
 } from "./types";
 
 export const STAFF: StaffUser[] = [
-  { id: "s1", name: "عمر (المالك)", role: "owner", active: true },
-  { id: "s2", name: "كريم", role: "manager", active: true },
+  { id: "s1", name: "أدهم (المالك)", role: "owner", active: true },
+  { id: "s2", name: "حيدر", role: "manager", active: true },
   { id: "s3", name: "لينا", role: "receptionist", active: true },
   { id: "s4", name: "يوسف", role: "receptionist", active: true },
 ];

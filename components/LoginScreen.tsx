@@ -7,12 +7,13 @@ import { useAuth } from "@/lib/auth-context";
 
 // Pre-seeded accounts (must match scripts/seed-users.mjs)
 const ACCOUNTS = [
-  { email: "manager@ox.local",    displayName: "المدير",    role: "manager"   as const, accent: "gold"   },
-  { email: "reception1@ox.local", displayName: "استقبال 1", role: "reception" as const, accent: "silver" },
-  { email: "reception2@ox.local", displayName: "استقبال 2", role: "reception" as const, accent: "silver" },
-  { email: "reception3@ox.local", displayName: "استقبال 3", role: "reception" as const, accent: "silver" },
-  { email: "reception4@ox.local", displayName: "استقبال 4", role: "reception" as const, accent: "silver" },
-  { email: "reception5@ox.local", displayName: "استقبال 5", role: "reception" as const, accent: "silver" },
+  { email: "adham@ox.local",      displayName: "أدهم",       roleLabel: "المالك", role: "manager"   as const, accent: "gold"   },
+  { email: "haider@ox.local",     displayName: "حيدر",       roleLabel: "مدير",   role: "manager"   as const, accent: "gold"   },
+  { email: "reception1@ox.local", displayName: "استقبال 1",  roleLabel: "استقبال", role: "reception" as const, accent: "silver" },
+  { email: "reception2@ox.local", displayName: "استقبال 2",  roleLabel: "استقبال", role: "reception" as const, accent: "silver" },
+  { email: "reception3@ox.local", displayName: "استقبال 3",  roleLabel: "استقبال", role: "reception" as const, accent: "silver" },
+  { email: "reception4@ox.local", displayName: "استقبال 4",  roleLabel: "استقبال", role: "reception" as const, accent: "silver" },
+  { email: "reception5@ox.local", displayName: "استقبال 5",  roleLabel: "استقبال", role: "reception" as const, accent: "silver" },
 ];
 
 type Account = (typeof ACCOUNTS)[number];
@@ -84,7 +85,7 @@ export default function LoginScreen() {
                       {a.displayName}
                     </span>
                     <span className="font-mono text-[9px] text-slate tracking-widest uppercase">
-                      {isManager ? "مدير" : "استقبال"}
+                      {a.roleLabel}
                     </span>
                   </button>
                 );
@@ -113,7 +114,7 @@ export default function LoginScreen() {
                 {picked.displayName}
               </span>
               <span className="font-mono text-[9px] text-slate tracking-widest uppercase">
-                {picked.role === "manager" ? "مدير" : "موظف استقبال"}
+                {picked.roleLabel}
               </span>
             </div>
 

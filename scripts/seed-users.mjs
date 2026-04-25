@@ -32,12 +32,13 @@ const DEFAULT_PASSWORD = process.env.SEED_DEFAULT_PASSWORD || "ox2026";
 
 // ── users to create ─────────────────────────────────────────
 const USERS = [
-  { email: "manager@ox.local",    display_name: "المدير",        role: "manager"   },
-  { email: "reception1@ox.local", display_name: "استقبال 1",     role: "reception" },
-  { email: "reception2@ox.local", display_name: "استقبال 2",     role: "reception" },
-  { email: "reception3@ox.local", display_name: "استقبال 3",     role: "reception" },
-  { email: "reception4@ox.local", display_name: "استقبال 4",     role: "reception" },
-  { email: "reception5@ox.local", display_name: "استقبال 5",     role: "reception" },
+  { email: "adham@ox.local",      display_name: "أدهم",       role: "manager"   },
+  { email: "haider@ox.local",     display_name: "حيدر",       role: "manager"   },
+  { email: "reception1@ox.local", display_name: "استقبال 1",  role: "reception" },
+  { email: "reception2@ox.local", display_name: "استقبال 2",  role: "reception" },
+  { email: "reception3@ox.local", display_name: "استقبال 3",  role: "reception" },
+  { email: "reception4@ox.local", display_name: "استقبال 4",  role: "reception" },
+  { email: "reception5@ox.local", display_name: "استقبال 5",  role: "reception" },
 ];
 
 async function main() {
