@@ -7,15 +7,20 @@ import { X, DollarSign } from "lucide-react";
 export default function ExchangeRateModal() {
   const { exchangeRate, setExchangeRate, showRateModal, closeRateModal } = useCurrency();
   const [inputValue, setInputValue] = useState(exchangeRate.toString());
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
   if (!showRateModal) return null;
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const val = parseInt(inputValue.replace(/,/g, ""), 10);
-    if (val && val > 0) {
-      setExchangeRate(val);
-      closeRateModal();
-    }
+    if (!val || val <= 0) { setErr("قيمة غير صالحة"); return; }
+    setErr(null);
+    setBusy(true);
+    const r = await setExchangeRate(val);
+    setBusy(false);
+    if (r.error) setErr(r.error);
+    else closeRateModal();
   };
 
   return (
@@ -60,18 +65,26 @@ export default function ExchangeRateModal() {
             اضغط على أي سعر في اللوحة لتحويله بين الدولار والليرة السورية
           </p>
 
+          {err && (
+            <div className="p-2 bg-[#FF3333]/10 border border-[#FF3333]/30 text-[#FF3333] font-mono text-xs text-center">
+              {err}
+            </div>
+          )}
+
           <div className="flex gap-3">
             <button
               onClick={closeRateModal}
-              className="flex-1 py-3 border border-gunmetal text-secondary hover:text-offwhite transition-colors font-display tracking-wider cursor-pointer"
+              disabled={busy}
+              className="flex-1 py-3 border border-gunmetal text-secondary hover:text-offwhite transition-colors font-display tracking-wider cursor-pointer disabled:opacity-40"
             >
               إلغاء
             </button>
             <button
               onClick={handleSave}
-              className="flex-1 py-3 bg-gold text-void font-display tracking-wider hover:bg-gold-bright transition-colors cursor-pointer"
+              disabled={busy}
+              className="flex-1 py-3 bg-gold text-void font-display tracking-wider hover:bg-gold-bright transition-colors cursor-pointer disabled:opacity-40"
             >
-              حفظ السعر
+              {busy ? "جاري الحفظ…" : "حفظ السعر"}
             </button>
           </div>
         </div>

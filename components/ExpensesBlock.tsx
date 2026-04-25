@@ -21,6 +21,8 @@ import {
 } from "@/lib/business-logic";
 import { useStore } from "@/lib/store-context";
 import { useAuth } from "@/lib/auth-context";
+import { useCurrency } from "@/lib/currency-context";
+import { pushExpense } from "@/lib/supabase/intake";
 
 // ── Category badge colours ────────────────────────────────────────────────────
 
@@ -101,6 +103,7 @@ export default function ExpensesBlock() {
   // ── State ──────────────────────────────────────────────────────────────────
   const { expenses, addExpense } = useStore();
   const { user } = useAuth();
+  const { exchangeRate } = useCurrency();
   const [formOpen,    setFormOpen]    = useState<boolean>(false);
   const [form,        setForm]        = useState<ExpenseFormState>(EMPTY_FORM);
   const [formError,   setFormError]   = useState<string>("");
@@ -135,27 +138,30 @@ export default function ExpensesBlock() {
     setFormError("");
   }
 
-  function handleSaveExpense() {
+  async function handleSaveExpense() {
     setFormError("");
     setFormSuccess(false);
 
     const { description, category, amount, currency, date } = form;
 
-    if (!description.trim()) {
-      setFormError("الوصف مطلوب.");
-      return;
-    }
+    if (!user) { setFormError("يجب تسجيل الدخول."); return; }
+    if (!description.trim()) { setFormError("الوصف مطلوب."); return; }
     const parsedAmount = parseFloat(amount);
     if (!amount || isNaN(parsedAmount) || parsedAmount <= 0) {
       setFormError("أدخل مبلغاً صحيحاً أكبر من 0.");
       return;
     }
-    if (!date) {
-      setFormError("التاريخ مطلوب.");
-      return;
-    }
+    if (!date) { setFormError("التاريخ مطلوب."); return; }
 
-    const now = new Date().toISOString();
+    const r = await pushExpense({
+      user: { id: user.id, displayName: user.displayName },
+      description: description.trim(),
+      amount: parsedAmount,
+      currency,
+      category,
+      exchangeRate,
+    });
+    if (r.error) { setFormError(r.error); return; }
 
     addExpense({
       description:   description.trim(),
@@ -164,8 +170,8 @@ export default function ExpensesBlock() {
       paymentMethod: currency === "syp" ? "cash" : "transfer",
       currency,
       date,
-      createdBy:     user?.id ?? "s3",
-      lockedAt:      now,
+      createdBy:     user.id,
+      lockedAt:      new Date().toISOString(),
     });
 
     setForm(EMPTY_FORM);

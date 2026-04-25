@@ -12,6 +12,7 @@ import { formatCurrency } from "@/lib/business-logic";
 import { MEMBERS } from "@/lib/mock-data";
 import { useAuth } from "@/lib/auth-context";
 import { useStore, type InBodySessionType } from "@/lib/store-context";
+import { useCurrency } from "@/lib/currency-context";
 import { pushInBody } from "@/lib/supabase/intake";
 
 type Currency = "syp" | "usd";
@@ -41,11 +42,11 @@ function formatPrice(amount: number, currency: Currency): string {
 
 export default function InBodyBlock() {
   const { user } = useAuth();
+  const { exchangeRate } = useCurrency();
   const {
     inBodySessions,
     inBodyPrices,
     addInBodySession,
-    exchangeRate,
   } = useStore();
 
   // Form state
@@ -65,7 +66,7 @@ export default function InBodyBlock() {
     [inBodySessions]
   );
 
-  function handleRecord() {
+  async function handleRecord() {
     setError("");
     setSuccess(false);
 
@@ -74,6 +75,20 @@ export default function InBodyBlock() {
       setError("اختر عضواً.");
       return;
     }
+    if (!user) {
+      setError("يجب تسجيل الدخول.");
+      return;
+    }
+
+    const r = await pushInBody({
+      user: { id: user.id, displayName: user.displayName },
+      memberName: member.name,
+      sessionType,
+      amount: currency === "syp" ? priceSYP : displayPrice,
+      currency,
+      exchangeRate,
+    });
+    if (r.error) { setError(r.error); return; }
 
     addInBodySession({
       memberType: "gym_member",
@@ -83,20 +98,9 @@ export default function InBodyBlock() {
       priceSYP,
       currency,
       paymentMethod: currency === "syp" ? "cash" : "transfer",
-      createdBy: user?.id ?? "s3",
-      createdByName: user?.displayName ?? "موظف",
+      createdBy: user.id,
+      createdByName: user.displayName,
     });
-
-    // shadow-write to Supabase if signed in
-    if (user) {
-      void pushInBody({
-        user: { id: user.id, displayName: user.displayName },
-        memberName: member.name,
-        sessionType,
-        amount: currency === "syp" ? priceSYP : displayPrice,
-        currency,
-      });
-    }
 
     setMemberId("");
     setSuccess(true);

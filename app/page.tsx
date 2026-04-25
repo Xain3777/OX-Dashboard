@@ -21,6 +21,7 @@ import StoreBlock from "@/components/StoreBlock";
 import ExpensesBlock from "@/components/ExpensesBlock";
 import ReconciliationBlock from "@/components/ReconciliationBlock";
 import CashSessionBlock from "@/components/CashSessionBlock";
+import SessionTransactionsList from "@/components/SessionTransactionsList";
 import ManagerReportBlock from "@/components/ManagerReportBlock";
 import WeeklyReview from "@/components/WeeklyReview";
 import MonthlyReview from "@/components/MonthlyReview";
@@ -28,6 +29,7 @@ import AuditLog from "@/components/AuditLog";
 import CalculationsBlock from "@/components/CalculationsBlock";
 import ExpenseRates from "@/components/ExpenseRates";
 import InBodyBlock from "@/components/InBodyBlock";
+import KitchenBlock from "@/components/KitchenBlock";
 import LoginScreen from "@/components/LoginScreen";
 import {
   Shield,
@@ -51,6 +53,7 @@ type Section =
   | "subscriptions"
   | "store"
   | "inbody"
+  | "kitchen"
   | "expenses"
   | "rates"
   | "calculations"
@@ -298,6 +301,7 @@ function DashboardContent() {
     subscriptions: false,
     store: false,
     inbody: false,
+    kitchen: false,
     expenses: false,
     rates: false,
     calculations: false,
@@ -395,6 +399,9 @@ function DashboardContent() {
         {/* Cash session — top of page for the active user */}
         <CashSessionBlock />
 
+        {/* Live transactions for the open session — with cancel/refund */}
+        <SessionTransactionsList />
+
         {/* Manager-only: per-reception report */}
         {isManager && <ManagerReportBlock />}
 
@@ -466,6 +473,11 @@ function DashboardContent() {
         {/* المتجر */}
         <CollapsibleSection title="المتجر والمخزون" collapsed={collapsed.store} onToggle={() => toggle("store")}>
           <StoreBlock />
+        </CollapsibleSection>
+
+        {/* المطبخ — طلبات الاستقبال */}
+        <CollapsibleSection title="المطبخ" collapsed={collapsed.kitchen} onToggle={() => toggle("kitchen")}>
+          <KitchenBlock />
         </CollapsibleSection>
 
         {/* المصروفات — manager only */}

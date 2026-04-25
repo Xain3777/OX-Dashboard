@@ -21,6 +21,7 @@ import {
 import PriceTag from "@/components/PriceTag";
 import { useStore } from "@/lib/store-context";
 import { useAuth } from "@/lib/auth-context";
+import { useCurrency } from "@/lib/currency-context";
 import { pushSubscription } from "@/lib/supabase/intake";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -315,6 +316,7 @@ function Toast({ message, onDone }: { message: string; onDone: () => void }) {
 export default function SubscriptionsBlock() {
   const { pushActivity } = useStore();
   const { user } = useAuth();
+  const { exchangeRate } = useCurrency();
   const [subscriptions, setSubscriptions] = useState<Subscription[]>(SEED_SUBSCRIPTIONS);
   const [activeFilter, setActiveFilter] = useState<FilterTab>("all");
   const [sortMode, setSortMode] = useState<SortMode>("alpha");
@@ -445,6 +447,7 @@ export default function SubscriptionsBlock() {
         paidAmount: sub.paidAmount,
         paymentStatus: sub.paymentStatus,
         currency: cur as "syp" | "usd",
+        exchangeRate,
       });
     }
     setForm(DEFAULT_FORM);

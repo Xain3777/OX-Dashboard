@@ -27,6 +27,7 @@ import {
 import { STAFF } from "@/lib/mock-data";
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
+import { useCurrency } from "@/lib/currency-context";
 import { pushSale } from "@/lib/supabase/intake";
 import BarcodeScanner, { type CatalogItem } from "@/components/BarcodeScanner";
 
@@ -189,6 +190,7 @@ function PriceEditRow({ product, onSave, onCancel }: PriceEditRowProps) {
 
 export default function StoreBlock() {
   const { user, isManager } = useAuth();
+  const { exchangeRate } = useCurrency();
   const {
     products,
     sales,
@@ -236,10 +238,11 @@ export default function StoreBlock() {
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
-  function handleRecordSale() {
+  async function handleRecordSale() {
     setSaleError("");
     setSaleSuccess(false);
 
+    if (!user) { setSaleError("يجب تسجيل الدخول."); return; }
     if (!saleProductId) { setSaleError("اختر منتجاً."); return; }
     if (!saleQty || saleQty < 1) { setSaleError("يجب أن تكون الكمية 1 على الأقل."); return; }
 
@@ -250,6 +253,18 @@ export default function StoreBlock() {
       return;
     }
 
+    const r = await pushSale({
+      user: { id: user.id, displayName: user.displayName },
+      productName: product.name,
+      quantity: saleQty,
+      unitPrice: product.price,
+      total: product.price * saleQty,
+      currency: saleCurrency,
+      exchangeRate,
+      source: product.category === "meals" ? "kitchen" : "store",
+    });
+    if (r.error) { setSaleError(r.error); return; }
+
     addSale({
       productId:     product.id,
       productName:   product.name,
@@ -258,21 +273,9 @@ export default function StoreBlock() {
       total:         product.price * saleQty,
       paymentMethod: saleCurrency === "syp" ? "cash" : "transfer",
       currency:      saleCurrency,
-      createdBy:     user?.id ?? "s3",
+      createdBy:     user.id,
       isReversal:    false,
     });
-
-    if (user) {
-      void pushSale({
-        user: { id: user.id, displayName: user.displayName },
-        productName: product.name,
-        quantity: saleQty,
-        unitPrice: product.price,
-        total: product.price * saleQty,
-        currency: saleCurrency,
-        source: product.category === "meals" ? "kitchen" : "store",
-      });
-    }
 
     setSaleQty(1);
     setSaleSuccess(true);

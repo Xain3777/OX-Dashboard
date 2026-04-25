@@ -16,18 +16,22 @@ interface IntakeTotals {
   subscriptionsSYP: number;
   salesSYP: number;
   inbodySYP: number;
+  expensesSYP: number;
   subscriptionsUSD: number;
   salesUSD: number;
   inbodyUSD: number;
+  expensesUSD: number;
 }
 
 const ZERO: IntakeTotals = {
   subscriptionsSYP: 0,
   salesSYP: 0,
   inbodySYP: 0,
+  expensesSYP: 0,
   subscriptionsUSD: 0,
   salesUSD: 0,
   inbodyUSD: 0,
+  expensesUSD: 0,
 };
 
 function fmtSYP(n: number) {
@@ -62,30 +66,35 @@ export default function CashSessionBlock() {
     setSession(sess ? { id: sess.id, opening_cash_syp: Number(sess.opening_cash_syp), opened_at: sess.opened_at } : null);
 
     if (sess) {
-      const sumOf = async (table: string, col: string) => {
-        const sumByCur = async (cur: "syp" | "usd") => {
-          const { data } = await supabase
-            .from(table)
-            .select(`${col}`)
-            .eq("cash_session_id", sess.id)
-            .eq("currency", cur);
-          return (data ?? []).reduce(
-            (a: number, r: Record<string, unknown>) => a + Number(r[col] ?? 0),
-            0
-          );
-        };
-        return { syp: await sumByCur("syp"), usd: await sumByCur("usd") };
+      // Pull active (non-cancelled) rows; native amount goes into per-currency
+      // bucket for display; amount_syp is the immutable SYP-equivalent.
+      const sumOf = async (table: string, nativeCol: string) => {
+        const { data } = await supabase
+          .from(table)
+          .select(`${nativeCol}, amount_syp, currency`)
+          .eq("cash_session_id", sess.id)
+          .is("cancelled_at", null);
+        const rows = (data ?? []) as Array<Record<string, unknown>>;
+        let syp = 0, usd = 0;
+        for (const r of rows) {
+          if ((r.currency as string) === "syp") syp += Number(r[nativeCol] ?? 0);
+          else                                  usd += Number(r[nativeCol] ?? 0);
+        }
+        return { syp, usd };
       };
-      const subs   = await sumOf("subscriptions",   "paid_amount");
-      const sales  = await sumOf("sales",           "total");
-      const inbody = await sumOf("inbody_sessions", "amount");
+      const subs     = await sumOf("subscriptions",   "paid_amount");
+      const sales    = await sumOf("sales",           "total");
+      const inbody   = await sumOf("inbody_sessions", "amount");
+      const expenses = await sumOf("expenses",        "amount");
       setTotals({
         subscriptionsSYP: subs.syp,
         salesSYP: sales.syp,
         inbodySYP: inbody.syp,
+        expensesSYP: expenses.syp,
         subscriptionsUSD: subs.usd,
         salesUSD: sales.usd,
         inbodyUSD: inbody.usd,
+        expensesUSD: expenses.usd,
       });
     } else {
       setTotals(ZERO);
@@ -96,25 +105,26 @@ export default function CashSessionBlock() {
     void refresh();
   }, [refresh]);
 
-  // realtime: listen for inserts that might update totals
+  // realtime: any change (insert/update/cancel) in the session's tables refreshes totals.
   useEffect(() => {
     if (!session) return;
     const channel = supabase
       .channel(`cash-session-${session.id}`)
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "subscriptions",   filter: `cash_session_id=eq.${session.id}` }, () => void refresh())
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "sales",           filter: `cash_session_id=eq.${session.id}` }, () => void refresh())
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "inbody_sessions", filter: `cash_session_id=eq.${session.id}` }, () => void refresh())
+      .on("postgres_changes", { event: "*", schema: "public", table: "subscriptions",   filter: `cash_session_id=eq.${session.id}` }, () => void refresh())
+      .on("postgres_changes", { event: "*", schema: "public", table: "sales",           filter: `cash_session_id=eq.${session.id}` }, () => void refresh())
+      .on("postgres_changes", { event: "*", schema: "public", table: "inbody_sessions", filter: `cash_session_id=eq.${session.id}` }, () => void refresh())
+      .on("postgres_changes", { event: "*", schema: "public", table: "expenses",        filter: `cash_session_id=eq.${session.id}` }, () => void refresh())
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
   }, [supabase, session, refresh]);
 
   if (!user) return null;
 
-  const intakeSYP = totals.subscriptionsSYP + totals.salesSYP + totals.inbodySYP;
-  const intakeUSD = totals.subscriptionsUSD + totals.salesUSD + totals.inbodyUSD;
-  const opening = session?.opening_cash_syp ?? 0;
-  const expectedSYP = opening + intakeSYP;
-  const closingNum = Number(closingInput) || 0;
+  const intakeSYP   = totals.subscriptionsSYP + totals.salesSYP + totals.inbodySYP;
+  const intakeUSD   = totals.subscriptionsUSD + totals.salesUSD + totals.inbodyUSD;
+  const opening     = session?.opening_cash_syp ?? 0;
+  const expectedSYP = opening + intakeSYP - totals.expensesSYP;
+  const closingNum  = Number(closingInput) || 0;
   const discrepancy = closingInput ? closingNum - expectedSYP : null;
 
   async function handleOpen() {
@@ -205,6 +215,12 @@ export default function CashSessionBlock() {
               <Stat label="مبيعات (ل.س)"  value={fmtSYP(totals.salesSYP)}        accent="gold" />
               <Stat label="InBody (ل.س)" value={fmtSYP(totals.inbodySYP)}       accent="gold" />
             </div>
+            {(totals.expensesSYP > 0 || totals.expensesUSD > 0) && (
+              <div className="grid grid-cols-2 gap-3">
+                <Stat label="مصروفات (ل.س)" value={`- ${fmtSYP(totals.expensesSYP)}`} accent="red" />
+                {totals.expensesUSD > 0 && <Stat label="مصروفات ($)" value={`- ${fmtUSD(totals.expensesUSD)}`} accent="red" />}
+              </div>
+            )}
             {(intakeUSD > 0) && (
               <div className="grid grid-cols-3 gap-3 pt-1">
                 <Stat label="اشتراكات ($)" value={fmtUSD(totals.subscriptionsUSD)} accent="silver" />
@@ -282,10 +298,10 @@ function Stat({
 }: {
   label: string;
   value: string;
-  accent: "gold" | "silver";
+  accent: "gold" | "silver" | "red";
   big?: boolean;
 }) {
-  const color = accent === "gold" ? "text-[#F5C100]" : "text-[#AAAAAA]";
+  const color = accent === "gold" ? "text-[#F5C100]" : accent === "red" ? "text-[#FF7777]" : "text-[#AAAAAA]";
   return (
     <div className="bg-[#0F0F0F] border border-[#252525] p-3 clip-corner-sm">
       <div className="font-mono text-[10px] text-[#555555] tracking-widest uppercase mb-1">
