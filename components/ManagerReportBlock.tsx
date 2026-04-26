@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Users, RefreshCw, Banknote, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Users, RefreshCw, Banknote } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { supabaseBrowser } from "@/lib/supabase/client";
 
@@ -19,8 +19,6 @@ interface UserRow {
   subscriptionsUSD: number;
   salesUSD: number;
   inbodyUSD: number;
-  totalDiscrepancySYP: number;
-  hadDiscrepancy: boolean;
 }
 
 const RANGE_LABELS: Record<Range, string> = {
@@ -78,24 +76,19 @@ export default function ManagerReportBlock() {
         subscriptionsUSD: 0,
         salesUSD: 0,
         inbodyUSD: 0,
-        totalDiscrepancySYP: 0,
-        hadDiscrepancy: false,
       };
     });
 
     // 2. cash sessions in range
     const { data: sessions } = await supabase
       .from("cash_sessions")
-      .select("opened_by, status, discrepancy_syp, opened_at")
+      .select("opened_by, status, opened_at")
       .gte("opened_at", since);
     (sessions ?? []).forEach((s: Record<string, unknown>) => {
       const r = initRows[s.opened_by as string];
       if (!r) return;
       r.shifts += 1;
       if (s.status === "open") r.openShifts += 1;
-      const disc = Number(s.discrepancy_syp ?? 0);
-      if (disc !== 0) r.hadDiscrepancy = true;
-      r.totalDiscrepancySYP += disc;
     });
 
     // 3. intake totals
@@ -189,8 +182,7 @@ export default function ManagerReportBlock() {
                 <th className="text-right px-2 py-2">اشتراكات</th>
                 <th className="text-right px-2 py-2">مبيعات</th>
                 <th className="text-right px-2 py-2">InBody</th>
-                <th className="text-right px-2 py-2">إجمالي</th>
-                <th className="text-right px-3 py-2">الفرق التراكمي</th>
+                <th className="text-right px-3 py-2">إجمالي</th>
               </tr>
             </thead>
             <tbody>
@@ -228,24 +220,10 @@ export default function ManagerReportBlock() {
                     <td className="px-2 py-2.5 text-right">
                       <Cell syp={r.inbodySYP} usd={r.inbodyUSD} />
                     </td>
-                    <td className="px-2 py-2.5 text-right">
+                    <td className="px-3 py-2.5 text-right">
                       <div className="font-mono text-xs text-[#F5C100] tabular-nums">{fmtSYP(totalSYP)}</div>
                       {totalUSD > 0 && (
                         <div className="font-mono text-[10px] text-[#AAAAAA] tabular-nums">{fmtUSD(totalUSD)}</div>
-                      )}
-                    </td>
-                    <td className="px-3 py-2.5 text-right">
-                      {r.shifts === 0 ? (
-                        <span className="font-mono text-[10px] text-[#555555]">—</span>
-                      ) : r.totalDiscrepancySYP === 0 ? (
-                        <span className="inline-flex items-center gap-1 font-mono text-xs text-[#5CC45C]">
-                          <CheckCircle2 size={12} /> مطابق
-                        </span>
-                      ) : (
-                        <span className={`inline-flex items-center gap-1 font-mono text-xs ${r.totalDiscrepancySYP < 0 ? "text-[#FF3333]" : "text-[#F5C100]"}`}>
-                          <AlertTriangle size={12} />
-                          {fmtSYP(r.totalDiscrepancySYP)}
-                        </span>
                       )}
                     </td>
                   </tr>

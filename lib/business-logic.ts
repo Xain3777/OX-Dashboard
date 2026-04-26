@@ -63,7 +63,7 @@ export function calculateDiscountedPrice(planType: PlanType, offer: OfferType): 
   const base = PLAN_BASE_PRICES[planType];
   if (offer === "none" || offer === "referral_5" || offer === "referral_9") return base;
   if (planType !== "1_month") return base;
-  if (offer === "married_couple") return 30;                          // $60 total / 2 people
+  if (offer === "married_couple") return Number((base * 0.85).toFixed(2)); // 15% off, $29.75/person
   if (offer === "corporate")      return Number((base * 0.85).toFixed(2)); // 15% off
   return base;
 }
@@ -87,7 +87,7 @@ export function getPlanLabel(plan: PlanType): string {
 export function getOfferLabel(offer: OfferType): string {
   const labels: Record<OfferType, string> = {
     none:           "بدون عرض",
-    married_couple: "متزوجون ($30/شخص — $60 للزوجين)",
+    married_couple: "متزوجون (خصم ١٥٪ — $29.75/شخص)",
     referral_5:     "إحالة 5 أصدقاء (+شهر مجاني)",
     referral_9:     "إحالة 9 أصدقاء (+شهرين مجانيين)",
     corporate:      "موظف شركة/بنك (خصم ١٥٪)",

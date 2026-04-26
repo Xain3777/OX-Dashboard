@@ -10,12 +10,23 @@
 // when the live exchange rate changes.
 
 import { supabaseBrowser } from "./client";
+import type { DailyIncome } from "@/lib/types";
 
 export type Currency = "syp" | "usd";
 
 export interface CurrentUser {
   id: string;          // auth.users.id (uuid)
   displayName: string;
+}
+
+export interface DailySessionInfo {
+  id: string;
+  businessDate: string;
+  status: "open" | "closed";
+  openedAt: string;
+  openedBy: string;
+  closedAt?: string;
+  closedBy?: string;
 }
 
 const FALLBACK_RATE = 13200;
@@ -26,27 +37,38 @@ function assertUser(user: CurrentUser | null | undefined): asserts user is Curre
   if (!user || !user.id) throw new Error("missing authenticated user");
 }
 
-function snapshotSYP(amount: number, currency: Currency, rate: number): number {
-  if (currency === "syp") return Math.round(amount);
-  return Math.round(amount * rate);
+function logErr(scope: string, err: unknown) {
+  // eslint-disable-next-line no-console
+  console.warn(`[supabase ${scope}]`, err);
 }
 
-async function getOpenSessionId(userId: string): Promise<string | null> {
+// Returns the business date string (YYYY-MM-DD) for Latakia UTC+3.
+// The business day runs 06:00–24:00 local time; before 06:00 we still
+// report the previous calendar day.
+export function getCurrentBusinessDate(): string {
+  const latakiaMs = Date.now() + 3 * 60 * 60 * 1000; // UTC+3
+  const d = new Date(latakiaMs);
+  const hour = d.getUTCHours();
+  if (hour < 6) d.setUTCDate(d.getUTCDate() - 1);
+  const y  = d.getUTCFullYear();
+  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dy = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${mo}-${dy}`;
+}
+
+// Returns the shared open session ID for today's business date (any opener).
+async function getOpenSessionId(): Promise<string | null> {
   const supabase = supabaseBrowser();
+  const businessDate = getCurrentBusinessDate();
   const { data } = await supabase
     .from("cash_sessions")
     .select("id")
-    .eq("opened_by", userId)
+    .eq("business_date", businessDate)
     .eq("status", "open")
     .order("opened_at", { ascending: false })
     .limit(1)
     .maybeSingle();
   return (data?.id as string | undefined) ?? null;
-}
-
-function logErr(scope: string, err: unknown) {
-  // eslint-disable-next-line no-console
-  console.warn(`[supabase ${scope}]`, err);
 }
 
 // ── exchange rate (persisted in app_settings) ─────────────────
@@ -104,7 +126,7 @@ export async function pushActivity(opts: {
   try {
     assertUser(opts.user);
     const supabase = supabaseBrowser();
-    const cashSessionId = await getOpenSessionId(opts.user.id);
+    const cashSessionId = await getOpenSessionId();
     const { error } = await supabase.from("activity_feed").insert({
       action: opts.action,
       description: opts.description,
@@ -143,7 +165,7 @@ export async function pushSubscription(opts: {
     if (opts.paidAmountUSD < 0 || opts.amountUSD < 0) return { error: "مبلغ غير صالح" };
 
     const supabase = supabaseBrowser();
-    const cashSessionId = await getOpenSessionId(opts.user.id);
+    const cashSessionId = await getOpenSessionId();
     const amountSYP = Math.round(opts.paidAmountUSD * opts.exchangeRate);
 
     const { data, error } = await supabase
@@ -203,7 +225,7 @@ export async function pushSale(opts: {
     if (opts.quantity <= 0 || opts.total < 0) return { error: "كمية أو مبلغ غير صالح" };
 
     const supabase = supabaseBrowser();
-    const cashSessionId = await getOpenSessionId(opts.user.id);
+    const cashSessionId = await getOpenSessionId();
     const amountSYP = Math.round(opts.total * opts.exchangeRate);
 
     const { data, error } = await supabase
@@ -256,7 +278,7 @@ export async function pushInBody(opts: {
     if (opts.amountUSD < 0) return { error: "مبلغ غير صالح" };
 
     const supabase = supabaseBrowser();
-    const cashSessionId = await getOpenSessionId(opts.user.id);
+    const cashSessionId = await getOpenSessionId();
     const amountSYP = Math.round(opts.amountUSD * opts.exchangeRate);
 
     const { data, error } = await supabase
@@ -291,62 +313,9 @@ export async function pushInBody(opts: {
   }
 }
 
-// ── Expenses ──────────────────────────────────────────────────
-
-export async function pushExpense(opts: {
-  user: CurrentUser;
-  description: string;
-  amount: number;
-  currency: Currency;
-  category?: string;
-  exchangeRate: number;
-}): Promise<{ id?: string; error?: string }> {
-  try {
-    assertUser(opts.user);
-    if (!opts.currency) return { error: "العملة مطلوبة" };
-    if (!opts.exchangeRate || opts.exchangeRate <= 0) return { error: "سعر الصرف غير صالح" };
-    if (opts.amount < 0) return { error: "مبلغ غير صالح" };
-
-    const supabase = supabaseBrowser();
-    const cashSessionId = await getOpenSessionId(opts.user.id);
-    const amountSYP = snapshotSYP(opts.amount, opts.currency, opts.exchangeRate);
-
-    const { data, error } = await supabase
-      .from("expenses")
-      .insert({
-        description: opts.description,
-        amount: opts.amount,
-        currency: opts.currency,
-        exchange_rate: opts.exchangeRate,
-        amount_syp: amountSYP,
-        category: opts.category ?? "other",
-        cash_session_id: cashSessionId,
-        created_by: opts.user.id,
-      })
-      .select("id")
-      .single();
-
-    if (error) { logErr("expense insert", error); return { error: error.message }; }
-
-    await pushActivity({
-      user: opts.user,
-      action: "expense_create",
-      description: `مصروف: ${opts.description}`,
-      amountSYP: opts.currency === "syp" ? opts.amount : undefined,
-      amountUSD: opts.currency === "usd" ? opts.amount : undefined,
-      entityType: "expense",
-      entityId: data?.id as string,
-    });
-    return { id: data?.id as string };
-  } catch (e) {
-    logErr("expense throw", e);
-    return { error: String(e) };
-  }
-}
-
 // ── Cancellation (soft-delete) ────────────────────────────────
 
-export type CancellableTable = "sales" | "subscriptions" | "inbody_sessions" | "expenses";
+export type CancellableTable = "sales" | "subscriptions" | "inbody_sessions";
 
 export async function cancelTransaction(opts: {
   user: CurrentUser;
@@ -358,7 +327,6 @@ export async function cancelTransaction(opts: {
     assertUser(opts.user);
     const supabase = supabaseBrowser();
 
-    // Read first so we can describe it in activity feed and bail if already cancelled.
     const { data: row, error: readErr } = await supabase
       .from(opts.table)
       .select("amount_syp, currency, cancelled_at, member_name, product_name, description")
@@ -401,169 +369,176 @@ export async function cancelTransaction(opts: {
   }
 }
 
-// ── cash sessions ─────────────────────────────────────────────
+// ── Daily session management ──────────────────────────────────
 
-// Shift handoff: returns the opening balance the next worker must use
-// (= closing balance of the most recent closed session today, or 0 if first
-// shift of the day). Always paired with `previous_session_id` for the audit trail.
-export async function fetchHandoffOpening(): Promise<{ openingSYP: number; previousSessionId: string | null }> {
+export async function getTodaySession(): Promise<DailySessionInfo | null> {
   try {
     const supabase = supabaseBrowser();
-    const { data, error } = await supabase.rpc("last_closed_session_for_today");
-    if (error) { logErr("handoff rpc", error); return { openingSYP: 0, previousSessionId: null }; }
-    const row = Array.isArray(data) && data.length > 0 ? data[0] as { id: string; closing_cash_syp: number } : null;
+    const businessDate = getCurrentBusinessDate();
+    const { data, error } = await supabase
+      .from("cash_sessions")
+      .select("id, business_date, status, opened_at, opened_by, closed_at, closed_by")
+      .eq("business_date", businessDate)
+      .order("opened_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) { logErr("getTodaySession", error); return null; }
+    if (!data) return null;
     return {
-      openingSYP: row ? Number(row.closing_cash_syp ?? 0) : 0,
-      previousSessionId: row?.id ?? null,
+      id: data.id as string,
+      businessDate: data.business_date as string,
+      status: data.status as "open" | "closed",
+      openedAt: data.opened_at as string,
+      openedBy: data.opened_by as string,
+      closedAt: data.closed_at as string | undefined,
+      closedBy: data.closed_by as string | undefined,
     };
   } catch (e) {
-    logErr("handoff throw", e);
-    return { openingSYP: 0, previousSessionId: null };
+    logErr("getTodaySession throw", e);
+    return null;
   }
 }
 
-export async function openCashSession(user: CurrentUser, openingCashSYPOverride?: number) {
+// Get or create the single shared session for today's business date.
+// Safe to call from multiple clients simultaneously — Supabase unique
+// constraint on business_date prevents duplicates; the loser of the
+// race will get the existing row on retry.
+export async function getOrCreateDailySession(
+  user: CurrentUser
+): Promise<{ session: DailySessionInfo | null; error?: string }> {
   try {
     assertUser(user);
     const supabase = supabaseBrowser();
-    const { data: existing } = await supabase
-      .from("cash_sessions")
-      .select("id")
-      .eq("opened_by", user.id)
-      .eq("status", "open");
-    if (existing && existing.length > 0) {
-      return { error: "لديك جلسة مفتوحة بالفعل. أغلقها أولاً." };
-    }
+    const businessDate = getCurrentBusinessDate();
 
-    // Auto-handoff: opening = previous closed session's closing today.
-    const handoff = await fetchHandoffOpening();
-    const openingCashSYP = openingCashSYPOverride ?? handoff.openingSYP;
-    const opening_locked = handoff.previousSessionId !== null;
+    // Check for existing session (open or closed) for today.
+    const existing = await getTodaySession();
+    if (existing) return { session: existing };
 
+    // No session yet — create one.
     const { data, error } = await supabase
       .from("cash_sessions")
       .insert({
+        business_date: businessDate,
         opened_by: user.id,
-        opening_cash_syp: openingCashSYP,
-        previous_session_id: handoff.previousSessionId,
-        opening_locked,
         status: "open",
+        opening_cash_syp: 0,
       })
-      .select("id")
+      .select("id, business_date, status, opened_at, opened_by")
       .single();
-    if (error) return { error: error.message };
+
+    if (error) {
+      // Unique constraint violation = another client beat us. Re-fetch.
+      if (error.code === "23505") {
+        const retry = await getTodaySession();
+        return { session: retry };
+      }
+      logErr("getOrCreateDailySession insert", error);
+      return { session: null, error: error.message };
+    }
+
     await pushActivity({
       user,
       action: "session_opened",
-      description: opening_locked
-        ? `فتح جلسة نقدية — استلام من الوردية السابقة ${openingCashSYP.toLocaleString("en-US")} ل.س`
-        : `فتح جلسة نقدية — أول وردية لليوم — افتتاحي ${openingCashSYP.toLocaleString("en-US")} ل.س`,
-      amountSYP: openingCashSYP,
+      description: `بدء يوم عمل — ${businessDate}`,
     });
-    return { id: data?.id as string };
+
+    return {
+      session: {
+        id: data.id as string,
+        businessDate: data.business_date as string,
+        status: "open",
+        openedAt: data.opened_at as string,
+        openedBy: data.opened_by as string,
+      },
+    };
   } catch (e) {
-    logErr("open session throw", e);
-    return { error: String(e) };
+    logErr("getOrCreateDailySession throw", e);
+    return { session: null, error: String(e) };
   }
 }
 
-// Compute total income for a session in USD (subscriptions + sales + inbody).
-// Expenses are excluded per business rules. Uses native USD amounts (not amount_syp).
-export async function computeExpectedCash(sessionId: string, exchangeRate: number): Promise<number> {
+// Compute today's income broken down by the 4 sources.
+// Only counts non-cancelled rows linked to the given session.
+export async function computeDailyIncome(sessionId: string): Promise<DailyIncome> {
   const supabase = supabaseBrowser();
 
-  // Opening stored in SYP; convert to USD for consistent comparison.
-  const { data: sess } = await supabase
-    .from("cash_sessions")
-    .select("opening_cash_syp")
-    .eq("id", sessionId)
-    .maybeSingle();
-  const openingUSD = Number((Number(sess?.opening_cash_syp ?? 0) / exchangeRate).toFixed(2));
-
-  const sumUSD = async (table: string, col: string) => {
-    const { data } = await supabase
+  const sumUSD = async (table: string, col: string, filter?: { source: string }): Promise<number> => {
+    let q = supabase
       .from(table)
       .select(col)
       .eq("cash_session_id", sessionId)
       .is("cancelled_at", null);
+    if (filter) q = q.eq("source", filter.source);
+    const { data } = await q;
     const total = (data as unknown as Record<string, unknown>[])
       ?.reduce((a, r) => a + Number(r[col] ?? 0), 0) ?? 0;
     return Number(total.toFixed(2));
   };
 
-  const subs   = await sumUSD("subscriptions",   "paid_amount");
-  const sales  = await sumUSD("sales",           "total");
-  const inbody = await sumUSD("inbody_sessions", "amount");
+  const [subsTotal, inbodyTotal, storeTotal, mealsTotal] = await Promise.all([
+    sumUSD("subscriptions",   "paid_amount"),
+    sumUSD("inbody_sessions", "amount"),
+    sumUSD("sales",           "total", { source: "store" }),
+    sumUSD("sales",           "total", { source: "kitchen" }),
+  ]);
 
-  return Number((openingUSD + subs + sales + inbody).toFixed(2));
+  return {
+    subsTotal,
+    inbodyTotal,
+    storeTotal,
+    mealsTotal,
+    totalIncome: Number((subsTotal + inbodyTotal + storeTotal + mealsTotal).toFixed(2)),
+  };
 }
 
-export async function closeCashSession(
+// Close today's session. Manager-only action.
+// Writes totals to daily_summary for historical reporting.
+export async function closeDailySession(
   user: CurrentUser,
   sessionId: string,
-  closingCashUSD: number,
-  exchangeRate: number,
-  discrepancyReason?: string,
-) {
+): Promise<{ error?: string; income?: DailyIncome }> {
   try {
     assertUser(user);
     const supabase = supabaseBrowser();
 
-    const expectedCashUSD = await computeExpectedCash(sessionId, exchangeRate);
+    const income = await computeDailyIncome(sessionId);
+    const businessDate = getCurrentBusinessDate();
 
-    // Normalise both to 2 decimal places to prevent float mismatches.
-    const closingNorm  = Number(closingCashUSD.toFixed(2));
-    const expectedNorm = Number(expectedCashUSD.toFixed(2));
-    const discrepancy  = Number((closingNorm - expectedNorm).toFixed(2));
-
-    if (discrepancy !== 0 && (!discrepancyReason || !discrepancyReason.trim())) {
-      return { error: "يجب إدخال سبب الفرق قبل إغلاق الجلسة." };
-    }
-
-    // Store SYP-equivalent for backward-compat columns.
-    const closingCashSYP  = Math.round(closingNorm  * exchangeRate);
-    const expectedCashSYP = Math.round(expectedNorm * exchangeRate);
-    const discrepancySYP  = Math.round(discrepancy  * exchangeRate);
-
-    const { error } = await supabase
+    const { error: closeErr } = await supabase
       .from("cash_sessions")
       .update({
-        closed_by:         user.id,
-        closed_at:         new Date().toISOString(),
-        closing_cash_syp:  closingCashSYP,
-        expected_cash_syp: expectedCashSYP,
-        discrepancy_syp:   discrepancySYP,
-        notes:             discrepancyReason ?? null,
-        status:            "closed",
+        closed_by: user.id,
+        closed_at: new Date().toISOString(),
+        status: "closed",
       })
       .eq("id", sessionId);
-    if (error) return { error: error.message };
+    if (closeErr) return { error: closeErr.message };
 
-    if (discrepancy !== 0) {
-      const { error: dErr } = await supabase
-        .from("discrepancy_logs")
-        .insert({
-          cash_session_id: sessionId,
-          worker_id:      user.id,
-          worker_name:    user.displayName,
-          expected_syp:   expectedCashSYP,
-          actual_syp:     closingCashSYP,
-          difference_syp: discrepancySYP,
-          reason:         discrepancyReason ?? "غير محدد",
-        });
-      if (dErr) logErr("discrepancy insert", dErr);
-    }
+    // Upsert daily summary for historical records.
+    await supabase
+      .from("daily_summary")
+      .upsert({
+        business_date: businessDate,
+        session_id: sessionId,
+        total_income: income.totalIncome,
+        subs_total: income.subsTotal,
+        inbody_total: income.inbodyTotal,
+        store_total: income.storeTotal,
+        meals_total: income.mealsTotal,
+        closed_by: user.id,
+      }, { onConflict: "business_date" });
 
     await pushActivity({
       user,
       action: "session_closed",
-      description: `إغلاق جلسة — متوقع $${expectedNorm} — فعلي $${closingNorm} — فرق $${discrepancy}${discrepancyReason ? ` — السبب: ${discrepancyReason}` : ""}`,
-      amountUSD: closingNorm,
+      description: `إغلاق يوم عمل — ${businessDate} — إجمالي الدخل: $${income.totalIncome}`,
+      amountUSD: income.totalIncome,
     });
 
-    return { expectedCashUSD: expectedNorm, discrepancy };
+    return { income };
   } catch (e) {
-    logErr("close session throw", e);
+    logErr("closeDailySession throw", e);
     return { error: String(e) };
   }
 }

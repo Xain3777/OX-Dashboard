@@ -6,11 +6,7 @@ import {
   CalendarClock,
   CalendarX,
   Banknote,
-  Scale,
-  TrendingUp,
-  TrendingDown,
   Package,
-  AlertTriangle,
 } from "lucide-react";
 import { useLiveKPI } from "@/lib/supabase/dashboard";
 
@@ -89,14 +85,8 @@ function fmtSYP(n: number) {
   return `${Math.round(n).toLocaleString("en-US")} ل.س`;
 }
 
-export default function KPIStrip({ hideProfit }: KPIStripProps) {
+export default function KPIStrip({ hideProfit: _hideProfit }: KPIStripProps) {
   const { kpi, loading } = useLiveKPI();
-
-  const profitAccent: "green" | "red" | "default" =
-    kpi.monthlyProfit > 0 ? "green" : kpi.monthlyProfit < 0 ? "red" : "default";
-  const profitPrefix = kpi.monthlyProfit > 0 ? "+" : "";
-
-  const diffAccent: "red" | "default" = kpi.cashDifferenceSYP !== 0 ? "red" : "default";
 
   return (
     <section
@@ -104,7 +94,7 @@ export default function KPIStrip({ hideProfit }: KPIStripProps) {
       className="w-full border-t-2 border-gold pt-4"
       data-loading={loading}
     >
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <KPICard
           label="إيرادات اليوم"
           value={fmtUSD(kpi.todayRevenueUSD)}
@@ -141,41 +131,12 @@ export default function KPIStrip({ hideProfit }: KPIStripProps) {
         />
 
         <KPICard
-          label="فرق الكاش"
-          value={fmtSYP(kpi.cashDifferenceSYP)}
-          icon={<Scale size={14} />}
-          accent={diffAccent}
-          badge={kpi.unresolvedDiscrepancies > 0 ? <RedBadge count={kpi.unresolvedDiscrepancies} /> : undefined}
-          href={kpi.cashDifferenceSYP !== 0 ? "#discrepancies" : undefined}
-        />
-
-        {!hideProfit && (
-          <KPICard
-            label="الربح الشهري"
-            value={`${profitPrefix}${fmtUSD(kpi.monthlyProfit)}`}
-            icon={kpi.monthlyProfit >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
-            accent={profitAccent}
-          />
-        )}
-
-        <KPICard
           label="مخزون منخفض"
           value={String(kpi.lowStockItems)}
           icon={<Package size={14} />}
           accent={kpi.lowStockItems > 0 ? "red" : "default"}
           badge={kpi.lowStockItems > 0 ? <RedBadge count={kpi.lowStockItems} /> : undefined}
         />
-
-        {hideProfit && (
-          <KPICard
-            label="فروقات غير محسومة"
-            value={String(kpi.unresolvedDiscrepancies)}
-            icon={<AlertTriangle size={14} />}
-            accent={kpi.unresolvedDiscrepancies > 0 ? "red" : "default"}
-            badge={kpi.unresolvedDiscrepancies > 0 ? <RedBadge count={kpi.unresolvedDiscrepancies} /> : undefined}
-            href={kpi.unresolvedDiscrepancies > 0 ? "#discrepancies" : undefined}
-          />
-        )}
       </div>
     </section>
   );

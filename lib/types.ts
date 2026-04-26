@@ -30,7 +30,7 @@ export type PlanType =
 // Price offers apply only to 1-month plans. Referral offers add days to any plan.
 export type OfferType =
   | "none"
-  | "married_couple" // $30/person (couple pays $60 total instead of $70)
+  | "married_couple" // $29.75/person (15% off $35 base)
   | "referral_5"     // +1 month free (30 extra days, any plan)
   | "referral_9"     // +2 months free (60 extra days, any plan)
   | "corporate";     // 15% off, 1-month only
@@ -90,57 +90,35 @@ export interface Sale {
   createdAt: string;
   createdBy: string;
   isReversal: boolean;
-  reversalOf?: string;  // references original sale ID
+  reversalOf?: string;
   reversalReason?: string;
 }
-
-// --- EXPENSES ---
-export type ExpenseCategory =
-  | "salaries"
-  | "rent"
-  | "equipment"
-  | "maintenance"
-  | "utilities"
-  | "supplies"
-  | "marketing"
-  | "miscellaneous";
 
 export type PaymentMethod = "cash" | "card" | "transfer" | "other";
 
 export type Currency = "syp" | "usd";
 
-export interface Expense {
-  id: string;
-  description: string;
-  category: ExpenseCategory;
-  amount: number;
-  paymentMethod: PaymentMethod;
-  currency?: Currency;
-  date: string;
-  createdAt: string;
-  createdBy: string;
-  lockedAt?: string;
+// --- DAILY INCOME ---
+export interface DailyIncome {
+  subsTotal: number;    // USD
+  inbodyTotal: number;  // USD
+  storeTotal: number;   // USD
+  mealsTotal: number;   // USD
+  totalIncome: number;  // USD (sum of above)
 }
 
 // --- CASH SESSION / RECONCILIATION ---
-export type SessionStatus = "open" | "closed" | "discrepancy";
+export type SessionStatus = "open" | "closed";
 
 export interface CashSession {
   id: string;
-  date: string;
-  openingCash: number;
-  lockedOpening: boolean;
-  totalCashSales: number;        // subscriptions + store (cash only)
-  totalCashExpenses: number;     // expenses (cash only)
-  expectedCash: number;          // opening + sales - expenses
-  actualCash?: number;           // counted at close
-  discrepancy?: number;          // actual - expected
-  discrepancyNote?: string;
+  businessDate: string;  // YYYY-MM-DD, Latakia UTC+3 business day
   status: SessionStatus;
   openedBy: string;
   openedAt: string;
   closedBy?: string;
   closedAt?: string;
+  income?: DailyIncome;
 }
 
 // --- AUDIT LOG ---
@@ -148,10 +126,8 @@ export type AuditAction =
   | "subscription_created"
   | "sale_created"
   | "sale_reversed"
-  | "expense_created"
   | "session_opened"
   | "session_closed"
-  | "discrepancy_resolved"
   | "product_added"
   | "stock_adjusted"
   | "inbody_session"
@@ -175,7 +151,6 @@ export interface WeeklyReview {
   weekStart: string;
   weekEnd: string;
   totalRevenue: number;
-  totalExpenses: number;
   subscriptionRevenue: number;
   storeRevenue: number;
   newSubscriptions: number;
@@ -183,18 +158,14 @@ export interface WeeklyReview {
   expiringThisWeek: number;
   pendingPayments: number;
   stockMovements: number;
-  unresolvedDiscrepancies: number;
 }
 
 export interface MonthlyReview {
   month: string;
   year: number;
   totalRevenue: number;
-  totalExpenses: number;
-  netProfit: number;
   subscriptionRevenue: number;
   storeRevenue: number;
-  expenseBreakdown: Record<ExpenseCategory, number>;
   topProducts: { name: string; quantity: number; revenue: number }[];
   activeSubscriptions: number;
   expiredSubscriptions: number;
@@ -216,11 +187,8 @@ export interface StaffUser {
 // --- KPI ---
 export interface DashboardKPI {
   todayRevenue: number;
-  todayExpenses: number;
   activeMembers: number;
   expiringThisWeek: number;
   cashOnHand: number;
-  monthlyProfit: number;
   lowStockItems: number;
-  unresolvedDiscrepancies: number;
 }

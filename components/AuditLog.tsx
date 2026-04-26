@@ -6,10 +6,8 @@ import {
   UserPlus,
   ShoppingCart,
   RotateCcw,
-  Receipt,
   LogIn,
   LogOut,
-  ShieldCheck,
   PackagePlus,
   BarChart2,
   Lock,
@@ -44,12 +42,6 @@ const ACTION_META: Record<
     borderColor: "border-l-[#FF3333]",
     icon: <RotateCcw size={13} />,
   },
-  expense_created: {
-    label: "تسجيل مصروف",
-    color: "text-[#777777]",
-    borderColor: "border-l-[#777777]",
-    icon: <Receipt size={13} />,
-  },
   session_opened: {
     label: "فتح جلسة",
     color: "text-[#FFD740]",
@@ -61,12 +53,6 @@ const ACTION_META: Record<
     color: "text-[#C49A00]",
     borderColor: "border-l-[#C49A00]",
     icon: <LogOut size={13} />,
-  },
-  discrepancy_resolved: {
-    label: "حل فرق",
-    color: "text-[#D42B2B]",
-    borderColor: "border-l-[#D42B2B]",
-    icon: <ShieldCheck size={13} />,
   },
   product_added: {
     label: "إضافة منتج",
@@ -102,13 +88,12 @@ const ACTION_META: Record<
 
 // ── FILTER TABS ───────────────────────────────────────────────
 
-type FilterTab = "all" | "sales" | "subscriptions" | "expenses" | "inbody" | "sessions";
+type FilterTab = "all" | "sales" | "subscriptions" | "inbody" | "sessions";
 
 const FILTER_TABS: { key: FilterTab; label: string }[] = [
   { key: "all", label: "الكل" },
   { key: "sales", label: "المبيعات" },
   { key: "subscriptions", label: "الاشتراكات" },
-  { key: "expenses", label: "المصروفات" },
   { key: "inbody", label: "InBody" },
   { key: "sessions", label: "الجلسات" },
 ];
@@ -117,9 +102,8 @@ const FILTER_ACTIONS: Record<FilterTab, AuditAction[] | null> = {
   all: null,
   sales: ["sale_created", "sale_reversed"],
   subscriptions: ["subscription_created"],
-  expenses: ["expense_created"],
   inbody: ["inbody_session"],
-  sessions: ["session_opened", "session_closed", "discrepancy_resolved"],
+  sessions: ["session_opened", "session_closed"],
 };
 
 // ── TIMESTAMP FORMAT ──────────────────────────────────────────

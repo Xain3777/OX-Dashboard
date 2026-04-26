@@ -59,6 +59,10 @@ interface FormState {
   firstName: string;
   lastName: string;
   phone: string;
+  // second person (couple offer)
+  firstName2: string;
+  lastName2: string;
+  phone2: string;
   planType: PlanType;
   offer: OfferType;
   startDate: string;
@@ -71,6 +75,9 @@ const DEFAULT_FORM: FormState = {
   firstName: "",
   lastName: "",
   phone: "",
+  firstName2: "",
+  lastName2: "",
+  phone2: "",
   planType: "1_month",
   offer: "none",
   startDate: TODAY,
@@ -203,6 +210,32 @@ function Toast({ message, onDone }: { message: string; onDone: () => void }) {
   );
 }
 
+function CoupleSummaryPanel({ perPerson, total }: { perPerson: number; total: number }) {
+  return (
+    <div className="p-3 bg-gold/5 border border-gold/20 rounded flex items-center gap-4 flex-wrap">
+      <div className="flex items-center gap-2">
+        <span className="inline-block w-2 h-2 rounded-full bg-gold animate-pulse" />
+        <span className="font-mono text-[10px] text-gold uppercase tracking-widest">عرض الزوجين — خصم ١٥٪</span>
+      </div>
+      <div className="flex items-center gap-6 mr-auto">
+        <div className="text-center">
+          <p className="font-mono text-[9px] text-slate uppercase tracking-wider mb-0.5">للشخص الواحد</p>
+          <p className="font-display text-lg text-gold-bright tabular-nums">${perPerson.toFixed(2)}</p>
+        </div>
+        <div className="text-secondary font-mono text-xs">×٢</div>
+        <div className="text-center">
+          <p className="font-mono text-[9px] text-slate uppercase tracking-wider mb-0.5">المجموع</p>
+          <p className="font-display text-lg text-gold-bright tabular-nums">${total.toFixed(2)}</p>
+        </div>
+        <div className="text-center">
+          <p className="font-mono text-[9px] text-slate uppercase tracking-wider mb-0.5">الوفر</p>
+          <p className="font-display text-lg text-success tabular-nums">${(35 * 2 - total).toFixed(2)}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function SubscriptionsBlock() {
@@ -219,6 +252,8 @@ export default function SubscriptionsBlock() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const computedEndDate = calculateEndDate(form.startDate, form.planType, form.offer);
+  const isCouple = form.offer === "married_couple" && form.planType === "1_month";
+  const perPersonAmount = Number(Number(form.amount).toFixed(2));
 
   const recalcAmount = useCallback((planType: PlanType, offer: OfferType) => {
     return Number(calculateDiscountedPrice(planType, offer).toFixed(2));
@@ -288,18 +323,17 @@ export default function SubscriptionsBlock() {
     }
     setPhoneError("");
 
-    const memberName = `${form.firstName.trim()} ${form.lastName.trim()}`.trim();
-    const endDate    = computedEndDate;
-    const remaining  = calculateRemainingDays(endDate);
-    const amountUSD  = Number(Number(form.amount).toFixed(2));
-    const paidUSD    =
+    const endDate   = computedEndDate;
+    const remaining = calculateRemainingDays(endDate);
+    const amountUSD = perPersonAmount;
+    const paidUSD   =
       form.paymentStatus === "partial" ? Number(Number(form.paidAmount).toFixed(2)) :
       form.paymentStatus === "paid"    ? amountUSD : 0;
 
-    const sub: Subscription & { phoneNumber?: string } = {
+    const makeSub = (name: string, phone?: string): Subscription & { phoneNumber?: string } => ({
       id:            generateId(),
       memberId:      generateId(),
-      memberName,
+      memberName:    name,
       phoneNumber:   phone || undefined,
       planType:      form.planType,
       offer:         form.offer,
@@ -314,38 +348,51 @@ export default function SubscriptionsBlock() {
       createdAt:     new Date().toISOString(),
       createdBy:     user?.displayName ?? "unknown",
       lockedAt:      new Date().toISOString(),
-    };
-
-    setSubscriptions((prev) => [sub, ...prev]);
-
-    pushActivity({
-      type: "subscription",
-      description: `اشتراك جديد — ${memberName} (${getPlanLabel(form.planType)}) — $${amountUSD}`,
-      amountUSD,
-      userId:   user?.id ?? "",
-      userName: user?.displayName ?? "",
     });
 
-    if (user) {
-      void pushSubscription({
-        user:          { id: user.id, displayName: user.displayName },
-        memberName,
-        phoneNumber:   phone || undefined,
-        planType:      form.planType,
-        offer:         form.offer,
-        startDate:     form.startDate,
-        endDate,
+    const name1 = `${form.firstName.trim()} ${form.lastName.trim()}`.trim();
+    const name2 = isCouple ? `${form.firstName2.trim()} ${form.lastName2.trim()}`.trim() : "";
+    const phone2 = isCouple ? form.phone2.trim() : "";
+
+    const sub1 = makeSub(name1, phone);
+    const newSubs: (Subscription & { phoneNumber?: string })[] = [sub1];
+
+    if (isCouple && name2) {
+      newSubs.push(makeSub(name2, phone2 || undefined));
+    }
+
+    setSubscriptions((prev) => [...newSubs.reverse(), ...prev]);
+
+    for (const sub of newSubs) {
+      pushActivity({
+        type: "subscription",
+        description: `اشتراك جديد — ${sub.memberName} (${getPlanLabel(form.planType)}) — $${amountUSD}`,
         amountUSD,
-        paidAmountUSD: paidUSD,
-        paymentStatus: form.paymentStatus,
-        exchangeRate,
+        userId:   user?.id ?? "",
+        userName: user?.displayName ?? "",
       });
+
+      if (user) {
+        void pushSubscription({
+          user:          { id: user.id, displayName: user.displayName },
+          memberName:    sub.memberName,
+          phoneNumber:   sub.phoneNumber,
+          planType:      form.planType,
+          offer:         form.offer,
+          startDate:     form.startDate,
+          endDate,
+          amountUSD,
+          paidAmountUSD: paidUSD,
+          paymentStatus: form.paymentStatus,
+          exchangeRate,
+        });
+      }
     }
 
     setForm(DEFAULT_FORM);
     setPhoneError("");
     setFormOpen(false);
-    setToastMessage("تم حفظ الاشتراك بنجاح");
+    setToastMessage(isCouple && name2 ? "تم حفظ اشتراكَي الزوجين بنجاح" : "تم حفظ الاشتراك بنجاح");
   };
 
   const rowAccent = (sub: Subscription): string => {
@@ -399,19 +446,24 @@ export default function SubscriptionsBlock() {
             <p className="font-mono text-[10px] text-secondary uppercase tracking-widest mb-4">اشتراك جديد</p>
 
             <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Row 1: First name / Last name */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className={labelCls}>الاسم الأول</label>
-                  <input required type="text" className={inputCls} placeholder="مثال: خالد"
-                    value={form.firstName}
-                    onChange={(e) => setForm((p) => ({ ...p, firstName: e.target.value }))} />
-                </div>
-                <div>
-                  <label className={labelCls}>الاسم الأخير</label>
-                  <input required type="text" className={inputCls} placeholder="مثال: الراشدي"
-                    value={form.lastName}
-                    onChange={(e) => setForm((p) => ({ ...p, lastName: e.target.value }))} />
+              {/* Row 1: First person name */}
+              <div>
+                {isCouple && (
+                  <p className="font-mono text-[9px] text-gold uppercase tracking-widest mb-2">الشخص الأول</p>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className={labelCls}>الاسم الأول</label>
+                    <input required type="text" className={inputCls} placeholder="مثال: خالد"
+                      value={form.firstName}
+                      onChange={(e) => setForm((p) => ({ ...p, firstName: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className={labelCls}>الاسم الأخير</label>
+                    <input required type="text" className={inputCls} placeholder="مثال: الراشدي"
+                      value={form.lastName}
+                      onChange={(e) => setForm((p) => ({ ...p, lastName: e.target.value }))} />
+                  </div>
                 </div>
               </div>
 
@@ -424,6 +476,34 @@ export default function SubscriptionsBlock() {
                   onChange={(e) => { setForm((p) => ({ ...p, phone: e.target.value })); setPhoneError(""); }} />
                 {phoneError && <p className="mt-1 font-mono text-[10px] text-red">{phoneError}</p>}
               </div>
+
+              {/* Couple: second person */}
+              {isCouple && (
+                <div className="space-y-4 border-t border-gold/20 pt-4">
+                  <p className="font-mono text-[9px] text-gold uppercase tracking-widest">الشخص الثاني</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className={labelCls}>الاسم الأول</label>
+                      <input required type="text" className={inputCls} placeholder="مثال: نورا"
+                        value={form.firstName2}
+                        onChange={(e) => setForm((p) => ({ ...p, firstName2: e.target.value }))} />
+                    </div>
+                    <div>
+                      <label className={labelCls}>الاسم الأخير</label>
+                      <input required type="text" className={inputCls} placeholder="مثال: الراشدي"
+                        value={form.lastName2}
+                        onChange={(e) => setForm((p) => ({ ...p, lastName2: e.target.value }))} />
+                    </div>
+                  </div>
+                  <div className="sm:w-1/2">
+                    <label className={labelCls}>رقم الهاتف (اختياري)</label>
+                    <input type="tel" className={inputCls} placeholder="09XXXXXXXX" dir="ltr"
+                      value={form.phone2}
+                      onChange={(e) => setForm((p) => ({ ...p, phone2: e.target.value }))} />
+                  </div>
+                  <CoupleSummaryPanel perPerson={perPersonAmount} total={perPersonAmount * 2} />
+                </div>
+              )}
 
               {/* Row 3: Plan / Offer */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -527,7 +607,7 @@ export default function SubscriptionsBlock() {
                 <button type="submit"
                   className="inline-flex items-center gap-2 px-5 py-2.5 bg-gold hover:bg-gold-bright active:bg-gold-deep text-void font-display text-sm tracking-widest uppercase clip-corner-sm transition-colors duration-150">
                   <LockIcon size={13} />
-                  قفل وحفظ الاشتراك
+                  {isCouple ? "قفل وحفظ اشتراكَي الزوجين" : "قفل وحفظ الاشتراك"}
                 </button>
                 <button type="button"
                   onClick={() => { setForm(DEFAULT_FORM); setPhoneError(""); setFormOpen(false); }}

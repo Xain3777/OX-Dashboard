@@ -9,8 +9,8 @@ import {
   useRef,
   ReactNode,
 } from "react";
-import { Product, Sale, Expense, PaymentMethod, Subscription } from "./types";
-import { PRODUCTS, SALES, EXPENSES, SUBSCRIPTIONS } from "./mock-data";
+import { Product, Sale, PaymentMethod, Subscription } from "./types";
+import { PRODUCTS, SALES, SUBSCRIPTIONS } from "./mock-data";
 import { generateId } from "./business-logic";
 
 // ─── InBody ───────────────────────────────────────────────────────────────────
@@ -27,7 +27,7 @@ export interface InBodySession {
   sessionType?: InBodySessionType;
   priceSYP: number;
   currency: "usd" | "syp";
-  paymentMethod: PaymentMethod;
+  paymentMethod: "cash";
   createdAt: string;
   createdBy: string;
   createdByName: string;
@@ -35,7 +35,7 @@ export interface InBodySession {
 
 // ─── Activity feed ────────────────────────────────────────────────────────────
 
-export type ActivityType = "inbody" | "sale" | "expense" | "subscription" | "price_edit";
+export type ActivityType = "inbody" | "sale" | "subscription" | "price_edit";
 
 export interface ActivityEntry {
   id: string;
@@ -48,18 +48,6 @@ export interface ActivityEntry {
   timestamp: string;
 }
 
-// ─── Expense rates (salaries & fixed costs) ───────────────────────────────────
-
-export interface ExpenseRate {
-  id: string;
-  category: "salary" | "rent" | "utility" | "service" | "other";
-  label: string;
-  amount: number;   // in USD
-  frequency: "monthly" | "weekly" | "daily";
-  active: boolean;
-  lastUpdated: string;
-}
-
 // ─── Full store state ─────────────────────────────────────────────────────────
 
 export interface StoreState {
@@ -67,10 +55,8 @@ export interface StoreState {
   sales: Sale[];
   subscriptions: Subscription[];
   inBodySessions: InBodySession[];
-  expenses: Expense[];
   activityFeed: ActivityEntry[];
   inBodyPrices: { member: number; nonMember: number }; // SYP
-  expenseRates: ExpenseRate[];
   exchangeRate: number; // 1 USD = X SYP
 }
 
@@ -88,12 +74,6 @@ export interface StoreContextType extends StoreState {
   // InBody
   addInBodySession: (session: Omit<InBodySession, "id" | "createdAt">) => void;
   updateInBodyPrices: (member: number, nonMember: number) => void;
-  // Expenses
-  addExpense: (expense: Omit<Expense, "id" | "createdAt">) => void;
-  // Rates
-  updateExpenseRate: (id: string, amount: number) => void;
-  addExpenseRate: (rate: Omit<ExpenseRate, "id" | "lastUpdated">) => void;
-  toggleExpenseRate: (id: string) => void;
   // Currency
   setExchangeRate: (rate: number) => void;
   // Activity
@@ -131,33 +111,17 @@ const INITIAL_SESSIONS: InBodySession[] = [
   },
 ];
 
-const INITIAL_RATES: ExpenseRate[] = [
-  { id: "r1", category: "salary", label: "راتب محمد (المدرب)", amount: 280, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r2", category: "salary", label: "راتب لينا (استقبال)", amount: 250, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r3", category: "salary", label: "راتب يوسف (استقبال)", amount: 200, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r4", category: "salary", label: "راتب عامل النظافة", amount: 120, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r5", category: "salary", label: "راتب الفاليه", amount: 150, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r6", category: "rent", label: "إيجار النادي", amount: 400, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r7", category: "utility", label: "فاتورة الكهرباء", amount: 60, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r8", category: "utility", label: "فاتورة المياه", amount: 15, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r9", category: "utility", label: "إنترنت", amount: 20, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r10", category: "service", label: "مواد تنظيف ومنظفات", amount: 30, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r11", category: "service", label: "صيانة عامة", amount: 50, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-];
-
 const INITIAL_STATE: StoreState = {
   products: PRODUCTS,
   sales: SALES,
   subscriptions: SUBSCRIPTIONS,
   inBodySessions: INITIAL_SESSIONS,
-  expenses: EXPENSES,
   activityFeed: [],
   inBodyPrices: { member: 60000, nonMember: 100000 },
-  expenseRates: INITIAL_RATES,
   exchangeRate: 13200,
 };
 
-const STORAGE_KEY = "ox_store_v3";
+const STORAGE_KEY = "ox_store_v4";
 
 function loadState(): StoreState {
   if (typeof window === "undefined") return INITIAL_STATE;
@@ -189,10 +153,6 @@ const StoreContext = createContext<StoreContextType>({
   addSubscription: () => {},
   addInBodySession: () => {},
   updateInBodyPrices: () => {},
-  addExpense: () => {},
-  updateExpenseRate: () => {},
-  addExpenseRate: () => {},
-  toggleExpenseRate: () => {},
   setExchangeRate: () => {},
   pushActivity: () => {},
 });
@@ -201,8 +161,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [state, setStateRaw] = useState<StoreState>(INITIAL_STATE);
   const stateRef = useRef(state);
 
-  // Helper: update state, save to localStorage, and the storage event
-  // fires automatically for OTHER tabs
   const setState = useCallback((updater: (prev: StoreState) => StoreState) => {
     setStateRaw((prev) => {
       const next = updater(prev);
@@ -212,14 +170,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  // Hydrate from localStorage on mount
   useEffect(() => {
     const loaded = loadState();
     setStateRaw(loaded);
     stateRef.current = loaded;
   }, []);
 
-  // Listen for changes made in OTHER tabs
   useEffect(() => {
     const handler = (e: StorageEvent) => {
       if (e.key === STORAGE_KEY && e.newValue) {
@@ -362,64 +318,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [setState]
   );
 
-  const addExpense = useCallback((expense: Omit<Expense, "id" | "createdAt">) => {
-    const full: Expense = { ...expense, id: generateId(), createdAt: new Date().toISOString() };
-    const cur = expense.currency ?? "usd";
-    const amountLabel = cur === "syp"
-      ? `${expense.amount.toLocaleString("en-US")} ل.س`
-      : `${expense.amount}$`;
-    const entry: ActivityEntry = {
-      id: generateId(),
-      type: "expense",
-      description: `مصروف: ${expense.description} — ${amountLabel}`,
-      amountUSD: cur === "usd" ? expense.amount : undefined,
-      amountSYP: cur === "syp" ? expense.amount : undefined,
-      userId: expense.createdBy,
-      userName: expense.createdBy,
-      timestamp: new Date().toISOString(),
-    };
-    setState((prev) => ({
-      ...prev,
-      expenses: [...prev.expenses, full],
-      activityFeed: [entry, ...prev.activityFeed].slice(0, 100),
-    }));
-  }, [setState]);
-
-  const updateExpenseRate = useCallback((id: string, amount: number) => {
-    setState((prev) => ({
-      ...prev,
-      expenseRates: prev.expenseRates.map((r) =>
-        r.id === id
-          ? { ...r, amount, lastUpdated: new Date().toISOString().split("T")[0] }
-          : r
-      ),
-    }));
-  }, [setState]);
-
-  const addExpenseRate = useCallback(
-    (rate: Omit<ExpenseRate, "id" | "lastUpdated">) => {
-      const full: ExpenseRate = {
-        ...rate,
-        id: generateId(),
-        lastUpdated: new Date().toISOString().split("T")[0],
-      };
-      setState((prev) => ({
-        ...prev,
-        expenseRates: [...prev.expenseRates, full],
-      }));
-    },
-    [setState]
-  );
-
-  const toggleExpenseRate = useCallback((id: string) => {
-    setState((prev) => ({
-      ...prev,
-      expenseRates: prev.expenseRates.map((r) =>
-        r.id === id ? { ...r, active: !r.active } : r
-      ),
-    }));
-  }, [setState]);
-
   const setExchangeRate = useCallback((rate: number) => {
     setState((prev) => ({ ...prev, exchangeRate: rate }));
   }, [setState]);
@@ -481,10 +379,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     addSubscription,
     addInBodySession,
     updateInBodyPrices,
-    addExpense,
-    updateExpenseRate,
-    addExpenseRate,
-    toggleExpenseRate,
     setExchangeRate,
     pushActivity,
   };
