@@ -97,7 +97,7 @@ export default function CashSessionBlock() {
           .select(`${nativeCol}, amount_syp, currency`)
           .eq("cash_session_id", sess.id)
           .is("cancelled_at", null);
-        const rows = (data ?? []) as Array<Record<string, unknown>>;
+        const rows = (data ?? []) as unknown as Array<Record<string, unknown>>;
         let syp = 0, usd = 0;
         for (const r of rows) {
           if ((r.currency as string) === "syp") syp += Number(r[nativeCol] ?? 0);
