@@ -5,30 +5,30 @@ import { PlanType, OfferType, ProductCategory } from "./types";
 // ============================================================
 
 export const PLAN_BASE_PRICES: Record<PlanType, number> = {
-  daily:      5,
-  "1_month":  35,
-  "2_months": 70,
-  "3_months": 105,  // includes 0.5 month free
-  "4_months": 140,  // includes 1 month free
-  "6_months": 175,
-  "7_months": 210,
-  "8_months": 245,
-  "9_months": 280,  // includes 1.5 months free
-  "12_months": 420, // includes 2 months free
+  daily:       5,
+  "1_month":   35,
+  "2_months":  70,
+  "3_months":  90,  // 15% off vs 3×$35
+  "4_months":  140,
+  "6_months":  170, // 20% off vs 6×$35
+  "7_months":  210,
+  "8_months":  245,
+  "9_months":  235, // 25% off vs 9×$35
+  "12_months": 300, // 30% off vs 12×$35
 };
 
-// Duration in days (free months already baked in for bonus plans)
+// Duration in calendar days — no free months baked in (referral bonuses handled separately)
 const PLAN_DAYS: Record<PlanType, number> = {
-  daily:      1,
-  "1_month":  30,
-  "2_months": 60,
-  "3_months": 105, // 90 + 15
-  "4_months": 150, // 120 + 30
-  "6_months": 180,
-  "7_months": 210,
-  "8_months": 240,
-  "9_months": 315, // 270 + 45
-  "12_months": 425, // 365 + 60
+  daily:       1,
+  "1_month":   30,
+  "2_months":  60,
+  "3_months":  90,
+  "4_months":  120,
+  "6_months":  180,
+  "7_months":  210,
+  "8_months":  240,
+  "9_months":  270,
+  "12_months": 365,
 };
 
 // ============================================================
@@ -38,11 +38,14 @@ const PLAN_DAYS: Record<PlanType, number> = {
 export function calculateEndDate(
   startDate: string,
   plan: PlanType,
-  _offer: OfferType, // offers don't add days
+  offer: OfferType,
 ): string {
   const start = new Date(startDate);
   const end   = new Date(start);
-  end.setDate(end.getDate() + PLAN_DAYS[plan]);
+  let days = PLAN_DAYS[plan];
+  if (offer === "referral_5") days += 30;  // +1 month free
+  if (offer === "referral_9") days += 60;  // +2 months free
+  end.setDate(end.getDate() + days);
   return end.toISOString().split("T")[0];
 }
 
@@ -54,14 +57,14 @@ export function calculateRemainingDays(endDate: string): number {
   return Math.max(0, diff);
 }
 
-// Offers only apply to 1-month plans; do not stack with duration bonuses.
+// Referral offers add days but never change the price.
+// married_couple and corporate only discount 1-month plans.
 export function calculateDiscountedPrice(planType: PlanType, offer: OfferType): number {
   const base = PLAN_BASE_PRICES[planType];
-  if (planType !== "1_month" || offer === "none") return base;
-  if (offer === "student") return 20;
-  if (offer === "married_couple" || offer === "corporate") {
-    return Number((base * 0.85).toFixed(2));
-  }
+  if (offer === "none" || offer === "referral_5" || offer === "referral_9") return base;
+  if (planType !== "1_month") return base;
+  if (offer === "married_couple") return 30;                          // $60 total / 2 people
+  if (offer === "corporate")      return Number((base * 0.85).toFixed(2)); // 15% off
   return base;
 }
 
@@ -84,9 +87,10 @@ export function getPlanLabel(plan: PlanType): string {
 export function getOfferLabel(offer: OfferType): string {
   const labels: Record<OfferType, string> = {
     none:           "بدون عرض",
-    student:        "طالب ($20 ثابت)",
-    married_couple: "متزوجون (خصم ١٥٪)",
-    corporate:      "موظف شركة (خصم ١٥٪)",
+    married_couple: "متزوجون ($30/شخص — $60 للزوجين)",
+    referral_5:     "إحالة 5 أصدقاء (+شهر مجاني)",
+    referral_9:     "إحالة 9 أصدقاء (+شهرين مجانيين)",
+    corporate:      "موظف شركة/بنك (خصم ١٥٪)",
   };
   return labels[offer];
 }

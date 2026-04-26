@@ -27,12 +27,13 @@ export type PlanType =
   | "9_months"
   | "12_months";
 
-// Offers apply only to 1-month plans and do not stack with duration bonuses.
+// Price offers apply only to 1-month plans. Referral offers add days to any plan.
 export type OfferType =
   | "none"
-  | "student"        // $20 fixed price
-  | "married_couple" // 15% off per person
-  | "corporate";     // 15% off
+  | "married_couple" // $30/person (couple pays $60 total instead of $70)
+  | "referral_5"     // +1 month free (30 extra days, any plan)
+  | "referral_9"     // +2 months free (60 extra days, any plan)
+  | "corporate";     // 15% off, 1-month only
 
 export type PaymentStatus = "paid" | "partial" | "unpaid";
 export type SubStatus = "active" | "expired" | "frozen" | "cancelled";
