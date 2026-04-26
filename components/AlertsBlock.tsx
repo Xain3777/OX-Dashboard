@@ -5,12 +5,10 @@ import {
   CreditCard,
   Package,
   PackageX,
-  Clock,
   AlertTriangle,
   CheckCircle2,
-  ShieldAlert,
 } from "lucide-react";
-import type { Subscription, Product, CashSession } from "@/lib/types";
+import type { Subscription, Product } from "@/lib/types";
 import { formatDate, getProductCategoryLabel } from "@/lib/business-logic";
 
 // ─── Alert model ───────────────────────────────────────────────────────────────
@@ -68,8 +66,6 @@ function AlertRow({ alert }: { alert: Alert }) {
 interface AlertsBlockProps {
   subscriptions: Subscription[];
   products: Product[];
-  cashSession: CashSession | null;
-  unresolvedDiscrepancies: number;
 }
 
 // ─── Main component ────────────────────────────────────────────────────────────
@@ -77,8 +73,6 @@ interface AlertsBlockProps {
 export default function AlertsBlock({
   subscriptions,
   products,
-  cashSession,
-  unresolvedDiscrepancies,
 }: AlertsBlockProps) {
   const alerts: Alert[] = [];
 
@@ -142,33 +136,6 @@ export default function AlertsBlock({
       icon: <PackageX size={15} />,
       message: `نفد المخزون: ${product.name}`,
       detail: `الفئة: ${getProductCategoryLabel(product.category)}`,
-    });
-  }
-
-  // ── 5. جلسة نقدية مفتوحة بعد الساعة 8 مساءً ─────────────────────────────
-  if (cashSession && cashSession.status === "open") {
-    const now = new Date();
-    const isPastEightPM = now.getHours() >= 20;
-
-    if (isPastEightPM) {
-      alerts.push({
-        id: "session-open-late",
-        severity: "critical",
-        icon: <Clock size={15} />,
-        message: "الجلسة النقدية لا تزال مفتوحة بعد الساعة 8:00 مساءً",
-        detail: `فتحها ${cashSession.openedBy} في ${new Date(cashSession.openedAt).toLocaleTimeString("ar-EG-u-nu-latn", { hour: "2-digit", minute: "2-digit" })} · يجب إغلاقها ومطابقتها`,
-      });
-    }
-  }
-
-  // ── 6. فروقات غير محسومة ─────────────────────────────────────────────────
-  if (unresolvedDiscrepancies > 0) {
-    alerts.push({
-      id: "discrepancies",
-      severity: "critical",
-      icon: <ShieldAlert size={15} />,
-      message: `${unresolvedDiscrepancies} ${unresolvedDiscrepancies === 1 ? "فارق نقدي غير محسوم" : "فروقات نقدية غير محسومة"}`,
-      detail: "يجب المراجعة والتسوية قبل نهاية اليوم",
     });
   }
 

@@ -4,13 +4,11 @@ import { WeeklyReview as WeeklyReviewType } from "@/lib/types";
 import { formatCurrency, formatDate } from "@/lib/business-logic";
 import {
   TrendingUp,
-  TrendingDown,
   UserPlus,
   UserMinus,
   Clock,
   AlertCircle,
   Package,
-  ShieldAlert,
 } from "lucide-react";
 
 interface WeeklyReviewProps {
@@ -61,9 +59,6 @@ function StatCard({ label, icon, value, accent = "default", sub, glowRed }: Stat
 }
 
 export default function WeeklyReview({ data }: WeeklyReviewProps) {
-  const net = data.totalRevenue - data.totalExpenses;
-  const netPositive = net >= 0;
-
   const subPct =
     data.totalRevenue > 0
       ? Math.round((data.subscriptionRevenue / data.totalRevenue) * 100)
@@ -110,14 +105,6 @@ export default function WeeklyReview({ data }: WeeklyReviewProps) {
           }
         />
 
-        {/* المصروفات */}
-        <StatCard
-          label="المصروفات"
-          icon={<TrendingDown size={14} />}
-          accent="red"
-          value={`${formatCurrency(data.totalExpenses)}$`}
-        />
-
         {/* اشتراكات جديدة */}
         <StatCard
           label="اشتراكات جديدة"
@@ -157,47 +144,15 @@ export default function WeeklyReview({ data }: WeeklyReviewProps) {
           value={data.stockMovements}
         />
 
-        {/* فروقات غير محلولة */}
-        <StatCard
-          label="فروقات غير محلولة"
-          icon={<ShieldAlert size={14} />}
-          value={data.unresolvedDiscrepancies}
-          accent={data.unresolvedDiscrepancies > 0 ? "red" : "default"}
-          glowRed={data.unresolvedDiscrepancies > 0}
-        />
       </div>
 
-      {/* Net Line */}
+      {/* Revenue total footer */}
       <div className="mx-4 mb-4 border border-[#252525] bg-[#0A0A0A] px-4 py-3 clip-corner-sm">
         <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 flex-wrap text-xs font-mono text-[#555555]">
-            <span>
-              <span className="text-[#5CC45C]">
-                {formatCurrency(data.totalRevenue)}$
-              </span>{" "}
-              إيرادات
-            </span>
-            <span className="text-[#252525]">—</span>
-            <span>
-              <span className="text-[#FF3333]">
-                {formatCurrency(data.totalExpenses)}$
-              </span>{" "}
-              مصروفات
-            </span>
-            <span className="text-[#252525]">=</span>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="text-xs font-mono text-[#555555] uppercase tracking-wider">
-              الصافي
-            </span>
-            <span
-              className={`font-display text-xl tabular-nums tracking-wider ${
-                netPositive ? "text-[#5CC45C]" : "text-[#FF3333]"
-              }`}
-            >
-              {netPositive ? "+" : ""}{formatCurrency(net)}$
-            </span>
-          </div>
+          <span className="text-xs font-mono text-[#555555] uppercase tracking-wider">إجمالي الإيرادات</span>
+          <span className="font-display text-xl tabular-nums tracking-wider text-[#5CC45C]">
+            {formatCurrency(data.totalRevenue)}$
+          </span>
         </div>
       </div>
     </div>

@@ -3,7 +3,6 @@
 import { useState, useCallback } from "react";
 import Image from "next/image";
 import * as XLSX from "xlsx";
-import { CASH_SESSION } from "@/lib/mock-data";
 import { CurrencyProvider, useCurrency } from "@/lib/currency-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { StoreProvider, useStore } from "@/lib/store-context";
@@ -214,7 +213,6 @@ function exportMonthlyExcel(ctx: {
 const ACTIVITY_TO_AUDIT_ACTION: Record<ActivityType, AuditAction> = {
   sale: "sale_created",
   inbody: "inbody_session",
-  expense: "expense_created",
   subscription: "subscription_created",
   price_edit: "price_edit",
 };
@@ -370,32 +368,14 @@ function DashboardContent() {
               wearablesRevenue={280}
               mealsRevenue={300}
               drinksRevenue={180}
-              totalExpenses={0}
-              salariesExpense={0}
-              rentExpense={0}
-              productsExpense={350}
-              maintenanceExpense={320}
-              suppliesExpense={120}
-              otherExpense={60}
               totalDiscounts={85}
-              cashOnHand={CASH_SESSION.openingCash}
-              expectedCash={CASH_SESSION.expectedCash}
             />
           </CollapsibleSection>
         )}
 
         {/* تسوية الصندوق */}
         <CollapsibleSection title="تسوية الصندوق اليومية" collapsed={collapsed.reconciliation} onToggle={() => toggle("reconciliation")} accent>
-          <ReconciliationBlock
-            session={CASH_SESSION}
-            onCloseDay={(data) => console.log("تم إغلاق اليوم:", data)}
-            totalTransactions={store.sales.length}
-            cardTransferSales={
-              store.sales
-                .filter(s => s.paymentMethod === "card" || s.paymentMethod === "transfer")
-                .reduce((sum, s) => sum + s.total, 0)
-            }
-          />
+          <ReconciliationBlock />
         </CollapsibleSection>
 
         {/* الاشتراكات */}
@@ -422,11 +402,11 @@ function DashboardContent() {
         {isManager && (
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
             <CollapsibleSection title="المراجعة الأسبوعية" collapsed={collapsed.weekly} onToggle={() => toggle("weekly")}>
-              <WeeklyReview data={{ weekStart: "2026-04-07", weekEnd: "2026-04-13", totalRevenue: 2850, totalExpenses: 780, subscriptionRevenue: 1630, storeRevenue: 1220, newSubscriptions: 2, expiredSubscriptions: 1, expiringThisWeek: 2, pendingPayments: 1, stockMovements: 34, unresolvedDiscrepancies: 0 }} />
+              <WeeklyReview data={{ weekStart: "2026-04-07", weekEnd: "2026-04-13", totalRevenue: 2850, subscriptionRevenue: 1630, storeRevenue: 1220, newSubscriptions: 2, expiredSubscriptions: 1, expiringThisWeek: 2, pendingPayments: 1, stockMovements: 34 }} />
             </CollapsibleSection>
             <CollapsibleSection title="المراجعة الشهرية" collapsed={collapsed.monthly} onToggle={() => toggle("monthly")}>
               <MonthlyReview
-                data={{ month: "أبريل", year: 2026, totalRevenue: 8620, totalExpenses: 12350, netProfit: -3730, subscriptionRevenue: 5790, storeRevenue: store.sales.filter(s => !s.isReversal).reduce((a, b) => a + b.total, 0), expenseBreakdown: { salaries: 6700, rent: 5000, equipment: 0, maintenance: 320, utilities: 150, supplies: 120, marketing: 0, miscellaneous: 60 }, topProducts: [{ name: "كوب بروتين (طازج)", quantity: 48, revenue: 720 }, { name: "مشروب BCAA (بارد)", quantity: 38, revenue: 380 }, { name: "واي بروتين ٢ كجم", quantity: 6, revenue: 1080 }], activeSubscriptions: 7, expiredSubscriptions: 1, locked: false }}
+                data={{ month: "4", year: 2026, totalRevenue: 8620, subscriptionRevenue: 5790, storeRevenue: store.sales.filter(s => !s.isReversal).reduce((a, b) => a + b.total, 0), topProducts: [{ name: "كوب بروتين (طازج)", quantity: 48, revenue: 720 }, { name: "مشروب BCAA (بارد)", quantity: 38, revenue: 380 }, { name: "واي بروتين ٢ كجم", quantity: 6, revenue: 1080 }], activeSubscriptions: 7, expiredSubscriptions: 1, locked: false }}
                 onLock={() => console.log("تم قفل الشهر")}
               />
             </CollapsibleSection>
@@ -482,13 +462,12 @@ function DashboardContent() {
 const FEED_ICON: Record<ActivityType, React.ReactNode> = {
   sale:         <ShoppingCart size={12} className="text-[#5CC45C]" />,
   inbody:       <Dumbbell size={12} className="text-[#F5C100]" />,
-  expense:      <Tag size={12} className="text-[#D42B2B]" />,
   subscription: <Activity size={12} className="text-[#AAAAAA]" />,
   price_edit:   <Tag size={12} className="text-[#F5C100]" />,
 };
 
 const FEED_TYPE_LABEL: Record<ActivityType, string> = {
-  sale: "بيع", inbody: "InBody", expense: "مصروف", subscription: "اشتراك", price_edit: "تعديل سعر",
+  sale: "بيع", inbody: "InBody", subscription: "اشتراك", price_edit: "تعديل سعر",
 };
 
 function LiveFeedPanel({ feed }: { feed: ActivityEntry[] }) {

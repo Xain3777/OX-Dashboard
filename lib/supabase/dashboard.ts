@@ -5,21 +5,16 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { supabaseBrowser } from "./client";
-import { fetchExchangeRate } from "./intake";
+import { fetchExchangeRate, getCurrentBusinessDate } from "./intake";
 
 export interface LiveKPI {
-  todayRevenueUSD: number;       // sum of amount_syp for today / live FX
-  activeMembers: number;         // distinct member_name on active subs
+  todayRevenueUSD: number;
+  activeMembers: number;
   expiringThisWeek: number;
   endedCount: number;
-  cashOnHandSYP: number;         // currently-open sessions, opening + intake - expenses
+  cashOnHandSYP: number;
   cashOnHandUSD: number;
-  expectedCashSYP: number;
-  actualCashSYP: number;         // sum of last-known close for today
-  cashDifferenceSYP: number;     // expected - actual (over all closed shifts today)
-  unresolvedDiscrepancies: number;
   lowStockItems: number;
-  monthlyProfit: number;         // USD
 }
 
 const ZERO: LiveKPI = {
@@ -29,19 +24,8 @@ const ZERO: LiveKPI = {
   endedCount: 0,
   cashOnHandSYP: 0,
   cashOnHandUSD: 0,
-  expectedCashSYP: 0,
-  actualCashSYP: 0,
-  cashDifferenceSYP: 0,
-  unresolvedDiscrepancies: 0,
   lowStockItems: 0,
-  monthlyProfit: 0,
 };
-
-function startOfTodayISO() {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString();
-}
 
 function inSevenDaysISO() {
   const d = new Date();
@@ -54,30 +38,19 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function startOfMonthISO() {
-  const d = new Date();
-  d.setDate(1);
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString();
-}
-
 async function sumAmountSypToday(table: string): Promise<number> {
   const supabase = supabaseBrowser();
-  const since = startOfTodayISO();
-  const { data } = await supabase
-    .from(table)
-    .select("amount_syp")
-    .gte("created_at", since)
-    .is("cancelled_at", null);
-  return (data ?? []).reduce(
-    (a: number, r: Record<string, unknown>) => a + Number(r.amount_syp ?? 0),
-    0
-  );
-}
+  const businessDate = getCurrentBusinessDate();
+  // Approximate: rows whose session is today's business date session
+  // For simplicity use created_at >= start of Latakia business day
+  const latakiaOffset = 3 * 60 * 60 * 1000;
+  const now = Date.now() + latakiaOffset;
+  const d = new Date(now);
+  const hour = d.getUTCHours();
+  if (hour < 6) d.setUTCDate(d.getUTCDate() - 1);
+  d.setUTCHours(3, 0, 0, 0); // 06:00 local = 03:00 UTC
+  const since = d.toISOString();
 
-async function sumAmountSypMonth(table: string): Promise<number> {
-  const supabase = supabaseBrowser();
-  const since = startOfMonthISO();
   const { data } = await supabase
     .from(table)
     .select("amount_syp")
@@ -91,34 +64,23 @@ async function sumAmountSypMonth(table: string): Promise<number> {
 
 export async function fetchLiveKPI(): Promise<LiveKPI> {
   const supabase = supabaseBrowser();
+  const businessDate = getCurrentBusinessDate();
 
   const [
     rate,
     subsToday,
     salesToday,
     inbodyToday,
-    expensesToday,
-    subsMonth,
-    salesMonth,
-    inbodyMonth,
-    expensesMonth,
     activeSubs,
     expiringSoon,
     endedSubs,
     openSessions,
-    closedToday,
-    discCount,
     lowStock,
   ] = await Promise.all([
     fetchExchangeRate(),
     sumAmountSypToday("subscriptions"),
     sumAmountSypToday("sales"),
     sumAmountSypToday("inbody_sessions"),
-    sumAmountSypToday("expenses"),
-    sumAmountSypMonth("subscriptions"),
-    sumAmountSypMonth("sales"),
-    sumAmountSypMonth("inbody_sessions"),
-    sumAmountSypMonth("expenses"),
     supabase.from("subscriptions").select("member_name", { count: "exact", head: true })
       .eq("status", "active").is("cancelled_at", null),
     supabase.from("subscriptions").select("id", { count: "exact", head: true })
@@ -126,29 +88,13 @@ export async function fetchLiveKPI(): Promise<LiveKPI> {
       .gte("end_date", todayISO()).lte("end_date", inSevenDaysISO()),
     supabase.from("subscriptions").select("id", { count: "exact", head: true })
       .or(`status.eq.expired,end_date.lt.${todayISO()}`).is("cancelled_at", null),
-    supabase.from("cash_sessions").select("opening_cash_syp")
-      .eq("status", "open"),
-    supabase.from("cash_sessions").select("expected_cash_syp, closing_cash_syp, discrepancy_syp")
-      .eq("status", "closed").gte("closed_at", startOfTodayISO()),
-    supabase.from("discrepancy_logs").select("id", { count: "exact", head: true })
-      .eq("resolved", false),
+    supabase.from("cash_sessions").select("id")
+      .eq("business_date", businessDate).eq("status", "open").limit(1),
     supabase.from("products").select("id, stock, low_stock_threshold"),
   ]);
 
   const todayRevenueSYP = subsToday + salesToday + inbodyToday;
-  const monthRevenueSYP = subsMonth + salesMonth + inbodyMonth;
-  const monthlyProfitSYP = monthRevenueSYP - expensesMonth;
-
-  const openOpening = (openSessions.data ?? []).reduce(
-    (a: number, r: Record<string, unknown>) => a + Number(r.opening_cash_syp ?? 0), 0
-  );
-  // Expected cash on hand = opening of every open session + today's intake - today's expenses.
-  const cashOnHandSYP = openOpening + todayRevenueSYP - expensesToday;
-
-  // Aggregate over closed shifts today: sum expected vs actual.
-  const closedRows = (closedToday.data ?? []) as Array<Record<string, unknown>>;
-  const expectedSum = closedRows.reduce((a, r) => a + Number(r.expected_cash_syp ?? 0), 0);
-  const actualSum   = closedRows.reduce((a, r) => a + Number(r.closing_cash_syp ?? 0), 0);
+  const cashOnHandSYP = openSessions.data && openSessions.data.length > 0 ? todayRevenueSYP : 0;
 
   const lowStockCount = (lowStock.data ?? []).filter(
     (p: Record<string, unknown>) => Number(p.stock ?? 0) <= Number(p.low_stock_threshold ?? 0)
@@ -161,12 +107,7 @@ export async function fetchLiveKPI(): Promise<LiveKPI> {
     endedCount: endedSubs.count ?? 0,
     cashOnHandSYP,
     cashOnHandUSD: rate > 0 ? cashOnHandSYP / rate : 0,
-    expectedCashSYP: expectedSum,
-    actualCashSYP:   actualSum,
-    cashDifferenceSYP: expectedSum - actualSum,
-    unresolvedDiscrepancies: discCount.count ?? 0,
     lowStockItems: lowStockCount,
-    monthlyProfit: rate > 0 ? monthlyProfitSYP / rate : 0,
   };
 }
 
@@ -174,9 +115,7 @@ const REALTIME_TABLES = [
   "subscriptions",
   "sales",
   "inbody_sessions",
-  "expenses",
   "cash_sessions",
-  "discrepancy_logs",
   "products",
 ] as const;
 
