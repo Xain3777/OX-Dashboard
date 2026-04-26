@@ -15,7 +15,6 @@ import {
   Product,
   Sale,
   ProductCategory,
-  Currency,
 } from "@/lib/types";
 import {
   formatCurrency,
@@ -42,16 +41,6 @@ const CATEGORY_STYLES: Record<ProductCategory, string> = {
   other:        "bg-[#252525] text-[#777777] border border-[#555555]/30",
 };
 
-const CURRENCY_STYLES: Record<Currency, string> = {
-  syp: "bg-[#5CC45C]/12 text-[#5CC45C] border border-[#5CC45C]/25",
-  usd: "bg-[#F5C100]/12 text-[#F5C100] border border-[#F5C100]/25",
-};
-
-const CURRENCY_LABEL: Record<Currency, string> = {
-  syp: "ل.س",
-  usd: "$",
-};
-
 const CATEGORY_GROUP_ORDER: ProductCategory[] = [
   "supplements",
   "protein_cups",
@@ -71,14 +60,6 @@ function CategoryBadge({ category }: { category: ProductCategory }) {
   return (
     <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-wide ${CATEGORY_STYLES[category]}`}>
       {getProductCategoryLabel(category)}
-    </span>
-  );
-}
-
-function CurrencyBadge({ currency }: { currency: Currency }) {
-  return (
-    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-wide ${CURRENCY_STYLES[currency]}`}>
-      {CURRENCY_LABEL[currency]}
     </span>
   );
 }
@@ -203,9 +184,13 @@ export default function StoreBlock() {
   // Quick-sale form state
   const [saleProductId, setSaleProductId] = useState<string>(products[0]?.id ?? "");
   const [saleQty,       setSaleQty]       = useState<number>(1);
-  const [saleCurrency,  setSaleCurrency]  = useState<Currency>("usd");
   const [saleError,     setSaleError]     = useState<string>("");
   const [saleSuccess,   setSaleSuccess]   = useState<boolean>(false);
+
+  // Inventory controls
+  const [productSearch,    setProductSearch]    = useState("");
+  const [inventorySort,    setInventorySort]    = useState<"name" | "category">("category");
+  const [showInventorySYP, setShowInventorySYP] = useState(false);
 
   // Manager price editing
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
@@ -258,8 +243,7 @@ export default function StoreBlock() {
       productName: product.name,
       quantity: saleQty,
       unitPrice: product.price,
-      total: product.price * saleQty,
-      currency: saleCurrency,
+      total: Number((product.price * saleQty).toFixed(2)),
       exchangeRate,
       source: product.category === "meals" ? "kitchen" : "store",
     });
@@ -270,9 +254,9 @@ export default function StoreBlock() {
       productName:   product.name,
       quantity:      saleQty,
       unitPrice:     product.price,
-      total:         product.price * saleQty,
-      paymentMethod: saleCurrency === "syp" ? "cash" : "transfer",
-      currency:      saleCurrency,
+      total:         Number((product.price * saleQty).toFixed(2)),
+      paymentMethod: "cash",
+      currency:      "usd",
       createdBy:     user.id,
       isReversal:    false,
     });
@@ -290,6 +274,21 @@ export default function StoreBlock() {
     }
     return groups;
   }, [products]);
+
+  // Filtered + sorted inventory
+  const filteredInventory = useMemo(() => {
+    const q = productSearch.trim().toLowerCase();
+    let result = q ? products.filter((p) => p.name.toLowerCase().includes(q)) : [...products];
+    if (inventorySort === "name") {
+      result = result.sort((a, b) => a.name.localeCompare(b.name, "ar"));
+    } else {
+      result = result.sort((a, b) =>
+        CATEGORY_GROUP_ORDER.indexOf(a.category) - CATEGORY_GROUP_ORDER.indexOf(b.category) ||
+        a.name.localeCompare(b.name, "ar")
+      );
+    }
+    return result;
+  }, [products, productSearch, inventorySort]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -364,19 +363,6 @@ export default function StoreBlock() {
             />
           </div>
 
-          {/* Currency */}
-          <div className="flex flex-col gap-1 w-32">
-            <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">العملة</label>
-            <select
-              value={saleCurrency}
-              onChange={e => setSaleCurrency(e.target.value as Currency)}
-              className="bg-[#111111] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] font-body focus:outline-none focus:border-[#F5C100]/50 transition-colors"
-            >
-              <option value="usd">دولار</option>
-              <option value="syp">ليرة سورية</option>
-            </select>
-          </div>
-
           {/* Total preview */}
           {selectedProduct && saleQty > 0 && (
             <div className="flex flex-col gap-1">
@@ -410,8 +396,37 @@ export default function StoreBlock() {
       </div>
 
       {/* ════════════ A) INVENTORY TABLE ════════════ */}
-      <div className="px-5 pt-4 pb-2">
-        <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555] mb-2">المخزون</p>
+      <div className="px-5 pt-4 pb-2 flex flex-wrap items-center justify-between gap-3">
+        <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">المخزون</p>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Search */}
+          <input
+            type="text"
+            value={productSearch}
+            onChange={(e) => setProductSearch(e.target.value)}
+            placeholder="بحث بالاسم…"
+            className="bg-[#111111] border border-[#252525] rounded-sm px-3 py-1.5 text-xs text-[#F0EDE6] font-body focus:outline-none focus:border-[#F5C100]/50 transition-colors w-40"
+            dir="rtl"
+          />
+          {/* Sort */}
+          <div className="flex items-center gap-1">
+            <span className="font-mono text-[10px] text-[#555555]">ترتيب:</span>
+            {(["category", "name"] as const).map((s) => (
+              <button key={s} onClick={() => setInventorySort(s)}
+                className={`px-2 py-1 font-mono text-[10px] rounded-sm transition-colors cursor-pointer ${inventorySort === s ? "bg-[#252525] text-[#F0EDE6]" : "text-[#555555] hover:text-[#AAAAAA]"}`}>
+                {s === "category" ? "التصنيف" : "الاسم"}
+              </button>
+            ))}
+          </div>
+          {/* USD/SYP toggle */}
+          <button
+            onClick={() => setShowInventorySYP((p) => !p)}
+            className="px-2 py-1 font-mono text-[10px] border border-[#252525] rounded-sm text-[#F5C100] hover:border-[#F5C100]/40 transition-colors cursor-pointer"
+            title={showInventorySYP ? "عرض بالدولار" : "عرض بالليرة السورية"}
+          >
+            {showInventorySYP ? "$" : "ل.س"} ⇄
+          </button>
+        </div>
       </div>
 
       <div className="overflow-x-auto">
@@ -436,7 +451,7 @@ export default function StoreBlock() {
             </tr>
           </thead>
           <tbody>
-            {products.map(product => {
+            {filteredInventory.map(product => {
               const outOfStock = isOutOfStock(product.stock);
               const lowStock   = isLowStock(product.stock, product.lowStockThreshold);
               const isEditing  = editingProductId === product.id;
@@ -467,12 +482,16 @@ export default function StoreBlock() {
                     {/* Cost — manager only */}
                     {isManager && (
                       <td className="px-4 py-2.5 font-mono text-[#777777] tabular-nums text-right">
-                        {formatCurrency(product.cost)}
+                        {showInventorySYP
+                          ? `${Math.round(product.cost * exchangeRate).toLocaleString("en-US")} ل.س`
+                          : `${formatCurrency(product.cost)}$`}
                       </td>
                     )}
                     {/* Price */}
                     <td className="px-4 py-2.5 font-mono text-[#F0EDE6] tabular-nums text-right">
-                      {formatCurrency(product.price)}
+                      {showInventorySYP
+                        ? `${Math.round(product.price * exchangeRate).toLocaleString("en-US")} ل.س`
+                        : `${formatCurrency(product.price)}$`}
                     </td>
                     {/* Stock */}
                     <td className="px-4 py-2.5 text-right">
@@ -538,7 +557,7 @@ export default function StoreBlock() {
         <table className="w-full text-xs">
           <thead>
             <tr className="border-y border-[#252525] bg-[#111111]">
-              {["الوقت", "المنتج", "الكمية", "سعر الوحدة", "الإجمالي", "العملة", "الموظف"].map(h => (
+              {["الوقت", "المنتج", "الكمية", "سعر الوحدة ($)", "الإجمالي ($)", "الموظف"].map(h => (
                 <th key={h} className="px-4 py-2 text-right font-mono text-[10px] uppercase tracking-widest text-[#555555] whitespace-nowrap">
                   {h}
                 </th>
@@ -548,7 +567,7 @@ export default function StoreBlock() {
           <tbody>
             {todaySales.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-6 text-center font-mono text-[10px] text-[#555555] uppercase tracking-widest">
+                <td colSpan={6} className="px-4 py-6 text-center font-mono text-[10px] text-[#555555] uppercase tracking-widest">
                   لا توجد مبيعات مسجلة اليوم
                 </td>
               </tr>
@@ -576,9 +595,6 @@ export default function StoreBlock() {
                       {sale.isReversal
                         ? <span className="line-through text-[#D42B2B]">{formatCurrency(sale.total)}</span>
                         : <span className="text-[#F0EDE6]">{formatCurrency(sale.total)}</span>}
-                    </td>
-                    <td className="px-4 py-2.5 text-right">
-                      <CurrencyBadge currency={(sale.currency as Currency) ?? "usd"} />
                     </td>
                     <td className="px-4 py-2.5 text-[#777777] whitespace-nowrap text-right">
                       <div className="flex items-center gap-1.5 justify-end">

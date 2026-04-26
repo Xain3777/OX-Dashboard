@@ -93,7 +93,6 @@ export default function KitchenBlock() {
           quantity: q,
           unitPrice: Number(it.price_syp),
           total,
-          currency: "syp",
           exchangeRate,
           source: "kitchen",
         });

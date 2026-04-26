@@ -16,54 +16,39 @@ interface OpenSession {
 }
 
 interface IntakeTotals {
-  subscriptionsSYP: number;
-  salesSYP: number;
-  inbodySYP: number;
-  expensesSYP: number;
   subscriptionsUSD: number;
   salesUSD: number;
   inbodyUSD: number;
-  expensesUSD: number;
 }
 
-const ZERO: IntakeTotals = {
-  subscriptionsSYP: 0,
-  salesSYP: 0,
-  inbodySYP: 0,
-  expensesSYP: 0,
-  subscriptionsUSD: 0,
-  salesUSD: 0,
-  inbodyUSD: 0,
-  expensesUSD: 0,
-};
+const ZERO: IntakeTotals = { subscriptionsUSD: 0, salesUSD: 0, inbodyUSD: 0 };
+
+function fmtUSD(n: number) {
+  return `$${Number(n.toFixed(2)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
 
 function fmtSYP(n: number) {
   return `${Math.round(n).toLocaleString("en-US")} ل.س`;
-}
-
-function fmtUSD(n: number) {
-  return `$${n.toFixed(2)}`;
 }
 
 export default function CashSessionBlock() {
   const { user } = useAuth();
   const { exchangeRate } = useCurrency();
   const supabase = supabaseBrowser();
-  const [session, setSession] = useState<OpenSession | null>(null);
-  const [totals, setTotals] = useState<IntakeTotals>(ZERO);
-  const [openingInput, setOpeningInput] = useState("");
-  const [closingInput, setClosingInput] = useState("");
-  const [reasonInput, setReasonInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [session,       setSession]       = useState<OpenSession | null>(null);
+  const [totals,        setTotals]        = useState<IntakeTotals>(ZERO);
+  const [openingInput,  setOpeningInput]  = useState("");
+  const [closingInput,  setClosingInput]  = useState("");
+  const [reasonInput,   setReasonInput]   = useState("");
+  const [busy,          setBusy]          = useState(false);
+  const [msg,           setMsg]           = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [showSYP,       setShowSYP]       = useState(false);
 
-  // Pre-loaded handoff opening for the form when no session is open yet.
-  const [handoff, setHandoff] = useState<{ openingSYP: number; previousSessionId: string | null }>({
-    openingSYP: 0,
+  const [handoff, setHandoff] = useState<{ openingUSD: number; previousSessionId: string | null }>({
+    openingUSD: 0,
     previousSessionId: null,
   });
 
-  // ── load current open session for this user ─────────────────
   const refresh = useCallback(async () => {
     if (!user) return;
     const { data: sess } = await supabase
@@ -74,6 +59,7 @@ export default function CashSessionBlock() {
       .order("opened_at", { ascending: false })
       .limit(1)
       .maybeSingle();
+
     setSession(sess ? {
       id: sess.id,
       opening_cash_syp: Number(sess.opening_cash_syp),
@@ -82,55 +68,37 @@ export default function CashSessionBlock() {
       previous_session_id: sess.previous_session_id ?? null,
     } : null);
 
-    // If no session is open, prefetch the handoff opening so the user sees
-    // exactly what they're inheriting before they hit the open button.
     if (!sess) {
       const h = await fetchHandoffOpening();
-      setHandoff(h);
-      setOpeningInput(String(h.openingSYP));
+      const openingUSD = Number((h.openingSYP / exchangeRate).toFixed(2));
+      setHandoff({ openingUSD, previousSessionId: h.previousSessionId });
+      setOpeningInput(String(openingUSD));
     }
 
     if (sess) {
-      // Pull active (non-cancelled) rows; native amount goes into per-currency
-      // bucket for display; amount_syp is the immutable SYP-equivalent.
-      const sumOf = async (table: string, nativeCol: string) => {
+      // Sum native USD amounts from each table.
+      const sumUSD = async (table: string, col: string) => {
         const { data } = await supabase
           .from(table)
-          .select(`${nativeCol}, amount_syp, currency`)
+          .select(col)
           .eq("cash_session_id", sess.id)
           .is("cancelled_at", null);
-        const rows = (data ?? []) as unknown as Array<Record<string, unknown>>;
-        let syp = 0, usd = 0;
-        for (const r of rows) {
-          if ((r.currency as string) === "syp") syp += Number(r[nativeCol] ?? 0);
-          else                                  usd += Number(r[nativeCol] ?? 0);
-        }
-        return { syp, usd };
+        const total = (data as unknown as Record<string, unknown>[])
+          ?.reduce((a, r) => a + Number(r[col] ?? 0), 0) ?? 0;
+        return Number(total.toFixed(2));
       };
-      const subs     = await sumOf("subscriptions",   "paid_amount");
-      const sales    = await sumOf("sales",           "total");
-      const inbody   = await sumOf("inbody_sessions", "amount");
-      const expenses = await sumOf("expenses",        "amount");
-      setTotals({
-        subscriptionsSYP: subs.syp,
-        salesSYP: sales.syp,
-        inbodySYP: inbody.syp,
-        expensesSYP: expenses.syp,
-        subscriptionsUSD: subs.usd,
-        salesUSD: sales.usd,
-        inbodyUSD: inbody.usd,
-        expensesUSD: expenses.usd,
-      });
+      const subs   = await sumUSD("subscriptions",   "paid_amount");
+      const sales  = await sumUSD("sales",           "total");
+      const inbody = await sumUSD("inbody_sessions", "amount");
+      setTotals({ subscriptionsUSD: subs, salesUSD: sales, inbodyUSD: inbody });
     } else {
       setTotals(ZERO);
     }
-  }, [supabase, user]);
+  }, [supabase, user, exchangeRate]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  useEffect(() => { void refresh(); }, [refresh]);
 
-  // realtime: any change (insert/update/cancel) in the session's tables refreshes totals.
+  // Realtime: refresh totals on any change in the session's tables.
   useEffect(() => {
     if (!session) return;
     const channel = supabase
@@ -138,62 +106,52 @@ export default function CashSessionBlock() {
       .on("postgres_changes", { event: "*", schema: "public", table: "subscriptions",   filter: `cash_session_id=eq.${session.id}` }, () => void refresh())
       .on("postgres_changes", { event: "*", schema: "public", table: "sales",           filter: `cash_session_id=eq.${session.id}` }, () => void refresh())
       .on("postgres_changes", { event: "*", schema: "public", table: "inbody_sessions", filter: `cash_session_id=eq.${session.id}` }, () => void refresh())
-      .on("postgres_changes", { event: "*", schema: "public", table: "expenses",        filter: `cash_session_id=eq.${session.id}` }, () => void refresh())
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
   }, [supabase, session, refresh]);
 
   if (!user) return null;
 
-  const intakeSYP   = totals.subscriptionsSYP + totals.salesSYP + totals.inbodySYP;
-  const intakeUSD   = totals.subscriptionsUSD + totals.salesUSD + totals.inbodyUSD;
-  const opening     = session?.opening_cash_syp ?? 0;
-  const expectedSYP = opening + intakeSYP - totals.expensesSYP;
-  const closingNum  = Number(closingInput) || 0;
-  const discrepancy = closingInput ? closingNum - expectedSYP : null;
+  // All calculations in USD.
+  const openingUSD   = Number((Number(session?.opening_cash_syp ?? 0) / exchangeRate).toFixed(2));
+  const totalCashUSD = Number((totals.subscriptionsUSD + totals.salesUSD + totals.inbodyUSD).toFixed(2));
+  const expectedUSD  = Number((openingUSD + totalCashUSD).toFixed(2));
+  const closingNum   = Number(Number(closingInput || 0).toFixed(2));
+  const discrepancy  = closingInput ? Number((closingNum - expectedUSD).toFixed(2)) : null;
 
   async function handleOpen() {
     setMsg(null);
     setBusy(true);
-    // When there's a previous closed session today, server uses its closing
-    // automatically (locked). When it's the first shift of the day, the input
-    // is editable and we pass it explicitly.
-    const override = handoff.previousSessionId === null
-      ? Math.max(0, Number(openingInput) || 0)
+    const overrideSYP = handoff.previousSessionId === null
+      ? Math.round(Math.max(0, Number(openingInput) || 0) * exchangeRate)
       : undefined;
-    const r = await openCashSession({ id: user!.id, displayName: user!.displayName }, override);
+    const r = await openCashSession({ id: user!.id, displayName: user!.displayName }, overrideSYP);
     setBusy(false);
     if (r.error) setMsg({ kind: "err", text: r.error });
-    else {
-      setOpeningInput("");
-      setMsg({ kind: "ok", text: "فُتحت الجلسة بنجاح." });
-      await refresh();
-    }
+    else { setOpeningInput(""); setMsg({ kind: "ok", text: "فُتحت الجلسة بنجاح." }); await refresh(); }
   }
 
   async function handleClose() {
     if (!session) return;
     setMsg(null);
-    const v = Number(closingInput) || 0;
-    if (v < 0) { setMsg({ kind: "err", text: "المبلغ المُحصّل لا يمكن أن يكون سالباً." }); return; }
-    const diff = v - expectedSYP;
-    if (diff !== 0 && !reasonInput.trim()) {
-      setMsg({ kind: "err", text: "هناك فرق بين المتوقع والفعلي — يجب إدخال السبب قبل الإغلاق." });
+    if (closingNum < 0) { setMsg({ kind: "err", text: "المبلغ لا يمكن أن يكون سالباً." }); return; }
+    if (discrepancy !== 0 && discrepancy !== null && !reasonInput.trim()) {
+      setMsg({ kind: "err", text: "هناك فرق — يجب إدخال السبب قبل الإغلاق." });
       return;
     }
     setBusy(true);
     const r = await closeCashSession(
       { id: user!.id, displayName: user!.displayName },
       session.id,
-      v,
-      diff !== 0 ? reasonInput.trim() : undefined,
+      closingNum,
+      exchangeRate,
+      discrepancy !== 0 ? reasonInput.trim() : undefined,
     );
     setBusy(false);
     if ("error" in r && r.error) {
       setMsg({ kind: "err", text: r.error });
     } else {
-      setClosingInput("");
-      setReasonInput("");
+      setClosingInput(""); setReasonInput("");
       setMsg({ kind: "ok", text: "أُغلقت الجلسة." });
       await refresh();
     }
@@ -229,13 +187,13 @@ export default function CashSessionBlock() {
                 <Lock size={14} className="text-[#F5C100]" />
                 <p className="font-mono text-xs text-[#AAAAAA] leading-snug">
                   استلام من الوردية السابقة — رصيد افتتاحي مقفل:{" "}
-                  <span className="text-[#F5C100] tabular-nums">{fmtSYP(handoff.openingSYP)}</span>
+                  <span className="text-[#F5C100] tabular-nums">{fmtUSD(handoff.openingUSD)}</span>
                 </p>
               </div>
             ) : (
               <>
                 <label className="block font-mono text-[11px] text-[#777777] tracking-widest">
-                  الرصيد الافتتاحي بالليرة السورية — أول وردية لليوم
+                  الرصيد الافتتاحي ($) — أول وردية لليوم
                 </label>
                 <input
                   type="number"
@@ -259,43 +217,45 @@ export default function CashSessionBlock() {
         ) : (
           // ── OPEN SESSION DASHBOARD ──
           <>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <Stat label="افتتاحي" value={fmtSYP(opening)} accent="silver" />
-              <Stat label="اشتراكات (ل.س)" value={fmtSYP(totals.subscriptionsSYP)} accent="gold" />
-              <Stat label="مبيعات (ل.س)"  value={fmtSYP(totals.salesSYP)}        accent="gold" />
-              <Stat label="InBody (ل.س)" value={fmtSYP(totals.inbodySYP)}       accent="gold" />
+            {/* Breakdown */}
+            <div className="grid grid-cols-3 gap-3">
+              <Stat label="اشتراكات"  value={fmtUSD(totals.subscriptionsUSD)} accent="gold" />
+              <Stat label="مبيعات"    value={fmtUSD(totals.salesUSD)}         accent="gold" />
+              <Stat label="InBody"    value={fmtUSD(totals.inbodyUSD)}        accent="gold" />
             </div>
-            {(totals.expensesSYP > 0 || totals.expensesUSD > 0) && (
-              <div className="grid grid-cols-2 gap-3">
-                <Stat label="مصروفات (ل.س)" value={`- ${fmtSYP(totals.expensesSYP)}`} accent="red" />
-                {totals.expensesUSD > 0 && <Stat label="مصروفات ($)" value={`- ${fmtUSD(totals.expensesUSD)}`} accent="red" />}
-              </div>
-            )}
-            {(intakeUSD > 0) && (
-              <div className="grid grid-cols-3 gap-3 pt-1">
-                <Stat label="اشتراكات ($)" value={fmtUSD(totals.subscriptionsUSD)} accent="silver" />
-                <Stat label="مبيعات ($)"   value={fmtUSD(totals.salesUSD)}        accent="silver" />
-                <Stat label="InBody ($)"  value={fmtUSD(totals.inbodyUSD)}       accent="silver" />
-              </div>
-            )}
-            <div className="border-t border-[#252525] pt-3 grid grid-cols-2 gap-3">
-              <ToggleStat label="إجمالي المُدخل" syp={intakeSYP} usdNative={intakeUSD} rate={exchangeRate} big />
-              <ToggleStat label="المتوقع في الخزنة" syp={expectedSYP} usdNative={intakeUSD} rate={exchangeRate} big />
+
+            {/* Single total — clickable to toggle SYP */}
+            <div className="border-t border-[#252525] pt-3">
+              <button
+                type="button"
+                onClick={() => setShowSYP((p) => !p)}
+                className="w-full bg-[#0F0F0F] border border-[#F5C100]/30 p-4 clip-corner-sm hover:border-[#F5C100]/60 transition-colors cursor-pointer group text-right"
+                title={showSYP ? "اضغط لعرض الدولار" : "اضغط لعرض الليرة السورية"}
+              >
+                <div className="font-mono text-[10px] text-[#555555] tracking-widest uppercase mb-1 flex items-center gap-1">
+                  إجمالي الكاش
+                  <span className="text-[#F5C100]/40 group-hover:text-[#F5C100]/70 transition-colors">⇄</span>
+                </div>
+                <div className="font-mono text-2xl text-[#F5C100] tabular-nums">
+                  {showSYP ? fmtSYP(totalCashUSD * exchangeRate) : fmtUSD(totalCashUSD)}
+                </div>
+              </button>
             </div>
 
             {/* CLOSE FORM */}
             <div className="border-t border-[#252525] pt-4 space-y-3">
               <label className="block font-mono text-[11px] text-[#777777] tracking-widest">
-                المبلغ الفعلي في الخزنة عند الإغلاق (ل.س)
+                المبلغ الفعلي في الخزنة عند الإغلاق ($)
               </label>
               <div className="flex gap-2">
                 <input
                   type="number"
                   value={closingInput}
                   onChange={(e) => setClosingInput(e.target.value)}
-                  placeholder="0"
+                  placeholder="0.00"
                   className="ox-input flex-1 font-mono text-lg"
                   dir="ltr"
+                  step="0.01"
                 />
                 <button
                   onClick={handleClose}
@@ -308,30 +268,27 @@ export default function CashSessionBlock() {
               </div>
               {discrepancy !== null && (
                 <>
-                  <div
-                    className={[
-                      "flex items-center gap-2 p-2 border clip-corner-sm font-mono text-xs",
-                      discrepancy === 0
-                        ? "bg-[#5CC45C]/10 border-[#5CC45C]/30 text-[#5CC45C]"
-                        : "bg-[#FF3333]/10 border-[#FF3333]/30 text-[#FF3333]",
-                    ].join(" ")}
-                  >
+                  <div className={[
+                    "flex items-center gap-2 p-2 border clip-corner-sm font-mono text-xs",
+                    discrepancy === 0
+                      ? "bg-[#5CC45C]/10 border-[#5CC45C]/30 text-[#5CC45C]"
+                      : "bg-[#FF3333]/10 border-[#FF3333]/30 text-[#FF3333]",
+                  ].join(" ")}>
                     {discrepancy === 0 ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
-                    الفرق: {fmtSYP(discrepancy)}
+                    الفرق: {fmtUSD(discrepancy)}
                     {discrepancy < 0 && " (نقص)"}
                     {discrepancy > 0 && " (زيادة)"}
                   </div>
-
                   {discrepancy !== 0 && (
                     <div className="space-y-1">
                       <label className="block font-mono text-[11px] text-[#777777] tracking-widest">
-                        سبب الفرق (إلزامي قبل إغلاق الجلسة)
+                        سبب الفرق (إلزامي)
                       </label>
                       <input
                         type="text"
                         value={reasonInput}
                         onChange={(e) => setReasonInput(e.target.value)}
-                        placeholder="مثال: ردّيت بقشيش بالغلط، خصم منتج تالف، …"
+                        placeholder="مثال: ردّيت بقشيش، خصم منتج تالف، …"
                         className="ox-input w-full font-body text-sm"
                         dir="rtl"
                       />
@@ -358,71 +315,12 @@ export default function CashSessionBlock() {
   );
 }
 
-function Stat({
-  label,
-  value,
-  accent,
-  big,
-}: {
-  label: string;
-  value: string;
-  accent: "gold" | "silver" | "red";
-  big?: boolean;
-}) {
+function Stat({ label, value, accent }: { label: string; value: string; accent: "gold" | "silver" | "red" }) {
   const color = accent === "gold" ? "text-[#F5C100]" : accent === "red" ? "text-[#FF7777]" : "text-[#AAAAAA]";
   return (
     <div className="bg-[#0F0F0F] border border-[#252525] p-3 clip-corner-sm">
-      <div className="font-mono text-[10px] text-[#555555] tracking-widest uppercase mb-1">
-        {label}
-      </div>
-      <div className={`font-mono ${big ? "text-lg" : "text-sm"} ${color} tabular-nums`}>
-        {value}
-      </div>
+      <div className="font-mono text-[10px] text-[#555555] tracking-widest uppercase mb-1">{label}</div>
+      <div className={`font-mono text-sm ${color} tabular-nums`}>{value}</div>
     </div>
-  );
-}
-
-// Clickable stat that toggles between ل.س and $ — matches PriceTag behaviour.
-// syp      = the SYP total (sum of SYP transactions)
-// usdNative = the USD total actually collected in dollars
-// rate     = current exchange rate (1 USD = rate SYP)
-function ToggleStat({
-  label,
-  syp,
-  usdNative,
-  rate,
-  big,
-}: {
-  label: string;
-  syp: number;
-  usdNative: number;
-  rate: number;
-  big?: boolean;
-}) {
-  const [showUSD, setShowUSD] = useState(false);
-  // SYP-equivalent of USD intake; total in each unit
-  const sypEquivOfUSD = usdNative * rate;
-  const totalSYP = syp + sypEquivOfUSD;
-  const totalUSD = usdNative + syp / rate;
-
-  const display = showUSD
-    ? `$${totalUSD.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
-    : `${Math.round(totalSYP).toLocaleString("en-US")} ل.س`;
-
-  return (
-    <button
-      type="button"
-      onClick={() => setShowUSD((p) => !p)}
-      className="bg-[#0F0F0F] border border-[#F5C100]/30 p-3 clip-corner-sm text-left w-full hover:border-[#F5C100]/60 transition-colors cursor-pointer group"
-      title={showUSD ? "اضغط لعرض الليرة السورية" : "اضغط لعرض الدولار"}
-    >
-      <div className="font-mono text-[10px] text-[#555555] tracking-widest uppercase mb-1 flex items-center gap-1">
-        {label}
-        <span className="text-[#F5C100]/40 group-hover:text-[#F5C100]/70 transition-colors">⇄</span>
-      </div>
-      <div className={`font-mono ${big ? "text-lg" : "text-sm"} text-[#F5C100] tabular-nums`}>
-        {display}
-      </div>
-    </button>
   );
 }
