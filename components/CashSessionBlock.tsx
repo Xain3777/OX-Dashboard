@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { LogIn, LogOut, Banknote, AlertTriangle, CheckCircle2, Clock, Lock } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { useCurrency } from "@/lib/currency-context";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { openCashSession, closeCashSession, fetchHandoffOpening } from "@/lib/supabase/intake";
 
@@ -46,6 +47,7 @@ function fmtUSD(n: number) {
 
 export default function CashSessionBlock() {
   const { user } = useAuth();
+  const { exchangeRate } = useCurrency();
   const supabase = supabaseBrowser();
   const [session, setSession] = useState<OpenSession | null>(null);
   const [totals, setTotals] = useState<IntakeTotals>(ZERO);
@@ -277,8 +279,8 @@ export default function CashSessionBlock() {
               </div>
             )}
             <div className="border-t border-[#252525] pt-3 grid grid-cols-2 gap-3">
-              <Stat label="إجمالي المُدخل (ل.س)" value={fmtSYP(intakeSYP)} accent="gold" big />
-              <Stat label="المتوقع في الخزنة (ل.س)" value={fmtSYP(expectedSYP)} accent="gold" big />
+              <ToggleStat label="إجمالي المُدخل" syp={intakeSYP} usdNative={intakeUSD} rate={exchangeRate} big />
+              <ToggleStat label="المتوقع في الخزنة" syp={expectedSYP} usdNative={intakeUSD} rate={exchangeRate} big />
             </div>
 
             {/* CLOSE FORM */}
@@ -377,5 +379,50 @@ function Stat({
         {value}
       </div>
     </div>
+  );
+}
+
+// Clickable stat that toggles between ل.س and $ — matches PriceTag behaviour.
+// syp      = the SYP total (sum of SYP transactions)
+// usdNative = the USD total actually collected in dollars
+// rate     = current exchange rate (1 USD = rate SYP)
+function ToggleStat({
+  label,
+  syp,
+  usdNative,
+  rate,
+  big,
+}: {
+  label: string;
+  syp: number;
+  usdNative: number;
+  rate: number;
+  big?: boolean;
+}) {
+  const [showUSD, setShowUSD] = useState(false);
+  // SYP-equivalent of USD intake; total in each unit
+  const sypEquivOfUSD = usdNative * rate;
+  const totalSYP = syp + sypEquivOfUSD;
+  const totalUSD = usdNative + syp / rate;
+
+  const display = showUSD
+    ? `$${totalUSD.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+    : `${Math.round(totalSYP).toLocaleString("en-US")} ل.س`;
+
+  return (
+    <button
+      type="button"
+      onClick={() => setShowUSD((p) => !p)}
+      className="bg-[#0F0F0F] border border-[#F5C100]/30 p-3 clip-corner-sm text-left w-full hover:border-[#F5C100]/60 transition-colors cursor-pointer group"
+      title={showUSD ? "اضغط لعرض الليرة السورية" : "اضغط لعرض الدولار"}
+    >
+      <div className="font-mono text-[10px] text-[#555555] tracking-widest uppercase mb-1 flex items-center gap-1">
+        {label}
+        <span className="text-[#F5C100]/40 group-hover:text-[#F5C100]/70 transition-colors">⇄</span>
+      </div>
+      <div className={`font-mono ${big ? "text-lg" : "text-sm"} text-[#F5C100] tabular-nums`}>
+        {display}
+      </div>
+    </button>
   );
 }
