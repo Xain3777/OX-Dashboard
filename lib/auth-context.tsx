@@ -47,6 +47,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .select("id, display_name, role")
         .eq("id", authUserId)
         .maybeSingle();
+      if (error) {
+        // eslint-disable-next-line no-console
+        console.error("[auth] loadProfile error:", { code: error.code, message: error.message, details: error.details, hint: error.hint });
+      }
       if (error || !data) return null;
       return {
         id: data.id as string,
@@ -94,8 +98,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       );
       const signInPromise = supabase.auth
         .signInWithPassword({ email, password })
-        .then(({ error }) => (error ? { error: error.message } : {}))
-        .catch((e) => ({ error: String(e?.message ?? e) }));
+        .then(({ error }) => {
+          if (error) {
+            // eslint-disable-next-line no-console
+            console.error("[auth] signIn error:", { status: error.status, code: (error as { code?: string }).code, message: error.message });
+            return { error: error.message };
+          }
+          return {};
+        })
+        .catch((e) => {
+          // eslint-disable-next-line no-console
+          console.error("[auth] signIn fetch error:", e);
+          return { error: String(e?.message ?? e) };
+        });
       return Promise.race([signInPromise, timeoutPromise]);
     },
     [supabase]
