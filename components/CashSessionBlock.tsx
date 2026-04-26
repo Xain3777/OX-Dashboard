@@ -1,15 +1,17 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { LogIn, LogOut, Banknote, AlertTriangle, CheckCircle2, Clock } from "lucide-react";
+import { LogIn, LogOut, Banknote, AlertTriangle, CheckCircle2, Clock, Lock } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { supabaseBrowser } from "@/lib/supabase/client";
-import { openCashSession, closeCashSession } from "@/lib/supabase/intake";
+import { openCashSession, closeCashSession, fetchHandoffOpening } from "@/lib/supabase/intake";
 
 interface OpenSession {
   id: string;
   opening_cash_syp: number;
   opened_at: string;
+  opening_locked: boolean;
+  previous_session_id: string | null;
 }
 
 interface IntakeTotals {
@@ -49,21 +51,42 @@ export default function CashSessionBlock() {
   const [totals, setTotals] = useState<IntakeTotals>(ZERO);
   const [openingInput, setOpeningInput] = useState("");
   const [closingInput, setClosingInput] = useState("");
+  const [reasonInput, setReasonInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  // Pre-loaded handoff opening for the form when no session is open yet.
+  const [handoff, setHandoff] = useState<{ openingSYP: number; previousSessionId: string | null }>({
+    openingSYP: 0,
+    previousSessionId: null,
+  });
 
   // ── load current open session for this user ─────────────────
   const refresh = useCallback(async () => {
     if (!user) return;
     const { data: sess } = await supabase
       .from("cash_sessions")
-      .select("id, opening_cash_syp, opened_at")
+      .select("id, opening_cash_syp, opened_at, opening_locked, previous_session_id")
       .eq("opened_by", user.id)
       .eq("status", "open")
       .order("opened_at", { ascending: false })
       .limit(1)
       .maybeSingle();
-    setSession(sess ? { id: sess.id, opening_cash_syp: Number(sess.opening_cash_syp), opened_at: sess.opened_at } : null);
+    setSession(sess ? {
+      id: sess.id,
+      opening_cash_syp: Number(sess.opening_cash_syp),
+      opened_at: sess.opened_at,
+      opening_locked: Boolean(sess.opening_locked),
+      previous_session_id: sess.previous_session_id ?? null,
+    } : null);
+
+    // If no session is open, prefetch the handoff opening so the user sees
+    // exactly what they're inheriting before they hit the open button.
+    if (!sess) {
+      const h = await fetchHandoffOpening();
+      setHandoff(h);
+      setOpeningInput(String(h.openingSYP));
+    }
 
     if (sess) {
       // Pull active (non-cancelled) rows; native amount goes into per-currency
@@ -129,10 +152,14 @@ export default function CashSessionBlock() {
 
   async function handleOpen() {
     setMsg(null);
-    const v = Number(openingInput) || 0;
-    if (v < 0) { setMsg({ kind: "err", text: "الرصيد الافتتاحي لا يمكن أن يكون سالباً." }); return; }
     setBusy(true);
-    const r = await openCashSession({ id: user!.id, displayName: user!.displayName }, v);
+    // When there's a previous closed session today, server uses its closing
+    // automatically (locked). When it's the first shift of the day, the input
+    // is editable and we pass it explicitly.
+    const override = handoff.previousSessionId === null
+      ? Math.max(0, Number(openingInput) || 0)
+      : undefined;
+    const r = await openCashSession({ id: user!.id, displayName: user!.displayName }, override);
     setBusy(false);
     if (r.error) setMsg({ kind: "err", text: r.error });
     else {
@@ -147,13 +174,24 @@ export default function CashSessionBlock() {
     setMsg(null);
     const v = Number(closingInput) || 0;
     if (v < 0) { setMsg({ kind: "err", text: "المبلغ المُحصّل لا يمكن أن يكون سالباً." }); return; }
+    const diff = v - expectedSYP;
+    if (diff !== 0 && !reasonInput.trim()) {
+      setMsg({ kind: "err", text: "هناك فرق بين المتوقع والفعلي — يجب إدخال السبب قبل الإغلاق." });
+      return;
+    }
     setBusy(true);
-    const r = await closeCashSession({ id: user!.id, displayName: user!.displayName }, session.id, v);
+    const r = await closeCashSession(
+      { id: user!.id, displayName: user!.displayName },
+      session.id,
+      v,
+      diff !== 0 ? reasonInput.trim() : undefined,
+    );
     setBusy(false);
     if ("error" in r && r.error) {
       setMsg({ kind: "err", text: r.error });
     } else {
       setClosingInput("");
+      setReasonInput("");
       setMsg({ kind: "ok", text: "أُغلقت الجلسة." });
       await refresh();
     }
@@ -184,27 +222,37 @@ export default function CashSessionBlock() {
         {!session ? (
           // ── OPEN FORM ──
           <div className="space-y-3">
-            <label className="block font-mono text-[11px] text-[#777777] tracking-widest">
-              الرصيد الافتتاحي بالليرة السورية
-            </label>
-            <div className="flex gap-2">
-              <input
-                type="number"
-                value={openingInput}
-                onChange={(e) => setOpeningInput(e.target.value)}
-                placeholder="0"
-                className="ox-input flex-1 font-mono text-lg"
-                dir="ltr"
-              />
-              <button
-                onClick={handleOpen}
-                disabled={busy}
-                className="flex items-center gap-2 px-4 py-2 bg-[#5CC45C]/15 border border-[#5CC45C]/30 text-[#5CC45C] font-display tracking-wider clip-corner-sm hover:bg-[#5CC45C]/25 transition-colors disabled:opacity-40"
-              >
-                <LogIn size={16} />
-                فتح الجلسة
-              </button>
-            </div>
+            {handoff.previousSessionId !== null ? (
+              <div className="flex items-center gap-2 p-3 bg-[#F5C100]/5 border border-[#F5C100]/20 clip-corner-sm">
+                <Lock size={14} className="text-[#F5C100]" />
+                <p className="font-mono text-xs text-[#AAAAAA] leading-snug">
+                  استلام من الوردية السابقة — رصيد افتتاحي مقفل:{" "}
+                  <span className="text-[#F5C100] tabular-nums">{fmtSYP(handoff.openingSYP)}</span>
+                </p>
+              </div>
+            ) : (
+              <>
+                <label className="block font-mono text-[11px] text-[#777777] tracking-widest">
+                  الرصيد الافتتاحي بالليرة السورية — أول وردية لليوم
+                </label>
+                <input
+                  type="number"
+                  value={openingInput}
+                  onChange={(e) => setOpeningInput(e.target.value)}
+                  placeholder="0"
+                  className="ox-input w-full font-mono text-lg"
+                  dir="ltr"
+                />
+              </>
+            )}
+            <button
+              onClick={handleOpen}
+              disabled={busy}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-[#5CC45C]/15 border border-[#5CC45C]/30 text-[#5CC45C] font-display tracking-wider clip-corner-sm hover:bg-[#5CC45C]/25 transition-colors disabled:opacity-40"
+            >
+              <LogIn size={16} />
+              فتح الجلسة
+            </button>
           </div>
         ) : (
           // ── OPEN SESSION DASHBOARD ──
@@ -257,19 +305,37 @@ export default function CashSessionBlock() {
                 </button>
               </div>
               {discrepancy !== null && (
-                <div
-                  className={[
-                    "flex items-center gap-2 p-2 border clip-corner-sm font-mono text-xs",
-                    discrepancy === 0
-                      ? "bg-[#5CC45C]/10 border-[#5CC45C]/30 text-[#5CC45C]"
-                      : "bg-[#FF3333]/10 border-[#FF3333]/30 text-[#FF3333]",
-                  ].join(" ")}
-                >
-                  {discrepancy === 0 ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
-                  الفرق: {fmtSYP(discrepancy)}
-                  {discrepancy < 0 && " (نقص)"}
-                  {discrepancy > 0 && " (زيادة)"}
-                </div>
+                <>
+                  <div
+                    className={[
+                      "flex items-center gap-2 p-2 border clip-corner-sm font-mono text-xs",
+                      discrepancy === 0
+                        ? "bg-[#5CC45C]/10 border-[#5CC45C]/30 text-[#5CC45C]"
+                        : "bg-[#FF3333]/10 border-[#FF3333]/30 text-[#FF3333]",
+                    ].join(" ")}
+                  >
+                    {discrepancy === 0 ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+                    الفرق: {fmtSYP(discrepancy)}
+                    {discrepancy < 0 && " (نقص)"}
+                    {discrepancy > 0 && " (زيادة)"}
+                  </div>
+
+                  {discrepancy !== 0 && (
+                    <div className="space-y-1">
+                      <label className="block font-mono text-[11px] text-[#777777] tracking-widest">
+                        سبب الفرق (إلزامي قبل إغلاق الجلسة)
+                      </label>
+                      <input
+                        type="text"
+                        value={reasonInput}
+                        onChange={(e) => setReasonInput(e.target.value)}
+                        placeholder="مثال: ردّيت بقشيش بالغلط، خصم منتج تالف، …"
+                        className="ox-input w-full font-body text-sm"
+                        dir="rtl"
+                      />
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </>

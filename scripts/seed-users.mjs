@@ -31,14 +31,18 @@ const admin = createClient(url, serviceKey, {
 const DEFAULT_PASSWORD = process.env.SEED_DEFAULT_PASSWORD || "123456";
 
 // ── users to create ─────────────────────────────────────────
+// Owner = كوتش أدهم. Manager = حيدر. 7 reception staff.
+// All passwords default to 123456.
 const USERS = [
-  { email: "adham@ox.local",      display_name: "أدهم",       role: "manager"   },
+  { email: "adham@ox.local",      display_name: "كوتش أدهم",  role: "manager"   },
   { email: "haider@ox.local",     display_name: "حيدر",       role: "manager"   },
   { email: "reception1@ox.local", display_name: "استقبال 1",  role: "reception" },
   { email: "reception2@ox.local", display_name: "استقبال 2",  role: "reception" },
   { email: "reception3@ox.local", display_name: "استقبال 3",  role: "reception" },
   { email: "reception4@ox.local", display_name: "استقبال 4",  role: "reception" },
   { email: "reception5@ox.local", display_name: "استقبال 5",  role: "reception" },
+  { email: "reception6@ox.local", display_name: "استقبال 6",  role: "reception" },
+  { email: "reception7@ox.local", display_name: "استقبال 7",  role: "reception" },
 ];
 
 async function main() {

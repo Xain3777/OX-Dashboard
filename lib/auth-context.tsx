@@ -87,15 +87,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = useCallback(
     async (email: string, password: string) => {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) return { error: error.message };
-      return {};
+      // 30s hard timeout so a hung network call surfaces an error instead
+      // of leaving the login button stuck on the busy state forever.
+      const timeoutPromise = new Promise<{ error: string }>((resolve) =>
+        setTimeout(() => resolve({ error: "انتهت مهلة الاتصال بالخادم — تحقق من الاتصال بالإنترنت أو إعدادات Supabase." }), 30000)
+      );
+      const signInPromise = supabase.auth
+        .signInWithPassword({ email, password })
+        .then(({ error }) => (error ? { error: error.message } : {}))
+        .catch((e) => ({ error: String(e?.message ?? e) }));
+      return Promise.race([signInPromise, timeoutPromise]);
     },
     [supabase]
   );
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
+    // scope:'local' clears only this browser's session (no server round-trip).
+    // Faster, and avoids hangs when the auth-token Web Lock is contended by
+    // another tab. We then nuke any leftover sb-* cookies/localStorage so the
+    // user can never get stuck "logged in but unable to use the app".
+    try {
+      await supabase.auth.signOut({ scope: "local" });
+    } catch {
+      // ignore — we still purge state below
+    }
+    if (typeof document !== "undefined") {
+      document.cookie.split(";").forEach((c) => {
+        const k = c.split("=")[0].trim();
+        if (k.startsWith("sb-")) {
+          document.cookie = `${k}=; expires=Thu, 01 Jan 1970 00:00:01 GMT; path=/`;
+        }
+      });
+    }
+    if (typeof localStorage !== "undefined") {
+      Object.keys(localStorage)
+        .filter((k) => k.startsWith("sb-") || k === "ox-auth" || k.includes("supabase"))
+        .forEach((k) => localStorage.removeItem(k));
+    }
     setUser(null);
   }, [supabase]);
 

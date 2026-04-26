@@ -3,11 +3,7 @@
 import { useState, useCallback } from "react";
 import Image from "next/image";
 import * as XLSX from "xlsx";
-import {
-  KPI,
-  SUBSCRIPTIONS,
-  CASH_SESSION,
-} from "@/lib/mock-data";
+import { CASH_SESSION } from "@/lib/mock-data";
 import { CurrencyProvider, useCurrency } from "@/lib/currency-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { StoreProvider, useStore } from "@/lib/store-context";
@@ -15,7 +11,7 @@ import type { ActivityEntry, ActivityType } from "@/lib/store-context";
 import type { AuditEntry, AuditAction } from "@/lib/types";
 import ExchangeRateModal from "@/components/ExchangeRateModal";
 import KPIStrip from "@/components/KPIStrip";
-import AlertsBlock from "@/components/AlertsBlock";
+import LiveAlertsBlock from "@/components/LiveAlertsBlock";
 import SubscriptionsBlock from "@/components/SubscriptionsBlock";
 import StoreBlock from "@/components/StoreBlock";
 import ExpensesBlock from "@/components/ExpensesBlock";
@@ -391,10 +387,7 @@ function DashboardContent() {
       {/* === المحتوى الرئيسي === */}
       <main className="max-w-[1280px] mx-auto px-4 sm:px-6 py-6 space-y-6">
 
-        <KPIStrip
-          kpi={isManager ? KPI : { ...KPI, monthlyProfit: 0 }}
-          hideProfit={!isManager}
-        />
+        <KPIStrip hideProfit={!isManager} />
 
         {/* Cash session — top of page for the active user */}
         <CashSessionBlock />
@@ -414,12 +407,7 @@ function DashboardContent() {
 
         {/* التنبيهات */}
         <CollapsibleSection title="التنبيهات والتحذيرات" collapsed={collapsed.alerts} onToggle={() => toggle("alerts")}>
-          <AlertsBlock
-            subscriptions={SUBSCRIPTIONS}
-            products={store.products}
-            cashSession={CASH_SESSION}
-            unresolvedDiscrepancies={KPI.unresolvedDiscrepancies}
-          />
+          <LiveAlertsBlock />
         </CollapsibleSection>
 
         {/* الحسابات السريعة — manager only */}
@@ -440,7 +428,7 @@ function DashboardContent() {
               suppliesExpense={120}
               otherExpense={60}
               totalDiscounts={85}
-              cashOnHand={KPI.cashOnHand}
+              cashOnHand={CASH_SESSION.openingCash}
               expectedCash={CASH_SESSION.expectedCash}
             />
           </CollapsibleSection>
