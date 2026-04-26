@@ -2,17 +2,17 @@
 
 import {
   DollarSign,
-  Receipt,
   Users,
   CalendarClock,
+  CalendarX,
   Banknote,
+  Scale,
   TrendingUp,
   TrendingDown,
   Package,
   AlertTriangle,
 } from "lucide-react";
-import type { DashboardKPI } from "@/lib/types";
-import { formatCurrency } from "@/lib/business-logic";
+import { useLiveKPI } from "@/lib/supabase/dashboard";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -22,9 +22,10 @@ interface KPICardProps {
   icon: React.ReactNode;
   accent?: "gold" | "green" | "red" | "default";
   badge?: React.ReactNode;
+  href?: string;
 }
 
-function KPICard({ label, value, icon, accent = "default", badge }: KPICardProps) {
+function KPICard({ label, value, icon, accent = "default", badge, href }: KPICardProps) {
   const valueColor =
     accent === "gold"
       ? "text-gold"
@@ -37,32 +38,27 @@ function KPICard({ label, value, icon, accent = "default", badge }: KPICardProps
   const glowClass =
     accent === "red" ? "glow-red" : accent === "gold" ? "glow-gold-sm" : "";
 
-  return (
+  const inner = (
     <div
-      className={`ox-card relative flex flex-col gap-1 p-3 bg-charcoal border border-gunmetal clip-corner-sm ${glowClass}`}
+      className={`ox-card relative flex flex-col gap-1 p-3 bg-charcoal border border-gunmetal clip-corner-sm ${glowClass} ${href ? "cursor-pointer hover:border-gold/40 transition-colors" : ""}`}
     >
-      {/* Icon + Badge row */}
       <div className="flex items-center justify-between">
         <span className="text-secondary">{icon}</span>
         {badge && <span>{badge}</span>}
       </div>
-
-      {/* Value */}
       <p
         className={`font-display text-2xl leading-none tabular-nums tracking-wide ${valueColor}`}
       >
         {value}
       </p>
-
-      {/* Label */}
       <p className="font-mono text-xs text-secondary uppercase tracking-wider truncate">
         {label}
       </p>
     </div>
   );
-}
 
-// ─── Badge helpers ─────────────────────────────────────────────────────────────
+  return href ? <a href={href}>{inner}</a> : inner;
+}
 
 function GoldBadge({ count }: { count: number }) {
   return (
@@ -83,111 +79,103 @@ function RedBadge({ count }: { count: number }) {
 // ─── Main component ────────────────────────────────────────────────────────────
 
 interface KPIStripProps {
-  kpi: DashboardKPI;
   hideProfit?: boolean;
 }
 
-export default function KPIStrip({ kpi, hideProfit }: KPIStripProps) {
-  const {
-    todayRevenue,
-    todayExpenses,
-    activeMembers,
-    expiringThisWeek,
-    cashOnHand,
-    monthlyProfit,
-    lowStockItems,
-    unresolvedDiscrepancies,
-  } = kpi;
+function fmtUSD(n: number) {
+  return `${n.toFixed(2)} $`;
+}
+function fmtSYP(n: number) {
+  return `${Math.round(n).toLocaleString("en-US")} ل.س`;
+}
+
+export default function KPIStrip({ hideProfit }: KPIStripProps) {
+  const { kpi, loading } = useLiveKPI();
 
   const profitAccent: "green" | "red" | "default" =
-    monthlyProfit > 0 ? "green" : monthlyProfit < 0 ? "red" : "default";
+    kpi.monthlyProfit > 0 ? "green" : kpi.monthlyProfit < 0 ? "red" : "default";
+  const profitPrefix = kpi.monthlyProfit > 0 ? "+" : "";
 
-  const profitPrefix = monthlyProfit > 0 ? "+" : "";
+  const diffAccent: "red" | "default" = kpi.cashDifferenceSYP !== 0 ? "red" : "default";
 
   return (
     <section
       aria-label="مؤشرات الأداء الرئيسية"
       className="w-full border-t-2 border-gold pt-4"
+      data-loading={loading}
     >
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
-        {/* 1 — إيرادات اليوم */}
         <KPICard
           label="إيرادات اليوم"
-          value={`${formatCurrency(todayRevenue)} $`}
+          value={fmtUSD(kpi.todayRevenueUSD)}
           icon={<DollarSign size={14} />}
           accent="gold"
         />
 
-        {/* 2 — مصروفات اليوم */}
-        <KPICard
-          label="مصروفات اليوم"
-          value={`${formatCurrency(todayExpenses)} $`}
-          icon={<Receipt size={14} />}
-          accent="default"
-        />
-
-        {/* 3 — الأعضاء النشطين */}
         <KPICard
           label="الأعضاء النشطين"
-          value={String(activeMembers)}
+          value={String(kpi.activeMembers)}
           icon={<Users size={14} />}
-          accent="default"
         />
 
-        {/* 4 — تنتهي هذا الأسبوع */}
         <KPICard
           label="تنتهي هذا الأسبوع"
-          value={String(expiringThisWeek)}
+          value={String(kpi.expiringThisWeek)}
           icon={<CalendarClock size={14} />}
-          accent={expiringThisWeek > 0 ? "gold" : "default"}
-          badge={expiringThisWeek > 0 ? <GoldBadge count={expiringThisWeek} /> : undefined}
+          accent={kpi.expiringThisWeek > 0 ? "gold" : "default"}
+          badge={kpi.expiringThisWeek > 0 ? <GoldBadge count={kpi.expiringThisWeek} /> : undefined}
         />
 
-        {/* 5 — النقد المتوفر */}
         <KPICard
-          label="النقد المتوفر"
-          value={`${formatCurrency(cashOnHand)} $`}
-          icon={<Banknote size={14} />}
-          accent="default"
+          label="اشتراكات منتهية"
+          value={String(kpi.endedCount)}
+          icon={<CalendarX size={14} />}
+          accent={kpi.endedCount > 0 ? "red" : "default"}
+          badge={kpi.endedCount > 0 ? <RedBadge count={kpi.endedCount} /> : undefined}
         />
 
-        {/* 6 — الربح الشهري (manager only) */}
+        <KPICard
+          label="النقد في الخزنة"
+          value={fmtSYP(kpi.cashOnHandSYP)}
+          icon={<Banknote size={14} />}
+        />
+
+        <KPICard
+          label="فرق الكاش"
+          value={fmtSYP(kpi.cashDifferenceSYP)}
+          icon={<Scale size={14} />}
+          accent={diffAccent}
+          badge={kpi.unresolvedDiscrepancies > 0 ? <RedBadge count={kpi.unresolvedDiscrepancies} /> : undefined}
+          href={kpi.cashDifferenceSYP !== 0 ? "#discrepancies" : undefined}
+        />
+
         {!hideProfit && (
           <KPICard
             label="الربح الشهري"
-            value={`${profitPrefix}${formatCurrency(monthlyProfit)} $`}
-            icon={
-              monthlyProfit >= 0 ? (
-                <TrendingUp size={14} />
-              ) : (
-                <TrendingDown size={14} />
-              )
-            }
+            value={`${profitPrefix}${fmtUSD(kpi.monthlyProfit)}`}
+            icon={kpi.monthlyProfit >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
             accent={profitAccent}
           />
         )}
 
-        {/* 7 — مخزون منخفض */}
         <KPICard
           label="مخزون منخفض"
-          value={String(lowStockItems)}
+          value={String(kpi.lowStockItems)}
           icon={<Package size={14} />}
-          accent={lowStockItems > 0 ? "red" : "default"}
-          badge={lowStockItems > 0 ? <RedBadge count={lowStockItems} /> : undefined}
+          accent={kpi.lowStockItems > 0 ? "red" : "default"}
+          badge={kpi.lowStockItems > 0 ? <RedBadge count={kpi.lowStockItems} /> : undefined}
         />
 
-        {/* 8 — فروقات */}
-        <KPICard
-          label="فروقات"
-          value={String(unresolvedDiscrepancies)}
-          icon={<AlertTriangle size={14} />}
-          accent={unresolvedDiscrepancies > 0 ? "red" : "default"}
-          badge={
-            unresolvedDiscrepancies > 0 ? (
-              <RedBadge count={unresolvedDiscrepancies} />
-            ) : undefined
-          }
-        />
+        {hideProfit && (
+          <KPICard
+            label="فروقات غير محسومة"
+            value={String(kpi.unresolvedDiscrepancies)}
+            icon={<AlertTriangle size={14} />}
+            accent={kpi.unresolvedDiscrepancies > 0 ? "red" : "default"}
+            badge={kpi.unresolvedDiscrepancies > 0 ? <RedBadge count={kpi.unresolvedDiscrepancies} /> : undefined}
+            href={kpi.unresolvedDiscrepancies > 0 ? "#discrepancies" : undefined}
+          />
+        )}
       </div>
     </section>
   );

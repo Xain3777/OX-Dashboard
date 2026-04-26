@@ -410,7 +410,26 @@ export async function cancelTransaction(opts: {
 
 // ── cash sessions ─────────────────────────────────────────────
 
-export async function openCashSession(user: CurrentUser, openingCashSYP: number) {
+// Shift handoff: returns the opening balance the next worker must use
+// (= closing balance of the most recent closed session today, or 0 if first
+// shift of the day). Always paired with `previous_session_id` for the audit trail.
+export async function fetchHandoffOpening(): Promise<{ openingSYP: number; previousSessionId: string | null }> {
+  try {
+    const supabase = supabaseBrowser();
+    const { data, error } = await supabase.rpc("last_closed_session_for_today");
+    if (error) { logErr("handoff rpc", error); return { openingSYP: 0, previousSessionId: null }; }
+    const row = Array.isArray(data) && data.length > 0 ? data[0] as { id: string; closing_cash_syp: number } : null;
+    return {
+      openingSYP: row ? Number(row.closing_cash_syp ?? 0) : 0,
+      previousSessionId: row?.id ?? null,
+    };
+  } catch (e) {
+    logErr("handoff throw", e);
+    return { openingSYP: 0, previousSessionId: null };
+  }
+}
+
+export async function openCashSession(user: CurrentUser, openingCashSYPOverride?: number) {
   try {
     assertUser(user);
     const supabase = supabaseBrowser();
@@ -422,11 +441,19 @@ export async function openCashSession(user: CurrentUser, openingCashSYP: number)
     if (existing && existing.length > 0) {
       return { error: "لديك جلسة مفتوحة بالفعل. أغلقها أولاً." };
     }
+
+    // Auto-handoff: opening = previous closed session's closing today.
+    const handoff = await fetchHandoffOpening();
+    const openingCashSYP = openingCashSYPOverride ?? handoff.openingSYP;
+    const opening_locked = handoff.previousSessionId !== null;
+
     const { data, error } = await supabase
       .from("cash_sessions")
       .insert({
         opened_by: user.id,
         opening_cash_syp: openingCashSYP,
+        previous_session_id: handoff.previousSessionId,
+        opening_locked,
         status: "open",
       })
       .select("id")
@@ -435,7 +462,9 @@ export async function openCashSession(user: CurrentUser, openingCashSYP: number)
     await pushActivity({
       user,
       action: "session_opened",
-      description: `فتح جلسة نقدية — رصيد افتتاحي ${openingCashSYP.toLocaleString("en-US")} ل.س`,
+      description: opening_locked
+        ? `فتح جلسة نقدية — استلام من الوردية السابقة ${openingCashSYP.toLocaleString("en-US")} ل.س`
+        : `فتح جلسة نقدية — أول وردية لليوم — افتتاحي ${openingCashSYP.toLocaleString("en-US")} ل.س`,
       amountSYP: openingCashSYP,
     });
     return { id: data?.id as string };
@@ -445,41 +474,52 @@ export async function openCashSession(user: CurrentUser, openingCashSYP: number)
   }
 }
 
+// Compute expected cash for a session without closing it. Used by the UI
+// to validate before allowing close (and to require a reason on mismatch).
+export async function computeExpectedCash(sessionId: string): Promise<number> {
+  const supabase = supabaseBrowser();
+  const { data: sess } = await supabase
+    .from("cash_sessions")
+    .select("opening_cash_syp")
+    .eq("id", sessionId)
+    .maybeSingle();
+  const opening = Number(sess?.opening_cash_syp ?? 0);
+
+  const sumActiveSYP = async (table: string) => {
+    const { data } = await supabase
+      .from(table)
+      .select("amount_syp")
+      .eq("cash_session_id", sessionId)
+      .is("cancelled_at", null);
+    return (data ?? []).reduce(
+      (a: number, r: Record<string, unknown>) => a + Number(r.amount_syp ?? 0),
+      0
+    );
+  };
+  const subsTotal     = await sumActiveSYP("subscriptions");
+  const salesTotal    = await sumActiveSYP("sales");
+  const inbodyTotal   = await sumActiveSYP("inbody_sessions");
+  const expensesTotal = await sumActiveSYP("expenses");
+  return opening + subsTotal + salesTotal + inbodyTotal - expensesTotal;
+}
+
 export async function closeCashSession(
   user: CurrentUser,
   sessionId: string,
-  closingCashSYP: number
+  closingCashSYP: number,
+  discrepancyReason?: string,
 ) {
   try {
     assertUser(user);
     const supabase = supabaseBrowser();
 
-    const { data: sess } = await supabase
-      .from("cash_sessions")
-      .select("opening_cash_syp")
-      .eq("id", sessionId)
-      .maybeSingle();
-    const opening = Number(sess?.opening_cash_syp ?? 0);
-
-    // Sum amount_syp (immutable snapshot) for active rows in this session.
-    const sumActiveSYP = async (table: string) => {
-      const { data } = await supabase
-        .from(table)
-        .select("amount_syp")
-        .eq("cash_session_id", sessionId)
-        .is("cancelled_at", null);
-      return (data ?? []).reduce(
-        (a: number, r: Record<string, unknown>) => a + Number(r.amount_syp ?? 0),
-        0
-      );
-    };
-    const subsTotal     = await sumActiveSYP("subscriptions");
-    const salesTotal    = await sumActiveSYP("sales");
-    const inbodyTotal   = await sumActiveSYP("inbody_sessions");
-    const expensesTotal = await sumActiveSYP("expenses");
-
-    const expectedCash = opening + subsTotal + salesTotal + inbodyTotal - expensesTotal;
+    const expectedCash = await computeExpectedCash(sessionId);
     const discrepancy  = closingCashSYP - expectedCash;
+
+    // Reception must give a reason when actual ≠ expected.
+    if (discrepancy !== 0 && (!discrepancyReason || !discrepancyReason.trim())) {
+      return { error: "يجب إدخال سبب الفرق قبل إغلاق الجلسة." };
+    }
 
     const { error } = await supabase
       .from("cash_sessions")
@@ -489,15 +529,32 @@ export async function closeCashSession(
         closing_cash_syp: closingCashSYP,
         expected_cash_syp: expectedCash,
         discrepancy_syp: discrepancy,
+        notes: discrepancyReason ?? null,
         status: "closed",
       })
       .eq("id", sessionId);
     if (error) return { error: error.message };
 
+    // Persist the discrepancy in its own audit table when non-zero.
+    if (discrepancy !== 0) {
+      const { error: dErr } = await supabase
+        .from("discrepancy_logs")
+        .insert({
+          cash_session_id: sessionId,
+          worker_id: user.id,
+          worker_name: user.displayName,
+          expected_syp: expectedCash,
+          actual_syp:   closingCashSYP,
+          difference_syp: discrepancy,
+          reason: discrepancyReason ?? "غير محدد",
+        });
+      if (dErr) logErr("discrepancy insert", dErr);
+    }
+
     await pushActivity({
       user,
       action: "session_closed",
-      description: `إغلاق جلسة — متوقع ${expectedCash.toLocaleString("en-US")} ل.س — فعلي ${closingCashSYP.toLocaleString("en-US")} ل.س — فرق ${discrepancy.toLocaleString("en-US")} ل.س`,
+      description: `إغلاق جلسة — متوقع ${expectedCash.toLocaleString("en-US")} ل.س — فعلي ${closingCashSYP.toLocaleString("en-US")} ل.س — فرق ${discrepancy.toLocaleString("en-US")} ل.س${discrepancyReason ? ` — السبب: ${discrepancyReason}` : ""}`,
       amountSYP: closingCashSYP,
     });
 
