@@ -41,7 +41,10 @@ const PLAN_TYPES: PlanType[] = [
   "12_months",
 ];
 
-const OFFER_TYPES: OfferType[] = ["none", "student", "married_couple", "corporate"];
+const OFFER_TYPES: OfferType[] = ["none", "married_couple", "referral_5", "referral_9", "corporate"];
+
+// Price-affecting offers only apply to 1-month plans
+const PRICE_OFFERS: OfferType[] = ["married_couple", "corporate"];
 
 const PHONE_RE = /^09\d{8}$/;
 const TODAY = new Date().toISOString().split("T")[0];
@@ -222,7 +225,8 @@ export default function SubscriptionsBlock() {
   }, []);
 
   const handlePlanChange = useCallback((planType: PlanType) => {
-    const offerToUse = planType === "1_month" ? form.offer : "none";
+    // Reset price-affecting offers when switching away from 1-month; keep referral offers
+    const offerToUse = planType !== "1_month" && PRICE_OFFERS.includes(form.offer) ? "none" : form.offer;
     setForm((prev) => ({
       ...prev,
       planType,
@@ -438,19 +442,19 @@ export default function SubscriptionsBlock() {
                   </div>
                 </div>
                 <div>
-                  <label className={labelCls}>
-                    العرض
-                    {form.planType !== "1_month" && (
-                      <span className="mr-1 text-slate normal-case tracking-normal">(متاح لشهر واحد فقط)</span>
-                    )}
-                  </label>
+                  <label className={labelCls}>العرض</label>
                   <div className="relative">
                     <select className={selectCls} value={form.offer}
-                      disabled={form.planType !== "1_month"}
                       onChange={(e) => handleOfferChange(e.target.value as OfferType)}>
-                      {OFFER_TYPES.map((o) => (
-                        <option key={o} value={o}>{getOfferLabel(o)}</option>
-                      ))}
+                      {OFFER_TYPES.map((o) => {
+                        const isPriceOffer = PRICE_OFFERS.includes(o);
+                        const disabled = isPriceOffer && form.planType !== "1_month";
+                        return (
+                          <option key={o} value={o} disabled={disabled}>
+                            {getOfferLabel(o)}{disabled ? " — شهر واحد فقط" : ""}
+                          </option>
+                        );
+                      })}
                     </select>
                     <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-secondary">
                       <ChevronIcon open={false} />
