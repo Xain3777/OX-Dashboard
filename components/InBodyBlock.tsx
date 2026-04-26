@@ -1,71 +1,99 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import {
-  Activity,
-  Plus,
-  CheckCircle,
-  AlertTriangle,
-  Users,
-  Clock,
-  Settings,
-} from "lucide-react";
-import type { PaymentMethod } from "@/lib/types";
+import { useState, useMemo, useRef, useEffect } from "react";
+import { Activity, Plus, CheckCircle, AlertTriangle, Users, Clock } from "lucide-react";
 import { MEMBERS } from "@/lib/mock-data";
 import { useAuth } from "@/lib/auth-context";
 import { useStore, type InBodyMemberType } from "@/lib/store-context";
 import { useCurrency } from "@/lib/currency-context";
 import { pushInBody } from "@/lib/supabase/intake";
 
-type Currency = "syp" | "usd";
+// Fixed USD prices — not editable from reception
+const MEMBER_PRICE_USD     = 5;
+const NON_MEMBER_PRICE_USD = 8;
 
-const METHOD_STYLES: Record<PaymentMethod, string> = {
-  cash:     "bg-[#5CC45C]/12 text-[#5CC45C] border border-[#5CC45C]/25",
-  card:     "bg-[#F5C100]/12 text-[#F5C100] border border-[#F5C100]/25",
-  transfer: "bg-[#AAAAAA]/12 text-[#AAAAAA] border border-[#AAAAAA]/25",
-  other:    "bg-[#252525] text-[#777777] border border-[#555555]/30",
-};
+function fmtUSD(n: number) { return `$${Number(n.toFixed(2)).toLocaleString("en-US", { minimumFractionDigits: 2 })}`; }
+function fmtSYP(n: number) { return `${Math.round(n).toLocaleString("en-US")} ل.س`; }
 
-const METHOD_LABELS: Record<PaymentMethod, string> = {
-  cash: "نقدي", card: "بطاقة", transfer: "تحويل", other: "أخرى",
-};
+// ── Member search dropdown ─────────────────────────────────────────────────────
 
-function formatSYP(n: number) { return n.toLocaleString("en-US"); }
-function formatUSD(n: number)  { return n.toFixed(2); }
+function MemberSearch({ value, onChange }: { value: string; onChange: (id: string, name: string) => void }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen]   = useState(false);
+  const ref               = useRef<HTMLDivElement>(null);
+
+  const results = useMemo(() => {
+    if (!query.trim()) return MEMBERS.slice(0, 8);
+    const q = query.toLowerCase();
+    return MEMBERS.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
+  }, [query]);
+
+  const selectedMember = MEMBERS.find((m) => m.id === value);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative flex-1 min-w-[180px]">
+      <label className="block font-mono text-[10px] uppercase tracking-widest text-[#555555] mb-1">العضو</label>
+      <input
+        type="text"
+        value={selectedMember ? selectedMember.name : query}
+        placeholder="ابحث باسم العضو…"
+        className="w-full bg-[#111111] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] font-body focus:outline-none focus:border-[#F5C100]/50 transition-colors"
+        onFocus={() => { setQuery(""); onChange("", ""); setOpen(true); }}
+        onChange={(e) => { setQuery(e.target.value); onChange("", ""); setOpen(true); }}
+      />
+      {open && results.length > 0 && (
+        <div className="absolute z-20 top-full mt-1 left-0 right-0 bg-[#1A1A1A] border border-[#333333] rounded-sm shadow-lg max-h-48 overflow-y-auto">
+          {results.map((m) => (
+            <button key={m.id} type="button"
+              className="w-full text-right px-3 py-2 text-xs text-[#F0EDE6] hover:bg-[#252525] font-body transition-colors"
+              onClick={() => { onChange(m.id, m.name); setQuery(""); setOpen(false); }}>
+              <span className="flex items-center gap-2">
+                <Users size={10} className="text-[#555555]" />
+                {m.name}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main Component ─────────────────────────────────────────────────────────────
 
 export default function InBodyBlock() {
-  const { user, isManager } = useAuth();
+  const { user }         = useAuth();
   const { exchangeRate } = useCurrency();
-  const { inBodySessions, inBodyPrices, addInBodySession, updateInBodyPrices, activityFeed } = useStore();
+  const { inBodySessions, addInBodySession, activityFeed } = useStore();
 
-  // form
-  const [memberType, setMemberType] = useState<InBodyMemberType>("gym_member");
-  const [memberId,   setMemberId]   = useState("");
-  const [guestName,  setGuestName]  = useState("");
-  const [currency,   setCurrency]   = useState<Currency>("syp");
-  const [payMethod,  setPayMethod]  = useState<PaymentMethod>("cash");
-  const [error,      setError]      = useState("");
-  const [success,    setSuccess]    = useState(false);
-  const [busy,       setBusy]       = useState(false);
+  const [memberType,  setMemberType]  = useState<InBodyMemberType>("gym_member");
+  const [memberId,    setMemberId]    = useState("");
+  const [memberName,  setMemberName]  = useState("");
+  const [guestName,   setGuestName]   = useState("");
+  const [error,       setError]       = useState("");
+  const [success,     setSuccess]     = useState(false);
+  const [busy,        setBusy]        = useState(false);
 
-  // manager price editor
-  const [showPriceEdit, setShowPriceEdit] = useState(false);
-  const [editMember,    setEditMember]    = useState(String(inBodyPrices.member));
-  const [editNonMember, setEditNonMember] = useState(String(inBodyPrices.nonMember));
+  const priceUSD = memberType === "gym_member" ? MEMBER_PRICE_USD : NON_MEMBER_PRICE_USD;
+  const priceSYP = Math.round(priceUSD * exchangeRate);
 
   const todaySessions = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
     return inBodySessions.filter((s) => s.createdAt.startsWith(today));
   }, [inBodySessions]);
 
-  const todayTotalSYP = useMemo(
-    () => todaySessions.reduce((sum, s) => sum + s.priceSYP, 0),
-    [todaySessions]
+  const todayTotalUSD = useMemo(
+    () => Number((todaySessions.reduce((sum, s) => sum + (s.priceSYP / exchangeRate), 0)).toFixed(2)),
+    [todaySessions, exchangeRate]
   );
-
-  const currentPriceSYP = memberType === "gym_member" ? inBodyPrices.member : inBodyPrices.nonMember;
-  const currentPriceUSD = Math.round((currentPriceSYP / exchangeRate) * 100) / 100;
-  const displayAmount   = currency === "syp" ? currentPriceSYP : currentPriceUSD;
 
   const inBodyFeed = useMemo(
     () => activityFeed.filter((e) => e.type === "inbody").slice(0, 10),
@@ -77,9 +105,8 @@ export default function InBodyBlock() {
 
     let name = "";
     if (memberType === "gym_member") {
-      const m = MEMBERS.find((m) => m.id === memberId);
-      if (!m) { setError("اختر عضواً."); return; }
-      name = m.name;
+      if (!memberId) { setError("اختر عضواً من القائمة."); return; }
+      name = memberName;
     } else {
       if (!guestName.trim()) { setError("أدخل اسم الزائر."); return; }
       name = guestName.trim();
@@ -91,8 +118,7 @@ export default function InBodyBlock() {
       user: { id: user.id, displayName: user.displayName },
       memberName: name,
       memberType,
-      amount: displayAmount,
-      currency,
+      amountUSD: priceUSD,
       exchangeRate,
     });
     setBusy(false);
@@ -100,27 +126,18 @@ export default function InBodyBlock() {
 
     addInBodySession({
       memberType,
-      memberId: memberType === "gym_member" ? memberId : undefined,
-      memberName: name,
-      priceSYP: currentPriceSYP,
-      currency,
-      paymentMethod: payMethod,
-      createdBy: user.id,
+      memberId:      memberType === "gym_member" ? memberId : undefined,
+      memberName:    name,
+      priceSYP,
+      currency:      "usd",
+      paymentMethod: "cash",
+      createdBy:     user.id,
       createdByName: user.displayName,
     });
 
-    setMemberId(""); setGuestName("");
+    setMemberId(""); setMemberName(""); setGuestName("");
     setSuccess(true);
     setTimeout(() => setSuccess(false), 2500);
-  }
-
-  function handleSavePrices() {
-    const m  = parseInt(editMember, 10);
-    const nm = parseInt(editNonMember, 10);
-    if (!isNaN(m) && !isNaN(nm) && m > 0 && nm > 0) {
-      updateInBodyPrices(m, nm);
-      setShowPriceEdit(false);
-    }
   }
 
   return (
@@ -134,64 +151,24 @@ export default function InBodyBlock() {
             {todaySessions.length} جلسة اليوم
           </span>
         </div>
-        {isManager && (
-          <button
-            onClick={() => { setShowPriceEdit(!showPriceEdit); setEditMember(String(inBodyPrices.member)); setEditNonMember(String(inBodyPrices.nonMember)); }}
-            className="flex items-center gap-1.5 px-2 py-1 border border-[#252525] hover:border-[#F5C100]/40 text-[#777777] hover:text-[#F5C100] transition-colors rounded-sm cursor-pointer"
-          >
-            <Settings size={12} />
-            <span className="font-mono text-[10px]">تعديل الأسعار</span>
-          </button>
-        )}
       </div>
 
-      {/* Manager price editor */}
-      {isManager && showPriceEdit && (
-        <div className="px-5 py-4 bg-[#111111] border-b border-[#252525]">
-          <p className="font-mono text-[10px] uppercase tracking-widest text-[#F5C100] mb-3">تعديل أسعار جلسة InBody (ل.س)</p>
-          <div className="flex flex-wrap gap-3 items-end">
-            <div className="flex flex-col gap-1">
-              <label className="font-mono text-[10px] text-[#555555] uppercase tracking-widest">عضو النادي (ل.س)</label>
-              <input type="number" value={editMember} onChange={(e) => setEditMember(e.target.value)}
-                className="bg-[#1A1A1A] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F5C100] font-mono w-40 focus:outline-none focus:border-[#F5C100]/50" dir="ltr" />
-              <span className="font-mono text-[9px] text-[#555555]">≈ {formatUSD(parseInt(editMember || "0") / exchangeRate)}$</span>
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="font-mono text-[10px] text-[#555555] uppercase tracking-widest">زيارة خارجية (ل.س)</label>
-              <input type="number" value={editNonMember} onChange={(e) => setEditNonMember(e.target.value)}
-                className="bg-[#1A1A1A] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F5C100] font-mono w-40 focus:outline-none focus:border-[#F5C100]/50" dir="ltr" />
-              <span className="font-mono text-[9px] text-[#555555]">≈ {formatUSD(parseInt(editNonMember || "0") / exchangeRate)}$</span>
-            </div>
-            <button onClick={handleSavePrices}
-              className="px-4 py-2 bg-[#F5C100] text-[#0A0A0A] font-display text-xs tracking-widest rounded-sm hover:bg-[#FFD740] transition-colors cursor-pointer self-center mt-4">
-              حفظ
-            </button>
-            <button onClick={() => setShowPriceEdit(false)}
-              className="px-4 py-2 border border-[#252525] text-[#777777] font-mono text-xs rounded-sm hover:text-[#F0EDE6] transition-colors cursor-pointer self-center mt-4">
-              إلغاء
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Price cards */}
+      {/* Fixed price cards */}
       <div className="px-5 pt-4 pb-2">
-        <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555] mb-3">الأسعار</p>
+        <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555] mb-3">الأسعار الثابتة</p>
       </div>
       <div className="px-5 grid grid-cols-2 gap-3 pb-4">
-        <div onClick={() => setMemberType("gym_member")}
+        <div onClick={() => { setMemberType("gym_member"); setError(""); }}
           className={`p-4 border rounded-sm text-center cursor-pointer transition-colors ${memberType === "gym_member" ? "border-[#F5C100]/50 bg-[#F5C100]/5" : "border-[#252525] bg-[#111111] hover:border-[#555555]"}`}>
           <p className="font-body text-xs text-[#AAAAAA] mb-1">عضو النادي</p>
-          <p className="font-display text-2xl text-[#F5C100] tracking-wider">{formatSYP(inBodyPrices.member)}</p>
-          <p className="font-mono text-[10px] text-[#555555] mt-0.5">ل.س</p>
-          <p className="font-mono text-[10px] text-[#555555]">≈ {formatUSD(inBodyPrices.member / exchangeRate)}$</p>
+          <p className="font-display text-3xl text-[#F5C100] tracking-wider">${MEMBER_PRICE_USD}</p>
+          <p className="font-mono text-[10px] text-[#555555] mt-1">{fmtSYP(MEMBER_PRICE_USD * exchangeRate)}</p>
         </div>
-        <div onClick={() => setMemberType("non_member")}
+        <div onClick={() => { setMemberType("non_member"); setError(""); }}
           className={`p-4 border rounded-sm text-center cursor-pointer transition-colors ${memberType === "non_member" ? "border-[#F5C100]/50 bg-[#F5C100]/5" : "border-[#252525] bg-[#111111] hover:border-[#555555]"}`}>
           <p className="font-body text-xs text-[#AAAAAA] mb-1">زيارة خارجية</p>
-          <p className="font-display text-2xl text-[#F5C100] tracking-wider">{formatSYP(inBodyPrices.nonMember)}</p>
-          <p className="font-mono text-[10px] text-[#555555] mt-0.5">ل.س</p>
-          <p className="font-mono text-[10px] text-[#555555]">≈ {formatUSD(inBodyPrices.nonMember / exchangeRate)}$</p>
+          <p className="font-display text-3xl text-[#F5C100] tracking-wider">${NON_MEMBER_PRICE_USD}</p>
+          <p className="font-mono text-[10px] text-[#555555] mt-1">{fmtSYP(NON_MEMBER_PRICE_USD * exchangeRate)}</p>
         </div>
       </div>
 
@@ -204,14 +181,14 @@ export default function InBodyBlock() {
         <table className="w-full text-xs">
           <thead>
             <tr className="border-y border-[#252525] bg-[#111111]">
-              {["العضو", "النوع", "السعر", "الطريقة", "الموظف"].map((h) => (
+              {["العضو", "النوع", "المبلغ ($)", "الموظف"].map((h) => (
                 <th key={h} className="px-4 py-2 text-right font-mono text-[10px] uppercase tracking-widest text-[#555555] whitespace-nowrap">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {todaySessions.length === 0 ? (
-              <tr><td colSpan={5} className="px-4 py-6 text-center font-mono text-[10px] text-[#555555] uppercase tracking-widest">لا توجد جلسات اليوم</td></tr>
+              <tr><td colSpan={4} className="px-4 py-6 text-center font-mono text-[10px] text-[#555555] uppercase tracking-widest">لا توجد جلسات اليوم</td></tr>
             ) : (
               todaySessions.map((s) => (
                 <tr key={s.id} className="border-b border-[#252525]/60 hover:bg-[#252525]/30 transition-colors">
@@ -224,13 +201,8 @@ export default function InBodyBlock() {
                     </span>
                   </td>
                   <td className="px-4 py-2.5 font-mono tabular-nums whitespace-nowrap">
-                    <span className="text-[#F5C100]">{formatSYP(s.priceSYP)} ل.س</span>
-                    <span className="text-[#555555] text-[10px] mr-1">≈ {formatUSD(s.priceSYP / exchangeRate)}$</span>
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-wide ${METHOD_STYLES[s.paymentMethod]}`}>
-                      {METHOD_LABELS[s.paymentMethod]}
-                    </span>
+                    <span className="text-[#F5C100]">{fmtUSD(s.priceSYP / exchangeRate)}</span>
+                    <span className="text-[#555555] text-[10px] mr-1">({fmtSYP(s.priceSYP)})</span>
                   </td>
                   <td className="px-4 py-2.5 text-[#777777] text-xs whitespace-nowrap">{s.createdByName}</td>
                 </tr>
@@ -244,8 +216,8 @@ export default function InBodyBlock() {
       <div className="flex items-center justify-between px-5 py-2.5 border-t border-[#252525] bg-[#111111]/60">
         <span className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">إجمالي اليوم</span>
         <div className="flex items-center gap-2">
-          <span className="font-mono tabular-nums text-sm font-medium text-[#F5C100] glow-gold-sm">{formatSYP(todayTotalSYP)} ل.س</span>
-          <span className="font-mono text-[10px] text-[#555555]">≈ {formatUSD(todayTotalSYP / exchangeRate)}$</span>
+          <span className="font-mono tabular-nums text-sm font-medium text-[#F5C100] glow-gold-sm">{fmtUSD(todayTotalUSD)}</span>
+          <span className="font-mono text-[10px] text-[#555555]">({fmtSYP(todayTotalUSD * exchangeRate)})</span>
         </div>
       </div>
 
@@ -259,59 +231,33 @@ export default function InBodyBlock() {
           {/* Visit type */}
           <div className="flex flex-col gap-1 w-36">
             <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">نوع الزيارة</label>
-            <select value={memberType} onChange={(e) => { setMemberType(e.target.value as InBodyMemberType); setError(""); }}
+            <select value={memberType} onChange={(e) => { setMemberType(e.target.value as InBodyMemberType); setMemberId(""); setMemberName(""); setGuestName(""); setError(""); }}
               className="bg-[#111111] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] font-body focus:outline-none focus:border-[#F5C100]/50 transition-colors">
               <option value="gym_member">عضو في النادي</option>
               <option value="non_member">زيارة خارجية</option>
             </select>
           </div>
 
-          {/* Member or guest */}
+          {/* Member search or guest name */}
           {memberType === "gym_member" ? (
-            <div className="flex flex-col gap-1 min-w-[160px] flex-1">
-              <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">العضو</label>
-              <select value={memberId} onChange={(e) => { setMemberId(e.target.value); setError(""); }}
-                className="bg-[#111111] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] font-body focus:outline-none focus:border-[#F5C100]/50 transition-colors">
-                <option value="">— اختر عضواً —</option>
-                {MEMBERS.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-              </select>
-            </div>
+            <MemberSearch
+              value={memberId}
+              onChange={(id, name) => { setMemberId(id); setMemberName(name); setError(""); }}
+            />
           ) : (
-            <div className="flex flex-col gap-1 min-w-[160px] flex-1">
+            <div className="flex flex-col gap-1 min-w-[180px] flex-1">
               <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">اسم الزائر</label>
               <input type="text" value={guestName} onChange={(e) => { setGuestName(e.target.value); setError(""); }}
-                placeholder="أدخل الاسم..."
+                placeholder="أدخل الاسم…"
                 className="bg-[#111111] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] font-body focus:outline-none focus:border-[#F5C100]/50 transition-colors" />
             </div>
           )}
-
-          {/* Currency toggle */}
-          <div className="flex flex-col gap-1">
-            <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">عملة الدفع</label>
-            <div className="flex border border-[#252525] rounded-sm overflow-hidden">
-              {(["syp", "usd"] as const).map((c) => (
-                <button key={c} onClick={() => setCurrency(c)}
-                  className={`px-3 py-2 text-xs font-mono cursor-pointer transition-colors ${currency === c ? "bg-[#F5C100] text-[#0A0A0A]" : "bg-[#111111] text-[#777777] hover:text-[#F0EDE6]"}`}>
-                  {c === "syp" ? "ل.س" : "$"}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Payment method */}
-          <div className="flex flex-col gap-1 w-28">
-            <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">الطريقة</label>
-            <select value={payMethod} onChange={(e) => setPayMethod(e.target.value as PaymentMethod)}
-              className="bg-[#111111] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] font-body focus:outline-none focus:border-[#F5C100]/50 transition-colors">
-              {Object.entries(METHOD_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-            </select>
-          </div>
 
           {/* Price preview */}
           <div className="flex flex-col gap-1">
             <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">السعر</label>
             <div className="px-3 py-2 bg-[#0A0A0A] border border-[#252525]/60 rounded-sm font-mono tabular-nums text-xs text-[#F5C100] whitespace-nowrap">
-              {currency === "syp" ? `${formatSYP(currentPriceSYP)} ل.س` : `${formatUSD(currentPriceUSD)}$`}
+              {fmtUSD(priceUSD)}
             </div>
           </div>
 
@@ -353,7 +299,7 @@ export default function InBodyBlock() {
                     <span className="text-xs text-[#AAAAAA]">{entry.description}</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    {entry.amountSYP && <span className="font-mono text-[10px] text-[#F5C100]">{formatSYP(entry.amountSYP)} ل.س</span>}
+                    {entry.amountUSD != null && <span className="font-mono text-[10px] text-[#F5C100]">{fmtUSD(entry.amountUSD)}</span>}
                     <span className="font-mono text-[10px] text-[#555555]">{entry.userName}</span>
                   </div>
                 </div>

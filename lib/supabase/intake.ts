@@ -127,38 +127,38 @@ export async function pushActivity(opts: {
 export async function pushSubscription(opts: {
   user: CurrentUser;
   memberName: string;
+  phoneNumber?: string;
   planType: string;
   offer?: string;
   startDate: string;
   endDate: string;
-  amount: number;
-  paidAmount: number;
+  amountUSD: number;
+  paidAmountUSD: number;
   paymentStatus: "paid" | "partial" | "unpaid";
-  currency: Currency;
   exchangeRate: number;
 }): Promise<{ id?: string; error?: string }> {
   try {
     assertUser(opts.user);
-    if (!opts.currency) return { error: "العملة مطلوبة" };
     if (!opts.exchangeRate || opts.exchangeRate <= 0) return { error: "سعر الصرف غير صالح" };
-    if (opts.paidAmount < 0 || opts.amount < 0) return { error: "مبلغ غير صالح" };
+    if (opts.paidAmountUSD < 0 || opts.amountUSD < 0) return { error: "مبلغ غير صالح" };
 
     const supabase = supabaseBrowser();
     const cashSessionId = await getOpenSessionId(opts.user.id);
-    const amountSYP = snapshotSYP(opts.paidAmount, opts.currency, opts.exchangeRate);
+    const amountSYP = Math.round(opts.paidAmountUSD * opts.exchangeRate);
 
     const { data, error } = await supabase
       .from("subscriptions")
       .insert({
         member_name: opts.memberName,
+        phone_number: opts.phoneNumber ?? null,
         plan_type: opts.planType,
         offer: opts.offer ?? "none",
         start_date: opts.startDate,
         end_date: opts.endDate,
-        amount: opts.amount,
-        paid_amount: opts.paidAmount,
+        amount: opts.amountUSD,
+        paid_amount: opts.paidAmountUSD,
         payment_status: opts.paymentStatus,
-        currency: opts.currency,
+        currency: "usd",
         exchange_rate: opts.exchangeRate,
         amount_syp: amountSYP,
         status: "active",
@@ -173,9 +173,8 @@ export async function pushSubscription(opts: {
     await pushActivity({
       user: opts.user,
       action: "subscription_create",
-      description: `اشتراك جديد — ${opts.memberName} (${opts.planType})`,
-      amountSYP: opts.currency === "syp" ? opts.paidAmount : undefined,
-      amountUSD: opts.currency === "usd" ? opts.paidAmount : undefined,
+      description: `اشتراك جديد — ${opts.memberName} (${opts.planType}) — $${opts.paidAmountUSD}`,
+      amountUSD: opts.paidAmountUSD,
       entityType: "subscription",
       entityId: data?.id as string,
     });
@@ -193,21 +192,19 @@ export async function pushSale(opts: {
   productName: string;
   productId?: string;
   quantity: number;
-  unitPrice: number;
-  total: number;
-  currency: Currency;
+  unitPrice: number;    // USD
+  total: number;        // USD
   exchangeRate: number;
   source?: "store" | "kitchen";
 }): Promise<{ id?: string; error?: string }> {
   try {
     assertUser(opts.user);
-    if (!opts.currency) return { error: "العملة مطلوبة" };
     if (!opts.exchangeRate || opts.exchangeRate <= 0) return { error: "سعر الصرف غير صالح" };
     if (opts.quantity <= 0 || opts.total < 0) return { error: "كمية أو مبلغ غير صالح" };
 
     const supabase = supabaseBrowser();
     const cashSessionId = await getOpenSessionId(opts.user.id);
-    const amountSYP = snapshotSYP(opts.total, opts.currency, opts.exchangeRate);
+    const amountSYP = Math.round(opts.total * opts.exchangeRate);
 
     const { data, error } = await supabase
       .from("sales")
@@ -217,7 +214,7 @@ export async function pushSale(opts: {
         quantity: opts.quantity,
         unit_price: opts.unitPrice,
         total: opts.total,
-        currency: opts.currency,
+        currency: "usd",
         exchange_rate: opts.exchangeRate,
         amount_syp: amountSYP,
         source: opts.source ?? "store",
@@ -232,9 +229,8 @@ export async function pushSale(opts: {
     await pushActivity({
       user: opts.user,
       action: "sale_create",
-      description: `بيع ${opts.quantity}× ${opts.productName}`,
-      amountSYP: opts.currency === "syp" ? opts.total : undefined,
-      amountUSD: opts.currency === "usd" ? opts.total : undefined,
+      description: `بيع ${opts.quantity}× ${opts.productName} — $${opts.total}`,
+      amountUSD: opts.total,
       entityType: "sale",
       entityId: data?.id as string,
     });
@@ -251,27 +247,25 @@ export async function pushInBody(opts: {
   user: CurrentUser;
   memberName: string;
   memberType: "gym_member" | "non_member";
-  amount: number;
-  currency: Currency;
+  amountUSD: number;   // fixed: $5 member / $8 non-member
   exchangeRate: number;
 }): Promise<{ id?: string; error?: string }> {
   try {
     assertUser(opts.user);
-    if (!opts.currency) return { error: "العملة مطلوبة" };
     if (!opts.exchangeRate || opts.exchangeRate <= 0) return { error: "سعر الصرف غير صالح" };
-    if (opts.amount < 0) return { error: "مبلغ غير صالح" };
+    if (opts.amountUSD < 0) return { error: "مبلغ غير صالح" };
 
     const supabase = supabaseBrowser();
     const cashSessionId = await getOpenSessionId(opts.user.id);
-    const amountSYP = snapshotSYP(opts.amount, opts.currency, opts.exchangeRate);
+    const amountSYP = Math.round(opts.amountUSD * opts.exchangeRate);
 
     const { data, error } = await supabase
       .from("inbody_sessions")
       .insert({
         member_name: opts.memberName,
         session_type: opts.memberType,
-        amount: opts.amount,
-        currency: opts.currency,
+        amount: opts.amountUSD,
+        currency: "usd",
         exchange_rate: opts.exchangeRate,
         amount_syp: amountSYP,
         cash_session_id: cashSessionId,
@@ -285,9 +279,8 @@ export async function pushInBody(opts: {
     await pushActivity({
       user: opts.user,
       action: "inbody_create",
-      description: `جلسة InBody — ${opts.memberName}`,
-      amountSYP: opts.currency === "syp" ? opts.amount : undefined,
-      amountUSD: opts.currency === "usd" ? opts.amount : undefined,
+      description: `جلسة InBody — ${opts.memberName} — $${opts.amountUSD}`,
+      amountUSD: opts.amountUSD,
       entityType: "inbody",
       entityId: data?.id as string,
     });
@@ -474,79 +467,89 @@ export async function openCashSession(user: CurrentUser, openingCashSYPOverride?
   }
 }
 
-// Compute expected cash for a session without closing it. Used by the UI
-// to validate before allowing close (and to require a reason on mismatch).
-export async function computeExpectedCash(sessionId: string): Promise<number> {
+// Compute total income for a session in USD (subscriptions + sales + inbody).
+// Expenses are excluded per business rules. Uses native USD amounts (not amount_syp).
+export async function computeExpectedCash(sessionId: string, exchangeRate: number): Promise<number> {
   const supabase = supabaseBrowser();
+
+  // Opening stored in SYP; convert to USD for consistent comparison.
   const { data: sess } = await supabase
     .from("cash_sessions")
     .select("opening_cash_syp")
     .eq("id", sessionId)
     .maybeSingle();
-  const opening = Number(sess?.opening_cash_syp ?? 0);
+  const openingUSD = Number((Number(sess?.opening_cash_syp ?? 0) / exchangeRate).toFixed(2));
 
-  const sumActiveSYP = async (table: string) => {
+  const sumUSD = async (table: string, col: string) => {
     const { data } = await supabase
       .from(table)
-      .select("amount_syp")
+      .select(col)
       .eq("cash_session_id", sessionId)
       .is("cancelled_at", null);
-    return (data ?? []).reduce(
-      (a: number, r: Record<string, unknown>) => a + Number(r.amount_syp ?? 0),
-      0
-    );
+    const total = (data as unknown as Record<string, unknown>[])
+      ?.reduce((a, r) => a + Number(r[col] ?? 0), 0) ?? 0;
+    return Number(total.toFixed(2));
   };
-  const subsTotal     = await sumActiveSYP("subscriptions");
-  const salesTotal    = await sumActiveSYP("sales");
-  const inbodyTotal   = await sumActiveSYP("inbody_sessions");
-  const expensesTotal = await sumActiveSYP("expenses");
-  return opening + subsTotal + salesTotal + inbodyTotal - expensesTotal;
+
+  const subs   = await sumUSD("subscriptions",   "paid_amount");
+  const sales  = await sumUSD("sales",           "total");
+  const inbody = await sumUSD("inbody_sessions", "amount");
+
+  return Number((openingUSD + subs + sales + inbody).toFixed(2));
 }
 
 export async function closeCashSession(
   user: CurrentUser,
   sessionId: string,
-  closingCashSYP: number,
+  closingCashUSD: number,
+  exchangeRate: number,
   discrepancyReason?: string,
 ) {
   try {
     assertUser(user);
     const supabase = supabaseBrowser();
 
-    const expectedCash = await computeExpectedCash(sessionId);
-    const discrepancy  = closingCashSYP - expectedCash;
+    const expectedCashUSD = await computeExpectedCash(sessionId, exchangeRate);
 
-    // Reception must give a reason when actual ≠ expected.
+    // Normalise both to 2 decimal places to prevent float mismatches.
+    const closingNorm  = Number(closingCashUSD.toFixed(2));
+    const expectedNorm = Number(expectedCashUSD.toFixed(2));
+    const discrepancy  = Number((closingNorm - expectedNorm).toFixed(2));
+
     if (discrepancy !== 0 && (!discrepancyReason || !discrepancyReason.trim())) {
       return { error: "يجب إدخال سبب الفرق قبل إغلاق الجلسة." };
     }
 
+    // Store SYP-equivalent for backward-compat columns.
+    const closingCashSYP  = Math.round(closingNorm  * exchangeRate);
+    const expectedCashSYP = Math.round(expectedNorm * exchangeRate);
+    const discrepancySYP  = Math.round(discrepancy  * exchangeRate);
+
     const { error } = await supabase
       .from("cash_sessions")
       .update({
-        closed_by: user.id,
-        closed_at: new Date().toISOString(),
-        closing_cash_syp: closingCashSYP,
-        expected_cash_syp: expectedCash,
-        discrepancy_syp: discrepancy,
-        notes: discrepancyReason ?? null,
-        status: "closed",
+        closed_by:         user.id,
+        closed_at:         new Date().toISOString(),
+        closing_cash_syp:  closingCashSYP,
+        expected_cash_syp: expectedCashSYP,
+        discrepancy_syp:   discrepancySYP,
+        notes:             discrepancyReason ?? null,
+        status:            "closed",
       })
       .eq("id", sessionId);
     if (error) return { error: error.message };
 
-    // Persist the discrepancy in its own audit table when non-zero.
     if (discrepancy !== 0) {
       const { error: dErr } = await supabase
         .from("discrepancy_logs")
         .insert({
           cash_session_id: sessionId,
-          worker_id: user.id,
-          worker_name: user.displayName,
-          expected_syp: expectedCash,
-          actual_syp:   closingCashSYP,
-          difference_syp: discrepancy,
-          reason: discrepancyReason ?? "غير محدد",
+          worker_id:      user.id,
+          worker_name:    user.displayName,
+          expected_syp:   expectedCashSYP,
+          actual_syp:     closingCashSYP,
+          difference_syp: discrepancySYP,
+          reason:         discrepancyReason ?? "غير محدد",
         });
       if (dErr) logErr("discrepancy insert", dErr);
     }
@@ -554,11 +557,11 @@ export async function closeCashSession(
     await pushActivity({
       user,
       action: "session_closed",
-      description: `إغلاق جلسة — متوقع ${expectedCash.toLocaleString("en-US")} ل.س — فعلي ${closingCashSYP.toLocaleString("en-US")} ل.س — فرق ${discrepancy.toLocaleString("en-US")} ل.س${discrepancyReason ? ` — السبب: ${discrepancyReason}` : ""}`,
-      amountSYP: closingCashSYP,
+      description: `إغلاق جلسة — متوقع $${expectedNorm} — فعلي $${closingNorm} — فرق $${discrepancy}${discrepancyReason ? ` — السبب: ${discrepancyReason}` : ""}`,
+      amountUSD: closingNorm,
     });
 
-    return { expectedCash, discrepancy };
+    return { expectedCashUSD: expectedNorm, discrepancy };
   } catch (e) {
     logErr("close session throw", e);
     return { error: String(e) };

@@ -18,19 +18,21 @@ export interface Member {
 export type PlanType =
   | "daily"
   | "1_month"
+  | "2_months"
   | "3_months"
   | "4_months"
+  | "6_months"
+  | "7_months"
+  | "8_months"
   | "9_months"
   | "12_months";
 
+// Offers apply only to 1-month plans and do not stack with duration bonuses.
 export type OfferType =
   | "none"
-  | "4_plus_1_free"       // 4 months paid + 5th free
-  | "3_plus_half_free"    // 3 months + half month free
-  | "9_plus_1.5_free"     // 9 months + 1.5 months free
-  | "12_plus_2_free"      // 1 year + 2 months free
-  | "married_couple"
-  | "college_student";
+  | "student"        // $20 fixed price
+  | "married_couple" // 15% off per person
+  | "corporate";     // 15% off
 
 export type PaymentStatus = "paid" | "partial" | "unpaid";
 export type SubStatus = "active" | "expired" | "frozen" | "cancelled";
