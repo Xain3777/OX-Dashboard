@@ -44,15 +44,15 @@ const LOCAL_KEY = "ox-auth-local-user";
 const LOCAL_PASSWORD = "123456";
 
 const LOCAL_ACCOUNTS: Array<{ email: string; displayName: string; role: AppRole }> = [
-  { email: "adham@ox.local",      displayName: "كوتش أدهم",  role: "manager"   },
-  { email: "haider@ox.local",     displayName: "حيدر",       role: "manager"   },
-  { email: "reception1@ox.local", displayName: "استقبال 1",  role: "reception" },
-  { email: "reception2@ox.local", displayName: "استقبال 2",  role: "reception" },
-  { email: "reception3@ox.local", displayName: "استقبال 3",  role: "reception" },
-  { email: "reception4@ox.local", displayName: "استقبال 4",  role: "reception" },
-  { email: "reception5@ox.local", displayName: "استقبال 5",  role: "reception" },
-  { email: "reception6@ox.local", displayName: "استقبال 6",  role: "reception" },
-  { email: "reception7@ox.local", displayName: "استقبال 7",  role: "reception" },
+  { email: "adham@ox.local",      displayName: "كوتش أدهم",   role: "manager"   },
+  { email: "haider@ox.local",     displayName: "حيدر",        role: "manager"   },
+  { email: "reception1@ox.local", displayName: "نوار",        role: "reception" },
+  { email: "reception2@ox.local", displayName: "ساميلا راعي", role: "reception" },
+  { email: "reception3@ox.local", displayName: "آيه ابراهيم", role: "reception" },
+  { email: "reception4@ox.local", displayName: "سالي رجب",    role: "reception" },
+  { email: "reception5@ox.local", displayName: "رند اسماعيل", role: "reception" },
+  { email: "reception6@ox.local", displayName: "ناديا ابراهيم", role: "reception" },
+  { email: "reception7@ox.local", displayName: "استقبال ٧",   role: "reception" },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -92,10 +92,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     // ── Supabase mode: bootstrap from existing session ──
+    // Wipe stale/partial Supabase tokens before attempting session restore.
+    // A lagged or timed-out login can leave corrupted sb-* keys that cause
+    // the auth state to hang indefinitely on subsequent page loads.
     let alive = true;
     (async () => {
-      const { data } = await supabase.auth.getSession();
-      const sess = data.session;
+      let sess: { user?: { id: string; email?: string } } | null = null;
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        sess = data.session;
+      } catch {
+        // Stale or invalid session — purge all Supabase localStorage keys so
+        // the next load starts clean instead of hanging again.
+        try {
+          Object.keys(localStorage)
+            .filter((k) => k.startsWith("sb-") || k.includes("supabase"))
+            .forEach((k) => localStorage.removeItem(k));
+        } catch {}
+        sess = null;
+      }
       if (sess?.user && alive) {
         const profile = await loadProfile(sess.user.id, sess.user.email ?? "");
         if (alive) setUser(profile);

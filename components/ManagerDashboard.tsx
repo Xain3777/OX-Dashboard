@@ -45,12 +45,12 @@ const FREQ_LABELS: Record<ExpenseFrequency, string> = {
 const EMPLOYEE_MAP: Record<string, string> = {
   "adham@ox.local":      "كوتش أدهم",
   "haider@ox.local":     "حيدر",
-  "reception1@ox.local": "استقبال ١",
-  "reception2@ox.local": "استقبال ٢",
-  "reception3@ox.local": "استقبال ٣",
-  "reception4@ox.local": "استقبال ٤",
-  "reception5@ox.local": "استقبال ٥",
-  "reception6@ox.local": "استقبال ٦",
+  "reception1@ox.local": "نوار",
+  "reception2@ox.local": "ساميلا راعي",
+  "reception3@ox.local": "آيه ابراهيم",
+  "reception4@ox.local": "سالي رجب",
+  "reception5@ox.local": "رند اسماعيل",
+  "reception6@ox.local": "ناديا ابراهيم",
   "reception7@ox.local": "استقبال ٧",
 };
 
@@ -245,6 +245,13 @@ function SessionsAccordion() {
                     </>
                   )}
                 </div>
+                {/* Discrepancy note — shown when manager reviews a closed session */}
+                {!isLive && sess.discrepancyNote && (
+                  <div className="border border-[#F5C100]/20 bg-[#F5C100]/5 rounded-sm px-4 py-3">
+                    <p className="font-mono text-[10px] uppercase tracking-widest text-[#F5C100]/60 mb-1">سبب الفرق — بقلم الاستقبال</p>
+                    <p className="font-mono text-xs text-[#F0EDE6] leading-relaxed">{sess.discrepancyNote}</p>
+                  </div>
+                )}
               </div>
             )}
           </div>

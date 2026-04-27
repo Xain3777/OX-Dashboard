@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { LogIn, LogOut, Banknote, Clock, Lock } from "lucide-react";
+import { useState, useMemo } from "react";
+import { LogIn, LogOut, Banknote, Clock, Lock, AlertTriangle } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
 
@@ -32,12 +32,12 @@ export default function CashSessionBlock() {
     mealsIncome,
     subsIncome,
     inbodyIncome,
-    totalIncome,
     runningCash,
   } = useStore();
 
   const [openingInput, setOpeningInput] = useState("");
   const [closingInput, setClosingInput] = useState("");
+  const [discrepancyNote, setDiscrepancyNote] = useState("");
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
   if (!user) return null;
@@ -45,9 +45,21 @@ export default function CashSessionBlock() {
   const isOpen   = localSession?.status === "open";
   const isClosed = localSession?.status === "closed";
 
+  // Live discrepancy calculation
+  const closingValue = useMemo(() => {
+    const v = parseFloat(closingInput);
+    return isNaN(v) ? null : v;
+  }, [closingInput]);
+
+  const diff = useMemo(
+    () => closingValue !== null ? closingValue - runningCash : null,
+    [closingValue, runningCash]
+  );
+
+  const hasDiscrepancy = diff !== null && Math.abs(diff) >= 0.01;
+
   function handleOpen() {
     setMsg(null);
-    // If a previous session was closed today, opening is locked to lastClosingCash
     const isHandoff = lastClosingCash > 0;
     const opening   = isHandoff ? lastClosingCash : Math.max(0, Number(openingInput) || 0);
     openLocalSession(opening);
@@ -57,11 +69,16 @@ export default function CashSessionBlock() {
 
   function handleClose() {
     setMsg(null);
-    const v = Number(closingInput) || 0;
-    if (v < 0) { setMsg({ kind: "err", text: "المبلغ لا يمكن أن يكون سالباً." }); return; }
-    closeLocalSession(v);
+    if (closingValue === null || closingValue < 0) {
+      setMsg({ kind: "err", text: "المبلغ لا يمكن أن يكون سالباً." }); return;
+    }
+    if (hasDiscrepancy && !discrepancyNote.trim()) {
+      setMsg({ kind: "err", text: "يرجى إدخال سبب الفرق قبل الإغلاق." }); return;
+    }
+    closeLocalSession(closingValue, hasDiscrepancy ? discrepancyNote.trim() : undefined);
     setClosingInput("");
-    setMsg({ kind: "ok", text: `أُغلقت الجلسة — الفعلي: ${fmt(v)}` });
+    setDiscrepancyNote("");
+    setMsg({ kind: "ok", text: `أُغلقت الجلسة — ${user?.displayName} — الفعلي: ${fmt(closingValue)}` });
   }
 
   return (
@@ -150,7 +167,7 @@ export default function CashSessionBlock() {
                 <input
                   type="number"
                   value={closingInput}
-                  onChange={(e) => setClosingInput(e.target.value)}
+                  onChange={(e) => { setClosingInput(e.target.value); setDiscrepancyNote(""); }}
                   placeholder="0"
                   className="ox-input flex-1 font-mono text-lg"
                   dir="ltr"
@@ -164,6 +181,38 @@ export default function CashSessionBlock() {
                   إغلاق الجلسة
                 </button>
               </div>
+
+              {/* Live diff indicator */}
+              {diff !== null && (
+                <div className={`flex items-center gap-2 px-3 py-2 border clip-corner-sm font-mono text-xs ${
+                  Math.abs(diff) < 0.01
+                    ? "bg-[#5CC45C]/10 border-[#5CC45C]/30 text-[#5CC45C]"
+                    : "bg-[#FF3333]/10 border-[#FF3333]/30 text-[#FF3333]"
+                }`}>
+                  {Math.abs(diff) >= 0.01 && <AlertTriangle size={12} className="shrink-0" />}
+                  <span>
+                    {Math.abs(diff) < 0.01
+                      ? "المبلغ مطابق للمتوقع ✓"
+                      : `فرق: ${diff > 0 ? "+" : ""}${fmt(diff)} (متوقع ${fmt(runningCash)})`}
+                  </span>
+                </div>
+              )}
+
+              {/* Discrepancy note — shown only when amounts differ */}
+              {hasDiscrepancy && (
+                <div className="space-y-1.5 animate-fade-in">
+                  <label className="block font-mono text-[11px] text-[#F5C100] tracking-widest">
+                    سبب الفرق <span className="text-[#FF3333]">*</span> — مطلوب للإغلاق
+                  </label>
+                  <textarea
+                    value={discrepancyNote}
+                    onChange={(e) => setDiscrepancyNote(e.target.value)}
+                    placeholder="اكتب سبب الفرق... (مثال: صرفت فكة، خطأ في العد، تبرع...)"
+                    rows={3}
+                    className="w-full bg-[#0A0A0A] border border-[#F5C100]/30 focus:border-[#F5C100]/60 rounded-sm px-3 py-2 font-mono text-xs text-[#F0EDE6] placeholder-[#555555] resize-none focus:outline-none"
+                  />
+                </div>
+              )}
             </div>
           </>
         )}

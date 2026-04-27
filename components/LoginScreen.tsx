@@ -8,15 +8,15 @@ import { useAuth } from "@/lib/auth-context";
 // Pre-seeded accounts (must match scripts/seed-users.mjs)
 // All passwords = 123456 for now.
 const ACCOUNTS = [
-  { email: "adham@ox.local",      displayName: "كوتش أدهم",  roleLabel: "المالك",          role: "manager"   as const },
-  { email: "haider@ox.local",     displayName: "حيدر",       roleLabel: "مدير",            role: "manager"   as const },
-  { email: "reception1@ox.local", displayName: "استقبال 1",  roleLabel: "موظف استقبال",   role: "reception" as const },
-  { email: "reception2@ox.local", displayName: "استقبال 2",  roleLabel: "موظف استقبال",   role: "reception" as const },
-  { email: "reception3@ox.local", displayName: "استقبال 3",  roleLabel: "موظف استقبال",   role: "reception" as const },
-  { email: "reception4@ox.local", displayName: "استقبال 4",  roleLabel: "موظف استقبال",   role: "reception" as const },
-  { email: "reception5@ox.local", displayName: "استقبال 5",  roleLabel: "موظف استقبال",   role: "reception" as const },
-  { email: "reception6@ox.local", displayName: "استقبال 6",  roleLabel: "موظف استقبال",   role: "reception" as const },
-  { email: "reception7@ox.local", displayName: "استقبال 7",  roleLabel: "موظف استقبال",   role: "reception" as const },
+  { email: "adham@ox.local",      displayName: "كوتش أدهم",    roleLabel: "المالك",        role: "manager"   as const },
+  { email: "haider@ox.local",     displayName: "حيدر",          roleLabel: "مدير",          role: "manager"   as const },
+  { email: "reception1@ox.local", displayName: "نوار",          roleLabel: "موظف استقبال", role: "reception" as const },
+  { email: "reception2@ox.local", displayName: "ساميلا راعي",   roleLabel: "موظف استقبال", role: "reception" as const },
+  { email: "reception3@ox.local", displayName: "آيه ابراهيم",  roleLabel: "موظف استقبال", role: "reception" as const },
+  { email: "reception4@ox.local", displayName: "سالي رجب",      roleLabel: "موظف استقبال", role: "reception" as const },
+  { email: "reception5@ox.local", displayName: "رند اسماعيل",   roleLabel: "موظف استقبال", role: "reception" as const },
+  { email: "reception6@ox.local", displayName: "ناديا ابراهيم", roleLabel: "موظف استقبال", role: "reception" as const },
+  { email: "reception7@ox.local", displayName: "استقبال ٧",     roleLabel: "موظف استقبال", role: "reception" as const },
 ];
 
 export default function LoginScreen() {

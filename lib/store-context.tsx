@@ -78,6 +78,7 @@ export interface LocalSession {
   mealsIncome?: number;
   inbodyIncome?: number;
   totalIncome?: number;
+  discrepancyNote?: string;
 }
 
 // ─── Full store state ─────────────────────────────────────────────────────────
@@ -133,7 +134,7 @@ export interface StoreContextType extends StoreState {
   pushActivity: (entry: Omit<ActivityEntry, "id" | "timestamp">) => void;
   // Local session
   openLocalSession: (openingCash?: number) => void;
-  closeLocalSession: (actualCash: number) => void;
+  closeLocalSession: (actualCash: number, discrepancyNote?: string) => void;
   // Computed income (today's, non-cancelled)
   storeIncome: number;
   mealsIncome: number;
@@ -211,7 +212,7 @@ const StoreContext = createContext<StoreContextType>({
   setExchangeRate: () => {},
   pushActivity: () => {},
   openLocalSession: () => {},
-  closeLocalSession: () => {},
+  closeLocalSession: (_a: number, _n?: string) => {},
   storeIncome: 0,
   mealsIncome: 0,
   subsIncome: 0,
@@ -518,7 +519,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     });
   }, [setState]);
 
-  const closeLocalSession = useCallback((actualCash: number) => {
+  const closeLocalSession = useCallback((actualCash: number, discrepancyNote?: string) => {
     setState((prev) => {
       if (!prev.localSession || prev.localSession.status !== "open") return prev;
       const sessionStart = prev.localSession.openedAt;
@@ -548,6 +549,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         mealsIncome,
         inbodyIncome,
         totalIncome: subsIncome + storeIncome + mealsIncome + inbodyIncome,
+        discrepancyNote,
       };
       return {
         ...prev,
