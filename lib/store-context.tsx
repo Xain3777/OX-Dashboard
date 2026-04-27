@@ -7,9 +7,10 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useMemo,
   ReactNode,
 } from "react";
-import { Product, Sale, PaymentMethod, Subscription } from "./types";
+import { Product, Sale, Subscription } from "./types";
 import { PRODUCTS, SALES, SUBSCRIPTIONS } from "./mock-data";
 import { generateId } from "./business-logic";
 
@@ -17,20 +18,30 @@ import { generateId } from "./business-logic";
 
 export type InBodyMemberType = "gym_member" | "non_member";
 
-export type InBodySessionType = "single" | "package_5" | "package_10" | "gym_member" | "non_member";
-
 export interface InBodySession {
   id: string;
   memberType: InBodyMemberType;
   memberId?: string;
   memberName: string;
-  sessionType?: InBodySessionType;
+  priceUSD: number;
   priceSYP: number;
   currency: "usd" | "syp";
   paymentMethod: "cash";
   createdAt: string;
   createdBy: string;
   createdByName: string;
+  cancelled?: boolean;
+}
+
+// ─── Local cash session ───────────────────────────────────────────────────────
+
+export interface LocalSession {
+  id: string;
+  openingCash: number;
+  openedAt: string;
+  actualCash?: number;
+  closedAt?: string;
+  status: "open" | "closed";
 }
 
 // ─── Activity feed ────────────────────────────────────────────────────────────
@@ -56,8 +67,10 @@ export interface StoreState {
   subscriptions: Subscription[];
   inBodySessions: InBodySession[];
   activityFeed: ActivityEntry[];
-  inBodyPrices: { member: number; nonMember: number }; // SYP
-  exchangeRate: number; // 1 USD = X SYP
+  inBodyPrices: { member: number; nonMember: number };
+  exchangeRate: number;
+  localSession: LocalSession | null;
+  lastClosingCash: number;
 }
 
 // ─── Context type ─────────────────────────────────────────────────────────────
@@ -66,59 +79,45 @@ export interface StoreContextType extends StoreState {
   // Store
   addSale: (sale: Omit<Sale, "id" | "createdAt">) => void;
   reverseSale: (saleId: string, reason?: string) => void;
+  cancelSale: (saleId: string) => void;
   updateProductCost: (productId: string, cost: number) => void;
   updateProductPrice: (productId: string, cost: number, price: number) => void;
   adjustStock: (productId: string, delta: number) => void;
   // Subscriptions
   addSubscription: (sub: Omit<Subscription, "id" | "createdAt">) => void;
+  cancelSubscriptionLocal: (subId: string) => void;
   // InBody
   addInBodySession: (session: Omit<InBodySession, "id" | "createdAt">) => void;
+  cancelInBodySession: (sessionId: string) => void;
   updateInBodyPrices: (member: number, nonMember: number) => void;
   // Currency
   setExchangeRate: (rate: number) => void;
+  // Session
+  openLocalSession: (openingCash?: number) => void;
+  closeLocalSession: (actualCash: number) => void;
   // Activity
   pushActivity: (entry: Omit<ActivityEntry, "id" | "timestamp">) => void;
+  // Computed income (session-scoped, today only)
+  storeIncome: number;
+  mealsIncome: number;
+  subsIncome: number;
+  inbodyIncome: number;
+  totalIncome: number;
+  runningCash: number;
 }
 
 // ─── Initial data ─────────────────────────────────────────────────────────────
-
-const INITIAL_SESSIONS: InBodySession[] = [
-  {
-    id: "ib1",
-    memberType: "gym_member",
-    memberId: "m1",
-    memberName: "أحمد الراشد",
-    sessionType: "package_5",
-    priceSYP: 250000,
-    currency: "syp",
-    paymentMethod: "cash",
-    createdAt: "2026-04-14T09:30:00Z",
-    createdBy: "s3",
-    createdByName: "لينا",
-  },
-  {
-    id: "ib2",
-    memberType: "gym_member",
-    memberId: "m3",
-    memberName: "خالد حسن",
-    sessionType: "single",
-    priceSYP: 60000,
-    currency: "syp",
-    paymentMethod: "cash",
-    createdAt: "2026-04-14T11:00:00Z",
-    createdBy: "s4",
-    createdByName: "يوسف",
-  },
-];
 
 const INITIAL_STATE: StoreState = {
   products: PRODUCTS,
   sales: SALES,
   subscriptions: SUBSCRIPTIONS,
-  inBodySessions: INITIAL_SESSIONS,
+  inBodySessions: [],
   activityFeed: [],
   inBodyPrices: { member: 60000, nonMember: 100000 },
   exchangeRate: 13200,
+  localSession: null,
+  lastClosingCash: 0,
 };
 
 const STORAGE_KEY = "ox_store_v4";
@@ -147,14 +146,25 @@ const StoreContext = createContext<StoreContextType>({
   ...INITIAL_STATE,
   addSale: () => {},
   reverseSale: () => {},
+  cancelSale: () => {},
   updateProductCost: () => {},
   updateProductPrice: () => {},
   adjustStock: () => {},
   addSubscription: () => {},
+  cancelSubscriptionLocal: () => {},
   addInBodySession: () => {},
+  cancelInBodySession: () => {},
   updateInBodyPrices: () => {},
   setExchangeRate: () => {},
+  openLocalSession: () => {},
+  closeLocalSession: () => {},
   pushActivity: () => {},
+  storeIncome: 0,
+  mealsIncome: 0,
+  subsIncome: 0,
+  inbodyIncome: 0,
+  totalIncome: 0,
+  runningCash: 0,
 });
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -190,20 +200,49 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("storage", handler);
   }, []);
 
+  // ── Computed income values ─────────────────────────────────────────────────
+
+  const computedValues = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const sessionStart = state.localSession?.status === "open"
+      ? state.localSession.openedAt
+      : null;
+
+    const isInSession = (createdAt: string) =>
+      createdAt.startsWith(today) && (!sessionStart || createdAt >= sessionStart);
+
+    const storeIncome = state.sales
+      .filter((s) => !s.isReversal && !s.cancelled && s.source !== "kitchen" && isInSession(s.createdAt))
+      .reduce((sum, s) => sum + s.total, 0);
+
+    const mealsIncome = state.sales
+      .filter((s) => !s.isReversal && !s.cancelled && s.source === "kitchen" && isInSession(s.createdAt))
+      .reduce((sum, s) => sum + s.total, 0);
+
+    const subsIncome = state.subscriptions
+      .filter((s) => s.status !== "cancelled" && isInSession(s.createdAt))
+      .reduce((sum, s) => sum + s.paidAmount, 0);
+
+    const inbodyIncome = state.inBodySessions
+      .filter((s) => !s.cancelled && isInSession(s.createdAt))
+      .reduce((sum, s) => sum + s.priceUSD, 0);
+
+    const totalIncome = storeIncome + mealsIncome + subsIncome + inbodyIncome;
+    const runningCash = (state.localSession?.openingCash ?? 0) + totalIncome;
+
+    return { storeIncome, mealsIncome, subsIncome, inbodyIncome, totalIncome, runningCash };
+  }, [state.sales, state.subscriptions, state.inBodySessions, state.localSession]);
+
   // ── Actions ────────────────────────────────────────────────────────────────
 
   const addSale = useCallback((sale: Omit<Sale, "id" | "createdAt">) => {
     const full: Sale = { ...sale, id: generateId(), createdAt: new Date().toISOString() };
-    const cur = sale.currency ?? "usd";
-    const amountLabel = cur === "syp"
-      ? `${sale.total.toLocaleString("en-US")} ل.س`
-      : `${sale.total}$`;
+    const amountLabel = `${sale.total}$`;
     const entry: ActivityEntry = {
       id: generateId(),
       type: "sale",
       description: `بيع ${sale.quantity}× ${sale.productName} — ${amountLabel}`,
-      amountUSD: cur === "usd" ? sale.total : undefined,
-      amountSYP: cur === "syp" ? sale.total : undefined,
+      amountUSD: sale.total,
       userId: sale.createdBy,
       userName: sale.createdBy,
       timestamp: new Date().toISOString(),
@@ -235,6 +274,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         sales: [...prev.sales, reversal],
         products: prev.products.map((p) =>
           p.id === original.productId ? { ...p, stock: p.stock + original.quantity } : p
+        ),
+      };
+    });
+  }, [setState]);
+
+  const cancelSale = useCallback((saleId: string) => {
+    setState((prev) => {
+      const sale = prev.sales.find((s) => s.id === saleId);
+      if (!sale || sale.cancelled) return prev;
+      return {
+        ...prev,
+        sales: prev.sales.map((s) => s.id === saleId ? { ...s, cancelled: true } : s),
+        products: prev.products.map((p) =>
+          p.id === sale.productId ? { ...p, stock: p.stock + sale.quantity } : p
         ),
       };
     });
@@ -277,6 +330,40 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }));
   }, [setState]);
 
+  const addSubscription = useCallback(
+    (sub: Omit<Subscription, "id" | "createdAt">) => {
+      const full: Subscription = {
+        ...sub,
+        id: generateId(),
+        createdAt: new Date().toISOString(),
+      };
+      const entry: ActivityEntry = {
+        id: generateId(),
+        type: "subscription",
+        description: `اشتراك جديد — ${sub.memberName} ($${sub.paidAmount})`,
+        amountUSD: sub.paidAmount,
+        userId: sub.createdBy,
+        userName: sub.createdBy,
+        timestamp: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        subscriptions: [full, ...prev.subscriptions],
+        activityFeed: [entry, ...prev.activityFeed].slice(0, 100),
+      }));
+    },
+    [setState]
+  );
+
+  const cancelSubscriptionLocal = useCallback((subId: string) => {
+    setState((prev) => ({
+      ...prev,
+      subscriptions: prev.subscriptions.map((s) =>
+        s.id === subId ? { ...s, status: "cancelled" as const } : s
+      ),
+    }));
+  }, [setState]);
+
   const addInBodySession = useCallback(
     (session: Omit<InBodySession, "id" | "createdAt">) => {
       const full: InBodySession = {
@@ -284,17 +371,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         id: generateId(),
         createdAt: new Date().toISOString(),
       };
-      const rate = stateRef.current.exchangeRate || 13200;
-      const amountUSD = Math.round((session.priceSYP / rate) * 100) / 100;
-      const amountLabel = session.currency === "usd"
-        ? `${amountUSD}$`
-        : `${session.priceSYP.toLocaleString("en-US")} ل.س`;
       const entry: ActivityEntry = {
         id: generateId(),
         type: "inbody",
-        description: `جلسة InBody — ${session.memberName} — ${amountLabel}`,
-        amountSYP: session.currency === "syp" ? session.priceSYP : undefined,
-        amountUSD: session.currency === "usd" ? amountUSD : undefined,
+        description: `جلسة InBody — ${session.memberName} — $${session.priceUSD}`,
+        amountUSD: session.priceUSD,
         userId: session.createdBy,
         userName: session.createdByName,
         timestamp: new Date().toISOString(),
@@ -307,6 +388,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     },
     [setState]
   );
+
+  const cancelInBodySession = useCallback((sessionId: string) => {
+    setState((prev) => ({
+      ...prev,
+      inBodySessions: prev.inBodySessions.map((s) =>
+        s.id === sessionId ? { ...s, cancelled: true } : s
+      ),
+    }));
+  }, [setState]);
 
   const updateInBodyPrices = useCallback(
     (member: number, nonMember: number) => {
@@ -322,35 +412,36 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, exchangeRate: rate }));
   }, [setState]);
 
-  const addSubscription = useCallback(
-    (sub: Omit<Subscription, "id" | "createdAt">) => {
-      const full: Subscription = {
-        ...sub,
+  const openLocalSession = useCallback((openingCash?: number) => {
+    setState((prev) => {
+      const opening = prev.lastClosingCash > 0
+        ? prev.lastClosingCash
+        : Math.max(0, openingCash ?? 0);
+      const session: LocalSession = {
         id: generateId(),
-        createdAt: new Date().toISOString(),
+        openingCash: opening,
+        openedAt: new Date().toISOString(),
+        status: "open",
       };
-      const cur = sub.currency ?? "usd";
-      const amountLabel = cur === "syp"
-        ? `${sub.amount.toLocaleString("en-US")} ل.س`
-        : `${sub.amount}$`;
-      const entry: ActivityEntry = {
-        id: generateId(),
-        type: "subscription",
-        description: `اشتراك جديد — ${sub.memberName} (${amountLabel})`,
-        amountUSD: cur === "usd" ? sub.amount : undefined,
-        amountSYP: cur === "syp" ? sub.amount : undefined,
-        userId: sub.createdBy,
-        userName: sub.createdBy,
-        timestamp: new Date().toISOString(),
-      };
-      setState((prev) => ({
+      return { ...prev, localSession: session };
+    });
+  }, [setState]);
+
+  const closeLocalSession = useCallback((actualCash: number) => {
+    setState((prev) => {
+      if (!prev.localSession || prev.localSession.status !== "open") return prev;
+      return {
         ...prev,
-        subscriptions: [full, ...prev.subscriptions],
-        activityFeed: [entry, ...prev.activityFeed].slice(0, 100),
-      }));
-    },
-    [setState]
-  );
+        localSession: {
+          ...prev.localSession,
+          actualCash,
+          closedAt: new Date().toISOString(),
+          status: "closed",
+        },
+        lastClosingCash: actualCash,
+      };
+    });
+  }, [setState]);
 
   const pushActivity = useCallback(
     (entry: Omit<ActivityEntry, "id" | "timestamp">) => {
@@ -371,15 +462,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const value: StoreContextType = {
     ...state,
+    ...computedValues,
     addSale,
     reverseSale,
+    cancelSale,
     updateProductCost,
     updateProductPrice,
     adjustStock,
     addSubscription,
+    cancelSubscriptionLocal,
     addInBodySession,
+    cancelInBodySession,
     updateInBodyPrices,
     setExchangeRate,
+    openLocalSession,
+    closeLocalSession,
     pushActivity,
   };
 

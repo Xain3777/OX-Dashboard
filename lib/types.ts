@@ -42,6 +42,7 @@ export interface Subscription {
   id: string;
   memberId: string;
   memberName: string;
+  phoneNumber?: string;
   planType: PlanType;
   offer: OfferType;
   startDate: string;
@@ -87,6 +88,8 @@ export interface Sale {
   total: number;
   paymentMethod: PaymentMethod;
   currency?: Currency;
+  source?: "store" | "kitchen";
+  cancelled?: boolean;
   createdAt: string;
   createdBy: string;
   isReversal: boolean;

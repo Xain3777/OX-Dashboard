@@ -239,10 +239,9 @@ function CoupleSummaryPanel({ perPerson, total }: { perPerson: number; total: nu
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function SubscriptionsBlock() {
-  const { pushActivity } = useStore();
+  const { subscriptions, addSubscription, cancelSubscriptionLocal } = useStore();
   const { user } = useAuth();
   const { exchangeRate } = useCurrency();
-  const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [activeFilter, setActiveFilter] = useState<FilterTab>("all");
   const [sortMode, setSortMode] = useState<SortMode>("alpha");
   const [searchQuery, setSearchQuery] = useState("");
@@ -330,8 +329,7 @@ export default function SubscriptionsBlock() {
       form.paymentStatus === "partial" ? Number(Number(form.paidAmount).toFixed(2)) :
       form.paymentStatus === "paid"    ? amountUSD : 0;
 
-    const makeSub = (name: string, phone?: string): Subscription & { phoneNumber?: string } => ({
-      id:            generateId(),
+    const makeSub = (name: string, phone?: string): Omit<Subscription, "id" | "createdAt"> => ({
       memberId:      generateId(),
       memberName:    name,
       phoneNumber:   phone || undefined,
@@ -344,9 +342,9 @@ export default function SubscriptionsBlock() {
       paidAmount:    paidUSD,
       paymentStatus: form.paymentStatus,
       paymentMethod: "cash",
+      currency:      "usd",
       status:        remaining > 0 ? "active" : "expired",
-      createdAt:     new Date().toISOString(),
-      createdBy:     user?.displayName ?? "unknown",
+      createdBy:     user?.id ?? "unknown",
       lockedAt:      new Date().toISOString(),
     });
 
@@ -355,22 +353,14 @@ export default function SubscriptionsBlock() {
     const phone2 = isCouple ? form.phone2.trim() : "";
 
     const sub1 = makeSub(name1, phone);
-    const newSubs: (Subscription & { phoneNumber?: string })[] = [sub1];
+    const newSubs: Omit<Subscription, "id" | "createdAt">[] = [sub1];
 
     if (isCouple && name2) {
       newSubs.push(makeSub(name2, phone2 || undefined));
     }
 
-    setSubscriptions((prev) => [...newSubs.reverse(), ...prev]);
-
     for (const sub of newSubs) {
-      pushActivity({
-        type: "subscription",
-        description: `اشتراك جديد — ${sub.memberName} (${getPlanLabel(form.planType)}) — $${amountUSD}`,
-        amountUSD,
-        userId:   user?.id ?? "",
-        userName: user?.displayName ?? "",
-      });
+      addSubscription(sub);
 
       if (user) {
         void pushSubscription({
@@ -385,7 +375,7 @@ export default function SubscriptionsBlock() {
           paidAmountUSD: paidUSD,
           paymentStatus: form.paymentStatus,
           exchangeRate,
-        });
+        }).catch(() => {});
       }
     }
 
@@ -678,7 +668,7 @@ export default function SubscriptionsBlock() {
           <table className="w-full min-w-[900px] border-collapse">
             <thead>
               <tr className="bg-charcoal">
-                {["اسم العضو", "الهاتف", "الخطة", "العرض", "تاريخ البدء", "تاريخ الانتهاء", "الأيام المتبقية", "المبلغ", "حالة الدفع", "الحالة"].map((col) => (
+                {["اسم العضو", "الهاتف", "الخطة", "العرض", "تاريخ البدء", "تاريخ الانتهاء", "الأيام المتبقية", "المبلغ", "حالة الدفع", "الحالة", ""].map((col) => (
                   <th key={col} className="px-3.5 py-2.5 text-right font-mono text-[10px] text-secondary uppercase tracking-wider whitespace-nowrap">
                     {col}
                   </th>
@@ -688,19 +678,19 @@ export default function SubscriptionsBlock() {
             <tbody>
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="px-4 py-10 text-center font-mono text-xs text-slate uppercase tracking-wider">
+                  <td colSpan={11} className="px-4 py-10 text-center font-mono text-xs text-slate uppercase tracking-wider">
                     لا توجد اشتراكات تطابق هذا الفلتر
                   </td>
                 </tr>
               )}
               {filtered.map((sub) => {
-                const extSub = sub as Subscription & { phoneNumber?: string };
+                const isCancelled = sub.status === "cancelled";
                 return (
                   <tr key={sub.id}
-                    className={`ox-table-row bg-iron/50 border-b border-gunmetal last:border-b-0 transition-colors duration-100 hover:bg-gunmetal/60 ${sub.status === "expired" ? "opacity-60" : ""} ${rowAccent(sub)}`}>
+                    className={`ox-table-row bg-iron/50 border-b border-gunmetal last:border-b-0 transition-colors duration-100 hover:bg-gunmetal/60 ${sub.status === "expired" || isCancelled ? "opacity-60" : ""} ${rowAccent(sub)}`}>
                     <td className="px-3.5 py-3 font-body font-medium text-sm text-offwhite whitespace-nowrap">{sub.memberName}</td>
                     <td className="px-3.5 py-3 font-mono text-xs text-ghost tabular-nums whitespace-nowrap dir-ltr">
-                      {extSub.phoneNumber ?? <span className="text-slate">—</span>}
+                      {sub.phoneNumber ?? <span className="text-slate">—</span>}
                     </td>
                     <td className="px-3.5 py-3"><PlanBadge plan={sub.planType} /></td>
                     <td className="px-3.5 py-3">
@@ -717,6 +707,21 @@ export default function SubscriptionsBlock() {
                     </td>
                     <td className="px-3.5 py-3"><PaymentStatusChip status={sub.paymentStatus} /></td>
                     <td className="px-3.5 py-3"><SubStatusChip status={sub.status} /></td>
+                    <td className="px-3.5 py-3 text-center">
+                      {!isCancelled ? (
+                        <button
+                          onClick={() => cancelSubscriptionLocal(sub.id)}
+                          className="p-1 text-secondary hover:text-red transition-colors cursor-pointer"
+                          title="إلغاء الاشتراك"
+                        >
+                          <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                            <path d="M2 11L11 2M2 2l9 9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                          </svg>
+                        </button>
+                      ) : (
+                        <span className="font-mono text-[9px] text-red">ملغي</span>
+                      )}
+                    </td>
                   </tr>
                 );
               })}

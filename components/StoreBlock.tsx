@@ -10,6 +10,7 @@ import {
   X,
   Pencil,
   Clock,
+  Undo2,
 } from "lucide-react";
 import {
   Product,
@@ -28,6 +29,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
 import { useCurrency } from "@/lib/currency-context";
 import { pushSale } from "@/lib/supabase/intake";
+
 import BarcodeScanner, { type CatalogItem } from "@/components/BarcodeScanner";
 
 // ── Category badge colours ────────────────────────────────────────────────────
@@ -177,6 +179,7 @@ export default function StoreBlock() {
     sales,
     addSale,
     reverseSale,
+    cancelSale,
     updateProductPrice,
     activityFeed,
   } = useStore();
@@ -204,7 +207,9 @@ export default function StoreBlock() {
   );
 
   const todayTotal = useMemo(
-    () => todaySales.reduce((sum, s) => sum + (s.isReversal ? -s.total : s.total), 0),
+    () => todaySales
+      .filter((s) => !s.cancelled && !s.isReversal)
+      .reduce((sum, s) => sum + s.total, 0),
     [todaySales]
   );
 
@@ -223,7 +228,7 @@ export default function StoreBlock() {
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
-  async function handleRecordSale() {
+  function handleRecordSale() {
     setSaleError("");
     setSaleSuccess(false);
 
@@ -238,28 +243,32 @@ export default function StoreBlock() {
       return;
     }
 
-    const r = await pushSale({
-      user: { id: user.id, displayName: user.displayName },
-      productName: product.name,
-      quantity: saleQty,
-      unitPrice: product.price,
-      total: Number((product.price * saleQty).toFixed(2)),
-      exchangeRate,
-      source: product.category === "meals" ? "kitchen" : "store",
-    });
-    if (r.error) { setSaleError(r.error); return; }
+    const source = product.category === "meals" ? "kitchen" : "store";
+    const total  = Number((product.price * saleQty).toFixed(2));
 
     addSale({
       productId:     product.id,
       productName:   product.name,
       quantity:      saleQty,
       unitPrice:     product.price,
-      total:         Number((product.price * saleQty).toFixed(2)),
+      total,
       paymentMethod: "cash",
       currency:      "usd",
+      source,
       createdBy:     user.id,
       isReversal:    false,
     });
+
+    // fire-and-forget to Supabase
+    void pushSale({
+      user:        { id: user.id, displayName: user.displayName },
+      productName: product.name,
+      quantity:    saleQty,
+      unitPrice:   product.price,
+      total,
+      exchangeRate,
+      source,
+    }).catch(() => {});
 
     setSaleQty(1);
     setSaleSuccess(true);
@@ -557,7 +566,7 @@ export default function StoreBlock() {
         <table className="w-full text-xs">
           <thead>
             <tr className="border-y border-[#252525] bg-[#111111]">
-              {["الوقت", "المنتج", "الكمية", "سعر الوحدة ($)", "الإجمالي ($)", "الموظف"].map(h => (
+              {["الوقت", "المنتج", "الكمية", "سعر الوحدة ($)", "الإجمالي ($)", "الموظف", ""].map(h => (
                 <th key={h} className="px-4 py-2 text-right font-mono text-[10px] uppercase tracking-widest text-[#555555] whitespace-nowrap">
                   {h}
                 </th>
@@ -574,37 +583,62 @@ export default function StoreBlock() {
             ) : (
               todaySales.map(sale => {
                 const staff = STAFF.find(s => s.id === sale.createdBy);
+                const isCancelled = sale.cancelled;
                 return (
                   <tr
                     key={sale.id}
-                    className={["border-b border-[#252525]/60 hover:bg-[#252525]/30 transition-colors", sale.isReversal ? "opacity-60" : ""].join(" ")}
+                    className={[
+                      "border-b border-[#252525]/60 transition-colors",
+                      isCancelled ? "opacity-40 bg-[#1A0A0A]/30" : sale.isReversal ? "opacity-60" : "hover:bg-[#252525]/30",
+                    ].join(" ")}
                   >
                     <td className="px-4 py-2.5 font-mono text-[10px] text-[#777777] tabular-nums whitespace-nowrap text-right">
                       {formatTime(sale.createdAt)}
                     </td>
                     <td className="px-4 py-2.5 text-[#F0EDE6] whitespace-nowrap text-right">
-                      {sale.isReversal ? <span className="line-through text-[#777777]">{sale.productName}</span> : sale.productName}
+                      {isCancelled || sale.isReversal
+                        ? <span className="line-through text-[#777777]">{sale.productName}</span>
+                        : sale.productName}
                     </td>
                     <td className="px-4 py-2.5 font-mono tabular-nums text-[#AAAAAA] text-right">
-                      {sale.isReversal ? <span className="line-through">{sale.quantity}</span> : sale.quantity}
+                      {isCancelled || sale.isReversal
+                        ? <span className="line-through">{sale.quantity}</span>
+                        : sale.quantity}
                     </td>
                     <td className="px-4 py-2.5 font-mono tabular-nums text-[#777777] text-right">
-                      {sale.isReversal ? <span className="line-through">{formatCurrency(sale.unitPrice)}</span> : formatCurrency(sale.unitPrice)}
+                      {isCancelled || sale.isReversal
+                        ? <span className="line-through">{formatCurrency(sale.unitPrice)}</span>
+                        : formatCurrency(sale.unitPrice)}
                     </td>
                     <td className="px-4 py-2.5 font-mono tabular-nums font-medium text-right">
-                      {sale.isReversal
-                        ? <span className="line-through text-[#D42B2B]">{formatCurrency(sale.total)}</span>
-                        : <span className="text-[#F0EDE6]">{formatCurrency(sale.total)}</span>}
+                      {isCancelled
+                        ? <span className="line-through text-[#555555]">{formatCurrency(sale.total)}</span>
+                        : sale.isReversal
+                          ? <span className="line-through text-[#D42B2B]">{formatCurrency(sale.total)}</span>
+                          : <span className="text-[#F0EDE6]">{formatCurrency(sale.total)}</span>}
                     </td>
                     <td className="px-4 py-2.5 text-[#777777] whitespace-nowrap text-right">
                       <div className="flex items-center gap-1.5 justify-end">
                         {staff?.name ?? sale.createdBy}
-                        {sale.isReversal && (
+                        {sale.isReversal && !isCancelled && (
                           <span className="inline-block px-1.5 py-0.5 bg-[#D42B2B]/15 border border-[#D42B2B]/35 rounded text-[9px] font-mono uppercase tracking-wide text-[#FF3333]">
                             مُسترجع
                           </span>
                         )}
                       </div>
+                    </td>
+                    <td className="px-4 py-2.5 text-center">
+                      {!isCancelled && !sale.isReversal ? (
+                        <button
+                          onClick={() => cancelSale(sale.id)}
+                          className="p-1 text-[#555555] hover:text-[#FF3333] transition-colors cursor-pointer"
+                          title="إلغاء"
+                        >
+                          <Undo2 size={13} />
+                        </button>
+                      ) : isCancelled ? (
+                        <span className="font-mono text-[9px] text-[#FF3333]">ملغاة</span>
+                      ) : null}
                     </td>
                   </tr>
                 );
