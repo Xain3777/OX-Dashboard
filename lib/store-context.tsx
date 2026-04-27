@@ -8,6 +8,7 @@ import {
   useEffect,
   useRef,
   ReactNode,
+  useMemo,
 } from "react";
 import { Product, Sale, Expense, PaymentMethod, Subscription } from "./types";
 import { PRODUCTS, SALES, EXPENSES, SUBSCRIPTIONS } from "./mock-data";
@@ -26,8 +27,10 @@ export interface InBodySession {
   memberName: string;
   sessionType?: InBodySessionType;
   priceSYP: number;
+  priceUSD: number;
   currency: "usd" | "syp";
   paymentMethod: PaymentMethod;
+  cancelled?: boolean;
   createdAt: string;
   createdBy: string;
   createdByName: string;
@@ -48,16 +51,27 @@ export interface ActivityEntry {
   timestamp: string;
 }
 
-// ─── Expense rates (salaries & fixed costs) ───────────────────────────────────
+// ─── Expense rates ────────────────────────────────────────────────────────────
 
 export interface ExpenseRate {
   id: string;
   category: "salary" | "rent" | "utility" | "service" | "other";
   label: string;
-  amount: number;   // in USD
+  amount: number;
   frequency: "monthly" | "weekly" | "daily";
   active: boolean;
   lastUpdated: string;
+}
+
+// ─── Local session ────────────────────────────────────────────────────────────
+
+export interface LocalSession {
+  id: string;
+  openingCash: number;
+  openedAt: string;
+  actualCash?: number;
+  closedAt?: string;
+  status: "open" | "closed";
 }
 
 // ─── Full store state ─────────────────────────────────────────────────────────
@@ -69,9 +83,12 @@ export interface StoreState {
   inBodySessions: InBodySession[];
   expenses: Expense[];
   activityFeed: ActivityEntry[];
-  inBodyPrices: { member: number; nonMember: number }; // SYP
+  inBodyPrices: { member: number; nonMember: number };
   expenseRates: ExpenseRate[];
-  exchangeRate: number; // 1 USD = X SYP
+  exchangeRate: number;
+  // Local session
+  localSession: LocalSession | null;
+  lastClosingCash: number;
 }
 
 // ─── Context type ─────────────────────────────────────────────────────────────
@@ -80,13 +97,16 @@ export interface StoreContextType extends StoreState {
   // Store
   addSale: (sale: Omit<Sale, "id" | "createdAt">) => void;
   reverseSale: (saleId: string, reason?: string) => void;
+  cancelSale: (id: string) => void;
   updateProductCost: (productId: string, cost: number) => void;
   updateProductPrice: (productId: string, cost: number, price: number) => void;
   adjustStock: (productId: string, delta: number) => void;
   // Subscriptions
   addSubscription: (sub: Omit<Subscription, "id" | "createdAt">) => void;
+  cancelSubscriptionLocal: (id: string) => void;
   // InBody
   addInBodySession: (session: Omit<InBodySession, "id" | "createdAt">) => void;
+  cancelInBodySession: (id: string) => void;
   updateInBodyPrices: (member: number, nonMember: number) => void;
   // Expenses
   addExpense: (expense: Omit<Expense, "id" | "createdAt">) => void;
@@ -98,66 +118,35 @@ export interface StoreContextType extends StoreState {
   setExchangeRate: (rate: number) => void;
   // Activity
   pushActivity: (entry: Omit<ActivityEntry, "id" | "timestamp">) => void;
+  // Local session
+  openLocalSession: (openingCash?: number) => void;
+  closeLocalSession: (actualCash: number) => void;
+  // Computed income (today's, non-cancelled)
+  storeIncome: number;
+  mealsIncome: number;
+  subsIncome: number;
+  inbodyIncome: number;
+  totalIncome: number;
+  runningCash: number;
 }
 
-// ─── Initial data ─────────────────────────────────────────────────────────────
-
-const INITIAL_SESSIONS: InBodySession[] = [
-  {
-    id: "ib1",
-    memberType: "gym_member",
-    memberId: "m1",
-    memberName: "أحمد الراشد",
-    sessionType: "package_5",
-    priceSYP: 250000,
-    currency: "syp",
-    paymentMethod: "cash",
-    createdAt: "2026-04-14T09:30:00Z",
-    createdBy: "s3",
-    createdByName: "لينا",
-  },
-  {
-    id: "ib2",
-    memberType: "gym_member",
-    memberId: "m3",
-    memberName: "خالد حسن",
-    sessionType: "single",
-    priceSYP: 60000,
-    currency: "syp",
-    paymentMethod: "cash",
-    createdAt: "2026-04-14T11:00:00Z",
-    createdBy: "s4",
-    createdByName: "يوسف",
-  },
-];
-
-const INITIAL_RATES: ExpenseRate[] = [
-  { id: "r1", category: "salary", label: "راتب محمد (المدرب)", amount: 280, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r2", category: "salary", label: "راتب لينا (استقبال)", amount: 250, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r3", category: "salary", label: "راتب يوسف (استقبال)", amount: 200, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r4", category: "salary", label: "راتب عامل النظافة", amount: 120, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r5", category: "salary", label: "راتب الفاليه", amount: 150, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r6", category: "rent", label: "إيجار النادي", amount: 400, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r7", category: "utility", label: "فاتورة الكهرباء", amount: 60, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r8", category: "utility", label: "فاتورة المياه", amount: 15, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r9", category: "utility", label: "إنترنت", amount: 20, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r10", category: "service", label: "مواد تنظيف ومنظفات", amount: 30, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-  { id: "r11", category: "service", label: "صيانة عامة", amount: 50, frequency: "monthly", active: true, lastUpdated: "2026-04-01" },
-];
+// ─── Initial state ────────────────────────────────────────────────────────────
 
 const INITIAL_STATE: StoreState = {
   products: PRODUCTS,
   sales: SALES,
   subscriptions: SUBSCRIPTIONS,
-  inBodySessions: INITIAL_SESSIONS,
+  inBodySessions: [],
   expenses: EXPENSES,
   activityFeed: [],
   inBodyPrices: { member: 60000, nonMember: 100000 },
-  expenseRates: INITIAL_RATES,
+  expenseRates: [],
   exchangeRate: 13200,
+  localSession: null,
+  lastClosingCash: 0,
 };
 
-const STORAGE_KEY = "ox_store_v3";
+const STORAGE_KEY = "ox_store_v5";
 
 function loadState(): StoreState {
   if (typeof window === "undefined") return INITIAL_STATE;
@@ -177,17 +166,24 @@ function saveState(state: StoreState) {
   } catch {}
 }
 
+function todayPrefix() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 // ─── Context ──────────────────────────────────────────────────────────────────
 
 const StoreContext = createContext<StoreContextType>({
   ...INITIAL_STATE,
   addSale: () => {},
   reverseSale: () => {},
+  cancelSale: () => {},
   updateProductCost: () => {},
   updateProductPrice: () => {},
   adjustStock: () => {},
   addSubscription: () => {},
+  cancelSubscriptionLocal: () => {},
   addInBodySession: () => {},
+  cancelInBodySession: () => {},
   updateInBodyPrices: () => {},
   addExpense: () => {},
   updateExpenseRate: () => {},
@@ -195,14 +191,20 @@ const StoreContext = createContext<StoreContextType>({
   toggleExpenseRate: () => {},
   setExchangeRate: () => {},
   pushActivity: () => {},
+  openLocalSession: () => {},
+  closeLocalSession: () => {},
+  storeIncome: 0,
+  mealsIncome: 0,
+  subsIncome: 0,
+  inbodyIncome: 0,
+  totalIncome: 0,
+  runningCash: 0,
 });
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [state, setStateRaw] = useState<StoreState>(INITIAL_STATE);
   const stateRef = useRef(state);
 
-  // Helper: update state, save to localStorage, and the storage event
-  // fires automatically for OTHER tabs
   const setState = useCallback((updater: (prev: StoreState) => StoreState) => {
     setStateRaw((prev) => {
       const next = updater(prev);
@@ -212,14 +214,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  // Hydrate from localStorage on mount
   useEffect(() => {
     const loaded = loadState();
     setStateRaw(loaded);
     stateRef.current = loaded;
   }, []);
 
-  // Listen for changes made in OTHER tabs
   useEffect(() => {
     const handler = (e: StorageEvent) => {
       if (e.key === STORAGE_KEY && e.newValue) {
@@ -241,7 +241,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const cur = sale.currency ?? "usd";
     const amountLabel = cur === "syp"
       ? `${sale.total.toLocaleString("en-US")} ل.س`
-      : `${sale.total}$`;
+      : `$${sale.total}`;
     const entry: ActivityEntry = {
       id: generateId(),
       type: "sale",
@@ -256,9 +256,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       ...prev,
       sales: [...prev.sales, full],
       products: prev.products.map((p) =>
-        p.id === sale.productId ? { ...p, stock: p.stock - sale.quantity } : p
+        p.id === sale.productId ? { ...p, stock: Math.max(0, p.stock - sale.quantity) } : p
       ),
       activityFeed: [entry, ...prev.activityFeed].slice(0, 100),
+    }));
+  }, [setState]);
+
+  const cancelSale = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      sales: prev.sales.map((s) => s.id === id ? { ...s, cancelled: true } : s),
     }));
   }, [setState]);
 
@@ -297,7 +304,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const entry: ActivityEntry = {
       id: generateId(),
       type: "price_edit",
-      description: `تعديل سعر المنتج — تكلفة: ${cost}$، بيع: ${price}$`,
+      description: `تعديل سعر المنتج — تكلفة: $${cost}، بيع: $${price}`,
       amountUSD: price,
       userId: "manager",
       userName: "المدير",
@@ -328,17 +335,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         id: generateId(),
         createdAt: new Date().toISOString(),
       };
-      const rate = stateRef.current.exchangeRate || 13200;
-      const amountUSD = Math.round((session.priceSYP / rate) * 100) / 100;
-      const amountLabel = session.currency === "usd"
-        ? `${amountUSD}$`
-        : `${session.priceSYP.toLocaleString("en-US")} ل.س`;
       const entry: ActivityEntry = {
         id: generateId(),
         type: "inbody",
-        description: `جلسة InBody — ${session.memberName} — ${amountLabel}`,
-        amountSYP: session.currency === "syp" ? session.priceSYP : undefined,
-        amountUSD: session.currency === "usd" ? amountUSD : undefined,
+        description: `جلسة InBody — ${session.memberName} — $${session.priceUSD}`,
+        amountUSD: session.priceUSD,
         userId: session.createdBy,
         userName: session.createdByName,
         timestamp: new Date().toISOString(),
@@ -352,37 +353,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [setState]
   );
 
+  const cancelInBodySession = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      inBodySessions: prev.inBodySessions.map((s) =>
+        s.id === id ? { ...s, cancelled: true } : s
+      ),
+    }));
+  }, [setState]);
+
   const updateInBodyPrices = useCallback(
     (member: number, nonMember: number) => {
-      setState((prev) => ({
-        ...prev,
-        inBodyPrices: { member, nonMember },
-      }));
+      setState((prev) => ({ ...prev, inBodyPrices: { member, nonMember } }));
     },
     [setState]
   );
 
   const addExpense = useCallback((expense: Omit<Expense, "id" | "createdAt">) => {
     const full: Expense = { ...expense, id: generateId(), createdAt: new Date().toISOString() };
-    const cur = expense.currency ?? "usd";
-    const amountLabel = cur === "syp"
-      ? `${expense.amount.toLocaleString("en-US")} ل.س`
-      : `${expense.amount}$`;
-    const entry: ActivityEntry = {
-      id: generateId(),
-      type: "expense",
-      description: `مصروف: ${expense.description} — ${amountLabel}`,
-      amountUSD: cur === "usd" ? expense.amount : undefined,
-      amountSYP: cur === "syp" ? expense.amount : undefined,
-      userId: expense.createdBy,
-      userName: expense.createdBy,
-      timestamp: new Date().toISOString(),
-    };
-    setState((prev) => ({
-      ...prev,
-      expenses: [...prev.expenses, full],
-      activityFeed: [entry, ...prev.activityFeed].slice(0, 100),
-    }));
+    setState((prev) => ({ ...prev, expenses: [...prev.expenses, full] }));
   }, [setState]);
 
   const updateExpenseRate = useCallback((id: string, amount: number) => {
@@ -403,10 +392,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         id: generateId(),
         lastUpdated: new Date().toISOString().split("T")[0],
       };
-      setState((prev) => ({
-        ...prev,
-        expenseRates: [...prev.expenseRates, full],
-      }));
+      setState((prev) => ({ ...prev, expenseRates: [...prev.expenseRates, full] }));
     },
     [setState]
   );
@@ -426,21 +412,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const addSubscription = useCallback(
     (sub: Omit<Subscription, "id" | "createdAt">) => {
-      const full: Subscription = {
-        ...sub,
-        id: generateId(),
-        createdAt: new Date().toISOString(),
-      };
+      const full: Subscription = { ...sub, id: generateId(), createdAt: new Date().toISOString() };
       const cur = sub.currency ?? "usd";
-      const amountLabel = cur === "syp"
-        ? `${sub.amount.toLocaleString("en-US")} ل.س`
-        : `${sub.amount}$`;
       const entry: ActivityEntry = {
         id: generateId(),
         type: "subscription",
-        description: `اشتراك جديد — ${sub.memberName} (${amountLabel})`,
-        amountUSD: cur === "usd" ? sub.amount : undefined,
-        amountSYP: cur === "syp" ? sub.amount : undefined,
+        description: `اشتراك جديد — ${sub.memberName} ($${sub.paidAmount})`,
+        amountUSD: cur === "usd" ? sub.paidAmount : undefined,
         userId: sub.createdBy,
         userName: sub.createdBy,
         timestamp: new Date().toISOString(),
@@ -454,13 +432,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [setState]
   );
 
+  const cancelSubscriptionLocal = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      subscriptions: prev.subscriptions.map((s) =>
+        s.id === id ? { ...s, status: "cancelled" as const } : s
+      ),
+    }));
+  }, [setState]);
+
   const pushActivity = useCallback(
     (entry: Omit<ActivityEntry, "id" | "timestamp">) => {
-      const full: ActivityEntry = {
-        ...entry,
-        id: generateId(),
-        timestamp: new Date().toISOString(),
-      };
+      const full: ActivityEntry = { ...entry, id: generateId(), timestamp: new Date().toISOString() };
       setState((prev) => ({
         ...prev,
         activityFeed: [full, ...prev.activityFeed].slice(0, 100),
@@ -469,17 +452,85 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [setState]
   );
 
+  // ── Local session ──────────────────────────────────────────────────────────
+
+  const openLocalSession = useCallback((openingCash?: number) => {
+    setState((prev) => {
+      if (prev.localSession?.status === "open") return prev;
+      const opening = openingCash !== undefined ? openingCash : prev.lastClosingCash;
+      return {
+        ...prev,
+        localSession: {
+          id: generateId(),
+          openingCash: opening,
+          openedAt: new Date().toISOString(),
+          status: "open",
+        },
+      };
+    });
+  }, [setState]);
+
+  const closeLocalSession = useCallback((actualCash: number) => {
+    setState((prev) => {
+      if (!prev.localSession || prev.localSession.status !== "open") return prev;
+      return {
+        ...prev,
+        localSession: {
+          ...prev.localSession,
+          actualCash,
+          closedAt: new Date().toISOString(),
+          status: "closed",
+        },
+        lastClosingCash: actualCash,
+      };
+    });
+  }, [setState]);
+
+  // ── Computed income values ─────────────────────────────────────────────────
+
+  const today = todayPrefix();
+  const sessionStart = state.localSession?.openedAt;
+
+  const computedValues = useMemo(() => {
+    const isInSession = (createdAt: string) =>
+      createdAt.startsWith(today) && (!sessionStart || createdAt >= sessionStart);
+
+    const storeIncome = state.sales
+      .filter((s) => !s.isReversal && !s.cancelled && s.source !== "kitchen" && isInSession(s.createdAt))
+      .reduce((sum, s) => sum + s.total, 0);
+
+    const mealsIncome = state.sales
+      .filter((s) => !s.isReversal && !s.cancelled && s.source === "kitchen" && isInSession(s.createdAt))
+      .reduce((sum, s) => sum + s.total, 0);
+
+    const subsIncome = state.subscriptions
+      .filter((s) => s.status !== "cancelled" && isInSession(s.createdAt))
+      .reduce((sum, s) => sum + s.paidAmount, 0);
+
+    const inbodyIncome = state.inBodySessions
+      .filter((s) => !s.cancelled && isInSession(s.createdAt))
+      .reduce((sum, s) => sum + s.priceUSD, 0);
+
+    const totalIncome = storeIncome + mealsIncome + subsIncome + inbodyIncome;
+    const runningCash = (state.localSession?.openingCash ?? 0) + totalIncome;
+
+    return { storeIncome, mealsIncome, subsIncome, inbodyIncome, totalIncome, runningCash };
+  }, [state.sales, state.subscriptions, state.inBodySessions, state.localSession, today, sessionStart]);
+
   // ── Provide ────────────────────────────────────────────────────────────────
 
   const value: StoreContextType = {
     ...state,
     addSale,
     reverseSale,
+    cancelSale,
     updateProductCost,
     updateProductPrice,
     adjustStock,
     addSubscription,
+    cancelSubscriptionLocal,
     addInBodySession,
+    cancelInBodySession,
     updateInBodyPrices,
     addExpense,
     updateExpenseRate,
@@ -487,6 +538,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     toggleExpenseRate,
     setExchangeRate,
     pushActivity,
+    openLocalSession,
+    closeLocalSession,
+    ...computedValues,
   };
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

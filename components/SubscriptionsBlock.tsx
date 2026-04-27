@@ -27,75 +27,29 @@ import { pushSubscription } from "@/lib/supabase/intake";
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const PLAN_BASE_PRICES: Record<PlanType, number> = {
-  daily: 5,
   "1_month": 35,
-  "3_months": 100,
-  "4_months": 130,
-  "9_months": 280,
-  "12_months": 360,
+  "3_months": 90,
+  "6_months": 170,
+  "9_months": 235,
+  "12_months": 300,
 };
 
 type SortMode = "alpha" | "date";
 
 const PLAN_TYPES: PlanType[] = [
-  "daily",
   "1_month",
   "3_months",
-  "4_months",
+  "6_months",
   "9_months",
   "12_months",
 ];
 
 const OFFER_TYPES: OfferType[] = [
   "none",
-  "4_plus_1_free",
-  "3_plus_half_free",
-  "9_plus_1.5_free",
-  "12_plus_2_free",
-  "married_couple",
-  "college_student",
-];
-
-// ─── Mock seed data ───────────────────────────────────────────────────────────
-
-const TODAY = new Date().toISOString().split("T")[0];
-
-const SEED_SUBSCRIPTIONS: Subscription[] = [
-  {
-    id: "seed-001", memberId: "m-001", memberName: "خالد الراشدي",
-    planType: "3_months", offer: "none", startDate: "2026-02-10", endDate: "2026-05-10",
-    remainingDays: calculateRemainingDays("2026-05-10"), amount: 100, paidAmount: 100,
-    paymentStatus: "paid", paymentMethod: "cash", status: "active",
-    createdAt: "2026-02-10T09:00:00Z", createdBy: "admin",
-  },
-  {
-    id: "seed-002", memberId: "m-002", memberName: "سارة بن طلال",
-    planType: "1_month", offer: "college_student", startDate: "2026-04-01", endDate: "2026-05-01",
-    remainingDays: calculateRemainingDays("2026-05-01"), amount: 28, paidAmount: 14,
-    paymentStatus: "partial", paymentMethod: "card", status: "active",
-    createdAt: "2026-04-01T10:00:00Z", createdBy: "admin",
-  },
-  {
-    id: "seed-003", memberId: "m-003", memberName: "عمر فيصل",
-    planType: "12_months", offer: "12_plus_2_free", startDate: "2025-04-01", endDate: "2026-04-15",
-    remainingDays: calculateRemainingDays("2026-04-15"), amount: 360, paidAmount: 360,
-    paymentStatus: "paid", paymentMethod: "transfer", status: "active",
-    createdAt: "2025-04-01T08:00:00Z", createdBy: "admin",
-  },
-  {
-    id: "seed-004", memberId: "m-004", memberName: "نورة القحطاني",
-    planType: "1_month", offer: "none", startDate: "2026-03-01", endDate: "2026-03-31",
-    remainingDays: 0, amount: 35, paidAmount: 0,
-    paymentStatus: "unpaid", paymentMethod: "cash", status: "expired",
-    createdAt: "2026-03-01T11:00:00Z", createdBy: "admin",
-  },
-  {
-    id: "seed-005", memberId: "m-005", memberName: "يوسف حمدان",
-    planType: "4_months", offer: "4_plus_1_free", startDate: "2025-12-01", endDate: "2026-05-11",
-    remainingDays: calculateRemainingDays("2026-05-11"), amount: 130, paidAmount: 130,
-    paymentStatus: "paid", paymentMethod: "cash", status: "frozen",
-    createdAt: "2025-12-01T09:30:00Z", createdBy: "admin",
-  },
+  "referral_4",
+  "referral_9",
+  "couple",
+  "corporate",
 ];
 
 // ─── Filter type ──────────────────────────────────────────────────────────────
@@ -123,7 +77,7 @@ const DEFAULT_FORM: FormState = {
   phone: "",
   planType: "1_month",
   offer: "none",
-  startDate: TODAY,
+  startDate: new Date().toISOString().split("T")[0],
   amount: String(PLAN_BASE_PRICES["1_month"]),
   currency: "usd",
   paymentStatus: "paid",
@@ -134,12 +88,11 @@ const DEFAULT_FORM: FormState = {
 
 function PlanBadge({ plan }: { plan: PlanType }) {
   const colorMap: Record<PlanType, string> = {
-    daily: "bg-slate/30 text-ghost border-slate/40",
-    "1_month": "bg-gunmetal text-offwhite border-gunmetal",
+    "1_month":  "bg-gunmetal text-offwhite border-gunmetal",
     "3_months": "bg-gold-dim/20 text-gold border-gold-dim/40",
-    "4_months": "bg-gold-dim/30 text-gold-bright border-gold-dim/50",
+    "6_months": "bg-gold-dim/30 text-gold-bright border-gold-dim/50",
     "9_months": "bg-gold/15 text-gold-bright border-gold/30",
-    "12_months": "bg-gold/25 text-gold-bright border-gold/40 glow-gold-sm",
+    "12_months":"bg-gold/25 text-gold-bright border-gold/40 glow-gold-sm",
   };
   return (
     <span
@@ -314,10 +267,9 @@ function Toast({ message, onDone }: { message: string; onDone: () => void }) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function SubscriptionsBlock() {
-  const { pushActivity } = useStore();
+  const { subscriptions, addSubscription, cancelSubscriptionLocal } = useStore();
   const { user } = useAuth();
   const { exchangeRate } = useCurrency();
-  const [subscriptions, setSubscriptions] = useState<Subscription[]>(SEED_SUBSCRIPTIONS);
   const [activeFilter, setActiveFilter] = useState<FilterTab>("all");
   const [sortMode, setSortMode] = useState<SortMode>("alpha");
   const [formOpen, setFormOpen] = useState(false);
@@ -331,7 +283,7 @@ export default function SubscriptionsBlock() {
   const handlePlanChange = useCallback(
     (planType: PlanType) => {
       const base = PLAN_BASE_PRICES[planType];
-      const discounted = calculateDiscountedPrice(base, form.offer);
+      const discounted = calculateDiscountedPrice(base, form.offer, planType);
       setForm((prev) => ({
         ...prev,
         planType,
@@ -344,7 +296,7 @@ export default function SubscriptionsBlock() {
   const handleOfferChange = useCallback(
     (offer: OfferType) => {
       const base = PLAN_BASE_PRICES[form.planType];
-      const discounted = calculateDiscountedPrice(base, offer);
+      const discounted = calculateDiscountedPrice(base, offer, form.planType);
       setForm((prev) => ({
         ...prev,
         offer,
@@ -358,6 +310,7 @@ export default function SubscriptionsBlock() {
 
   const filtered = useMemo(() => {
     let result = subscriptions.filter((sub) => {
+      if (sub.status === "cancelled") return activeFilter === "all" ? false : false;
       if (activeFilter === "all") return true;
       if (activeFilter === "active") return sub.status === "active";
       if (activeFilter === "expired") return sub.status === "expired";
@@ -376,7 +329,7 @@ export default function SubscriptionsBlock() {
   }, [subscriptions, activeFilter, sortMode]);
 
   const filterCounts: Record<FilterTab, number> = {
-    all: subscriptions.length,
+    all: subscriptions.filter(s => s.status !== "cancelled").length,
     active: subscriptions.filter((s) => s.status === "active").length,
     expiring: subscriptions.filter(
       (s) => s.status === "active" && s.remainingDays > 0 && s.remainingDays <= 7
@@ -402,8 +355,8 @@ export default function SubscriptionsBlock() {
         ? amount
         : 0;
 
-    const sub: Subscription = {
-      id: generateId(),
+    const cur = form.currency;
+    addSubscription({
       memberId: generateId(),
       memberName: form.memberName.trim(),
       planType: form.planType,
@@ -414,38 +367,23 @@ export default function SubscriptionsBlock() {
       amount,
       paidAmount: paidAmt,
       paymentStatus: form.paymentStatus,
-      paymentMethod: form.currency === "syp" ? "cash" : "transfer",
-      currency: form.currency,
+      paymentMethod: cur === "syp" ? "cash" : "transfer",
+      currency: cur,
       status: remaining > 0 ? "active" : "expired",
-      createdAt: new Date().toISOString(),
-      createdBy: "admin",
+      createdBy: user?.id ?? "local",
       lockedAt: new Date().toISOString(),
-    };
-
-    setSubscriptions((prev) => [sub, ...prev]);
-    const cur = sub.currency ?? "usd";
-    const amountLabel = cur === "syp"
-      ? `${sub.amount.toLocaleString("en-US")} ل.س`
-      : `${sub.amount}$`;
-    pushActivity({
-      type: "subscription",
-      description: `اشتراك جديد — ${sub.memberName} (${getPlanLabel(sub.planType)}) — ${amountLabel}`,
-      amountUSD: cur === "usd" ? sub.amount : undefined,
-      amountSYP: cur === "syp" ? sub.amount : undefined,
-      userId: sub.createdBy,
-      userName: sub.createdBy,
     });
     if (user) {
       void pushSubscription({
         user: { id: user.id, displayName: user.displayName },
-        memberName: sub.memberName,
-        planType: sub.planType,
-        offer: sub.offer,
-        startDate: sub.startDate,
-        endDate: sub.endDate,
-        amount: sub.amount,
-        paidAmount: sub.paidAmount,
-        paymentStatus: sub.paymentStatus,
+        memberName: form.memberName.trim(),
+        planType: form.planType,
+        offer: form.offer,
+        startDate: form.startDate,
+        endDate,
+        amount,
+        paidAmount: paidAmt,
+        paymentStatus: form.paymentStatus,
         currency: cur as "syp" | "usd",
         exchangeRate,
       });
@@ -813,11 +751,11 @@ export default function SubscriptionsBlock() {
                   "تاريخ الانتهاء",
                   "الأيام المتبقية",
                   "المبلغ",
-                  "حالة الدفع",
                   "الحالة",
-                ].map((col) => (
+                  "",
+                ].map((col, i) => (
                   <th
-                    key={col}
+                    key={i}
                     className="px-3.5 py-2.5 text-right font-mono text-[10px] text-secondary uppercase tracking-wider whitespace-nowrap"
                   >
                     {col}
@@ -832,7 +770,7 @@ export default function SubscriptionsBlock() {
                     colSpan={9}
                     className="px-4 py-10 text-center font-mono text-xs text-slate uppercase tracking-wider"
                   >
-                    لا توجد اشتراكات تطابق هذا الفلتر
+                    {subscriptions.length === 0 ? "لا توجد اشتراكات" : "لا توجد اشتراكات تطابق هذا الفلتر"}
                   </td>
                 </tr>
               )}
@@ -889,14 +827,22 @@ export default function SubscriptionsBlock() {
                     )}
                   </td>
 
-                  {/* Payment Status */}
-                  <td className="px-3.5 py-3">
-                    <PaymentStatusChip status={sub.paymentStatus} />
-                  </td>
-
                   {/* Sub Status */}
                   <td className="px-3.5 py-3">
                     <SubStatusChip status={sub.status} />
+                  </td>
+
+                  {/* Cancel */}
+                  <td className="px-3.5 py-3 text-center">
+                    {sub.status !== "expired" && sub.status !== "cancelled" ? (
+                      <button
+                        onClick={() => cancelSubscriptionLocal(sub.id)}
+                        className="p-1 text-secondary hover:text-red transition-colors cursor-pointer"
+                        title="إلغاء الاشتراك"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 11L6.5 6.5M11 2L6.5 6.5M6.5 6.5L2 2M6.5 6.5L11 11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+                      </button>
+                    ) : null}
                   </td>
                 </tr>
               ))}

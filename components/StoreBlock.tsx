@@ -10,6 +10,7 @@ import {
   X,
   Pencil,
   Clock,
+  Undo2,
 } from "lucide-react";
 import {
   Product,
@@ -34,12 +35,15 @@ import BarcodeScanner, { type CatalogItem } from "@/components/BarcodeScanner";
 // ── Category badge colours ────────────────────────────────────────────────────
 
 const CATEGORY_STYLES: Record<ProductCategory, string> = {
-  supplements:  "bg-[#F5C100]/15 text-[#F5C100] border border-[#F5C100]/25",
-  wearables:    "bg-[#555555]/20 text-[#AAAAAA] border border-[#555555]/30",
-  protein_cups: "bg-[#5CC45C]/12 text-[#5CC45C] border border-[#5CC45C]/25",
-  bca_drinks:   "bg-[#C49A00]/15 text-[#C49A00] border border-[#C49A00]/25",
-  meals:        "bg-[#F5C100]/10 text-[#FFD740] border border-[#FFD740]/20",
-  other:        "bg-[#252525] text-[#777777] border border-[#555555]/30",
+  protein:     "bg-[#F5C100]/15 text-[#F5C100] border border-[#F5C100]/25",
+  mass_gainer: "bg-[#C49A00]/15 text-[#C49A00] border border-[#C49A00]/25",
+  creatine:    "bg-[#5CC45C]/15 text-[#5CC45C] border border-[#5CC45C]/25",
+  amino:       "bg-[#4AA8E8]/15 text-[#4AA8E8] border border-[#4AA8E8]/25",
+  pre_workout: "bg-[#E85454]/15 text-[#E85454] border border-[#E85454]/25",
+  fat_burner:  "bg-[#FF7A00]/15 text-[#FF7A00] border border-[#FF7A00]/25",
+  health:      "bg-[#7DDE7D]/15 text-[#7DDE7D] border border-[#7DDE7D]/25",
+  focus:       "bg-[#9B59B6]/15 text-[#9B59B6] border border-[#9B59B6]/25",
+  other:       "bg-[#252525] text-[#777777] border border-[#555555]/30",
 };
 
 const CURRENCY_STYLES: Record<Currency, string> = {
@@ -53,11 +57,14 @@ const CURRENCY_LABEL: Record<Currency, string> = {
 };
 
 const CATEGORY_GROUP_ORDER: ProductCategory[] = [
-  "supplements",
-  "protein_cups",
-  "bca_drinks",
-  "meals",
-  "wearables",
+  "protein",
+  "mass_gainer",
+  "creatine",
+  "amino",
+  "pre_workout",
+  "fat_burner",
+  "health",
+  "focus",
   "other",
 ];
 
@@ -195,6 +202,7 @@ export default function StoreBlock() {
     products,
     sales,
     addSale,
+    cancelSale,
     reverseSale,
     updateProductPrice,
     activityFeed,
@@ -261,7 +269,7 @@ export default function StoreBlock() {
       total: product.price * saleQty,
       currency: saleCurrency,
       exchangeRate,
-      source: product.category === "meals" ? "kitchen" : "store",
+      source: "store",
     });
     if (r.error) { setSaleError(r.error); return; }
 
@@ -538,7 +546,7 @@ export default function StoreBlock() {
         <table className="w-full text-xs">
           <thead>
             <tr className="border-y border-[#252525] bg-[#111111]">
-              {["الوقت", "المنتج", "الكمية", "سعر الوحدة", "الإجمالي", "العملة", "الموظف"].map(h => (
+              {["الوقت", "المنتج", "الكمية", "سعر الوحدة", "الإجمالي", "العملة", "الموظف", ""].map(h => (
                 <th key={h} className="px-4 py-2 text-right font-mono text-[10px] uppercase tracking-widest text-[#555555] whitespace-nowrap">
                   {h}
                 </th>
@@ -548,7 +556,7 @@ export default function StoreBlock() {
           <tbody>
             {todaySales.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-6 text-center font-mono text-[10px] text-[#555555] uppercase tracking-widest">
+                <td colSpan={8} className="px-4 py-6 text-center font-mono text-[10px] text-[#555555] uppercase tracking-widest">
                   لا توجد مبيعات مسجلة اليوم
                 </td>
               </tr>
@@ -558,13 +566,13 @@ export default function StoreBlock() {
                 return (
                   <tr
                     key={sale.id}
-                    className={["border-b border-[#252525]/60 hover:bg-[#252525]/30 transition-colors", sale.isReversal ? "opacity-60" : ""].join(" ")}
+                    className={["border-b border-[#252525]/60 transition-colors", sale.isReversal || sale.cancelled ? "opacity-40 bg-[#1A0A0A]/30" : "hover:bg-[#252525]/30"].join(" ")}
                   >
                     <td className="px-4 py-2.5 font-mono text-[10px] text-[#777777] tabular-nums whitespace-nowrap text-right">
                       {formatTime(sale.createdAt)}
                     </td>
                     <td className="px-4 py-2.5 text-[#F0EDE6] whitespace-nowrap text-right">
-                      {sale.isReversal ? <span className="line-through text-[#777777]">{sale.productName}</span> : sale.productName}
+                      {sale.isReversal || sale.cancelled ? <span className="line-through text-[#777777]">{sale.productName}</span> : sale.productName}
                     </td>
                     <td className="px-4 py-2.5 font-mono tabular-nums text-[#AAAAAA] text-right">
                       {sale.isReversal ? <span className="line-through">{sale.quantity}</span> : sale.quantity}
@@ -589,6 +597,19 @@ export default function StoreBlock() {
                           </span>
                         )}
                       </div>
+                    </td>
+                    <td className="px-4 py-2.5 text-center">
+                      {!sale.isReversal && !sale.cancelled ? (
+                        <button
+                          onClick={() => cancelSale(sale.id)}
+                          className="p-1 text-[#555555] hover:text-[#FF3333] transition-colors cursor-pointer"
+                          title="إلغاء"
+                        >
+                          <Undo2 size={12} />
+                        </button>
+                      ) : sale.cancelled ? (
+                        <span className="font-mono text-[9px] text-[#FF3333]">ملغي</span>
+                      ) : null}
                     </td>
                   </tr>
                 );

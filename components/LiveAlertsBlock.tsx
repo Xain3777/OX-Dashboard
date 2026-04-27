@@ -35,7 +35,7 @@ export default function LiveAlertsBlock() {
       supabase.from("discrepancy_logs").select("id", { count: "exact", head: true }).eq("resolved", false),
     ]);
 
-    setSubs(((subsRes.data ?? []) as Array<Record<string, unknown>>).map((r) => {
+    setSubs(((subsRes.data ?? []) as unknown as Array<Record<string, unknown>>).map((r) => {
       const end = new Date(String(r.end_date));
       const days = diffDays(today, end);
       return {

@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ListChecks, X, Undo2, ShoppingCart, Activity, Receipt, Dumbbell } from "lucide-react";
+import { ListChecks, X, Undo2, ShoppingCart, Activity, Dumbbell } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { cancelTransaction, type CancellableTable } from "@/lib/supabase/intake";
 
-type Kind = "sale" | "subscription" | "inbody" | "expense";
+type Kind = "sale" | "subscription" | "inbody";
 
 interface Row {
   id: string;
@@ -14,21 +14,17 @@ interface Row {
   table: CancellableTable;
   label: string;
   amount: number;
-  currency: "syp" | "usd";
-  amountSYP: number;
   createdAt: string;
   cancelledAt: string | null;
   cancelledReason: string | null;
 }
 
 const KIND_META: Record<Kind, { label: string; icon: React.ReactNode; color: string }> = {
-  sale:         { label: "بيع",      icon: <ShoppingCart size={11} />, color: "text-[#5CC45C]" },
-  subscription: { label: "اشتراك",   icon: <Activity size={11} />,     color: "text-[#AAAAAA]" },
-  inbody:       { label: "InBody",   icon: <Dumbbell size={11} />,     color: "text-[#F5C100]" },
-  expense:      { label: "مصروف",    icon: <Receipt size={11} />,      color: "text-[#FF7777]" },
+  sale:         { label: "بيع",    icon: <ShoppingCart size={11} />, color: "text-[#5CC45C]" },
+  subscription: { label: "اشتراك", icon: <Activity size={11} />,     color: "text-[#AAAAAA]" },
+  inbody:       { label: "InBody", icon: <Dumbbell size={11} />,     color: "text-[#F5C100]" },
 };
 
-function fmtSYP(n: number) { return `${Math.round(n).toLocaleString("en-US")} ل.س`; }
 function fmtUSD(n: number) { return `$${n.toFixed(2)}`; }
 
 export default function SessionTransactionsList() {
@@ -41,7 +37,6 @@ export default function SessionTransactionsList() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Resolve current open session (manager sees all open sessions; reception sees own).
   const resolveSession = useCallback(async () => {
     if (!user) return null;
     const q = supabase.from("cash_sessions").select("id").eq("status", "open").order("opened_at", { ascending: false }).limit(1);
@@ -63,41 +58,33 @@ export default function SessionTransactionsList() {
       return (data ?? []) as T[];
     };
 
-    type SaleRow      = { id: string; product_name: string; quantity: number; total: number; currency: "syp"|"usd"; amount_syp: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
-    type SubRow       = { id: string; member_name: string; plan_type: string; paid_amount: number; currency: "syp"|"usd"; amount_syp: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
-    type InBodyRow    = { id: string; member_name: string; session_type: string; amount: number; currency: "syp"|"usd"; amount_syp: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
-    type ExpenseRow   = { id: string; description: string; amount: number; currency: "syp"|"usd"; amount_syp: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
+    type SaleRow   = { id: string; product_name: string; quantity: number; total: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
+    type SubRow    = { id: string; member_name: string; plan_type: string; paid_amount: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
+    type InBodyRow = { id: string; member_name: string; session_type: string; amount: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
 
-    const [sales, subs, inbody, expenses] = await Promise.all([
-      fetchTable<SaleRow>("sales",           "id, product_name, quantity, total, currency, amount_syp, created_at, cancelled_at, cancelled_reason"),
-      fetchTable<SubRow>("subscriptions",    "id, member_name, plan_type, paid_amount, currency, amount_syp, created_at, cancelled_at, cancelled_reason"),
-      fetchTable<InBodyRow>("inbody_sessions","id, member_name, session_type, amount, currency, amount_syp, created_at, cancelled_at, cancelled_reason"),
-      fetchTable<ExpenseRow>("expenses",     "id, description, amount, currency, amount_syp, created_at, cancelled_at, cancelled_reason"),
+    const [sales, subs, inbody] = await Promise.all([
+      fetchTable<SaleRow>("sales",            "id, product_name, quantity, total, created_at, cancelled_at, cancelled_reason"),
+      fetchTable<SubRow>("subscriptions",     "id, member_name, plan_type, paid_amount, created_at, cancelled_at, cancelled_reason"),
+      fetchTable<InBodyRow>("inbody_sessions","id, member_name, session_type, amount, created_at, cancelled_at, cancelled_reason"),
     ]);
 
     const all: Row[] = [
       ...sales.map((s): Row => ({
         id: s.id, kind: "sale", table: "sales",
         label: `${s.quantity}× ${s.product_name}`,
-        amount: Number(s.total), currency: s.currency, amountSYP: Number(s.amount_syp ?? 0),
+        amount: Number(s.total),
         createdAt: s.created_at, cancelledAt: s.cancelled_at, cancelledReason: s.cancelled_reason,
       })),
       ...subs.map((s): Row => ({
         id: s.id, kind: "subscription", table: "subscriptions",
         label: `${s.member_name} (${s.plan_type})`,
-        amount: Number(s.paid_amount), currency: s.currency, amountSYP: Number(s.amount_syp ?? 0),
+        amount: Number(s.paid_amount),
         createdAt: s.created_at, cancelledAt: s.cancelled_at, cancelledReason: s.cancelled_reason,
       })),
       ...inbody.map((s): Row => ({
         id: s.id, kind: "inbody", table: "inbody_sessions",
         label: `${s.member_name} — ${s.session_type}`,
-        amount: Number(s.amount), currency: s.currency, amountSYP: Number(s.amount_syp ?? 0),
-        createdAt: s.created_at, cancelledAt: s.cancelled_at, cancelledReason: s.cancelled_reason,
-      })),
-      ...expenses.map((s): Row => ({
-        id: s.id, kind: "expense", table: "expenses",
-        label: s.description,
-        amount: Number(s.amount), currency: s.currency, amountSYP: Number(s.amount_syp ?? 0),
+        amount: Number(s.amount),
         createdAt: s.created_at, cancelledAt: s.cancelled_at, cancelledReason: s.cancelled_reason,
       })),
     ];
@@ -107,7 +94,6 @@ export default function SessionTransactionsList() {
 
   useEffect(() => { void load(); }, [load]);
 
-  // realtime
   useEffect(() => {
     if (!sessionId) return;
     const channel = supabase
@@ -115,16 +101,14 @@ export default function SessionTransactionsList() {
       .on("postgres_changes", { event: "*", schema: "public", table: "sales",           filter: `cash_session_id=eq.${sessionId}` }, () => void load())
       .on("postgres_changes", { event: "*", schema: "public", table: "subscriptions",   filter: `cash_session_id=eq.${sessionId}` }, () => void load())
       .on("postgres_changes", { event: "*", schema: "public", table: "inbody_sessions", filter: `cash_session_id=eq.${sessionId}` }, () => void load())
-      .on("postgres_changes", { event: "*", schema: "public", table: "expenses",        filter: `cash_session_id=eq.${sessionId}` }, () => void load())
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
   }, [supabase, sessionId, load]);
 
   const totals = useMemo(() => {
     const active = rows.filter(r => !r.cancelledAt);
-    const incomeSYP = active.filter(r => r.kind !== "expense").reduce((a, r) => a + r.amountSYP, 0);
-    const expenseSYP = active.filter(r => r.kind === "expense").reduce((a, r) => a + r.amountSYP, 0);
-    return { incomeSYP, expenseSYP, count: active.length };
+    const totalUSD = active.reduce((a, r) => a + r.amount, 0);
+    return { totalUSD, count: active.length };
   }, [rows]);
 
   if (!user) return null;
@@ -158,8 +142,7 @@ export default function SessionTransactionsList() {
           <span className="font-mono text-[10px] text-[#555555]">{totals.count} عملية فعّالة</span>
         </div>
         <div className="flex items-center gap-3 font-mono text-[11px] text-[#777777]">
-          <span>دخل: <span className="text-[#5CC45C]">{fmtSYP(totals.incomeSYP)}</span></span>
-          <span>مصروف: <span className="text-[#FF7777]">{fmtSYP(totals.expenseSYP)}</span></span>
+          <span>دخل: <span className="text-[#5CC45C]">{fmtUSD(totals.totalUSD)}</span></span>
         </div>
       </div>
 
@@ -190,12 +173,9 @@ export default function SessionTransactionsList() {
                   </p>
                 </div>
                 <div className="shrink-0 text-left">
-                  <p className={`font-mono text-xs tabular-nums ${cancelled ? "text-[#777777] line-through" : r.kind === "expense" ? "text-[#FF7777]" : "text-[#F5C100]"}`}>
-                    {r.currency === "syp" ? fmtSYP(r.amount) : fmtUSD(r.amount)}
+                  <p className={`font-mono text-xs tabular-nums ${cancelled ? "text-[#777777] line-through" : "text-[#F5C100]"}`}>
+                    {fmtUSD(r.amount)}
                   </p>
-                  {r.currency === "usd" && (
-                    <p className="font-mono text-[9px] text-[#555555]">≈ {fmtSYP(r.amountSYP)}</p>
-                  )}
                 </div>
                 {!cancelled && (
                   <button
@@ -212,7 +192,6 @@ export default function SessionTransactionsList() {
         </div>
       )}
 
-      {/* Confirm modal */}
       {confirming && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 backdrop-blur-sm" dir="rtl" onClick={() => !busy && setConfirming(null)}>
           <div className="bg-[#1A1A1A] border border-[#252525] p-6 max-w-sm w-full mx-4" onClick={(e) => e.stopPropagation()}>

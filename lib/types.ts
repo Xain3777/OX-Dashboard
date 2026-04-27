@@ -16,21 +16,18 @@ export interface Member {
 
 // --- SUBSCRIPTIONS ---
 export type PlanType =
-  | "daily"
   | "1_month"
   | "3_months"
-  | "4_months"
+  | "6_months"
   | "9_months"
   | "12_months";
 
 export type OfferType =
   | "none"
-  | "4_plus_1_free"       // 4 months paid + 5th free
-  | "3_plus_half_free"    // 3 months + half month free
-  | "9_plus_1.5_free"     // 9 months + 1.5 months free
-  | "12_plus_2_free"      // 1 year + 2 months free
-  | "married_couple"
-  | "college_student";
+  | "referral_4"   // bring 4 friends → 1 month free
+  | "referral_9"   // bring 9 friends → 2 months free
+  | "couple"       // 2 people on 1-month → $60 flat
+  | "corporate";   // 15% discount on any plan
 
 export type PaymentStatus = "paid" | "partial" | "unpaid";
 export type SubStatus = "active" | "expired" | "frozen" | "cancelled";
@@ -57,11 +54,14 @@ export interface Subscription {
 
 // --- STORE / INVENTORY ---
 export type ProductCategory =
-  | "supplements"
-  | "wearables"
-  | "protein_cups"
-  | "bca_drinks"
-  | "meals"
+  | "protein"
+  | "mass_gainer"
+  | "creatine"
+  | "amino"
+  | "pre_workout"
+  | "fat_burner"
+  | "health"
+  | "focus"
   | "other";
 
 export interface Product {
@@ -84,10 +84,12 @@ export interface Sale {
   total: number;
   paymentMethod: PaymentMethod;
   currency?: Currency;
+  source?: "store" | "kitchen";
+  cancelled?: boolean;
   createdAt: string;
   createdBy: string;
   isReversal: boolean;
-  reversalOf?: string;  // references original sale ID
+  reversalOf?: string;
   reversalReason?: string;
 }
 

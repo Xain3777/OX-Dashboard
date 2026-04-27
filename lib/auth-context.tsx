@@ -13,7 +13,7 @@ import { supabaseBrowser } from "./supabase/client";
 export type AppRole = "manager" | "reception";
 
 export interface AuthUser {
-  id: string;          // auth.users.id (uuid)
+  id: string;          // auth.users.id (uuid) — or email in local mode
   email: string;       // synthetic e.g. reception1@ox.local
   displayName: string; // Arabic name shown in UI
   role: AppRole;
@@ -34,6 +34,28 @@ const AuthContext = createContext<AuthContextType>({
   signOut: async () => {},
   isManager: false,
 });
+
+// ── Local-mode credentials (no Supabase needed) ───────────────────────────────
+// Toggle via NEXT_PUBLIC_LOCAL_AUTH=true in .env.local.
+// To go live: remove that env var and ensure Supabase users + profiles exist.
+
+const IS_LOCAL = process.env.NEXT_PUBLIC_LOCAL_AUTH === "true";
+const LOCAL_KEY = "ox-auth-local-user";
+const LOCAL_PASSWORD = "123456";
+
+const LOCAL_ACCOUNTS: Array<{ email: string; displayName: string; role: AppRole }> = [
+  { email: "adham@ox.local",      displayName: "كوتش أدهم",  role: "manager"   },
+  { email: "haider@ox.local",     displayName: "حيدر",       role: "manager"   },
+  { email: "reception1@ox.local", displayName: "استقبال 1",  role: "reception" },
+  { email: "reception2@ox.local", displayName: "استقبال 2",  role: "reception" },
+  { email: "reception3@ox.local", displayName: "استقبال 3",  role: "reception" },
+  { email: "reception4@ox.local", displayName: "استقبال 4",  role: "reception" },
+  { email: "reception5@ox.local", displayName: "استقبال 5",  role: "reception" },
+  { email: "reception6@ox.local", displayName: "استقبال 6",  role: "reception" },
+  { email: "reception7@ox.local", displayName: "استقبال 7",  role: "reception" },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -58,8 +80,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [supabase]
   );
 
-  // bootstrap from existing session
   useEffect(() => {
+    // ── local mode: restore session from localStorage only ──
+    if (IS_LOCAL) {
+      try {
+        const stored = localStorage.getItem(LOCAL_KEY);
+        if (stored) setUser(JSON.parse(stored) as AuthUser);
+      } catch {}
+      setLoading(false);
+      return;
+    }
+
+    // ── Supabase mode: bootstrap from existing session ──
     let alive = true;
     (async () => {
       const { data } = await supabase.auth.getSession();
@@ -87,8 +119,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = useCallback(
     async (email: string, password: string) => {
-      // 30s hard timeout so a hung network call surfaces an error instead
-      // of leaving the login button stuck on the busy state forever.
+      // ── local mode ──
+      if (IS_LOCAL) {
+        if (password !== LOCAL_PASSWORD) return { error: "كلمة المرور غير صحيحة." };
+        const account = LOCAL_ACCOUNTS.find((a) => a.email === email);
+        if (!account) return { error: "الحساب غير موجود." };
+        const profile: AuthUser = {
+          id: email,
+          email,
+          displayName: account.displayName,
+          role: account.role,
+        };
+        try { localStorage.setItem(LOCAL_KEY, JSON.stringify(profile)); } catch {}
+        setUser(profile);
+        return {};
+      }
+
+      // ── Supabase mode ──
       const timeoutPromise = new Promise<{ error: string }>((resolve) =>
         setTimeout(() => resolve({ error: "انتهت مهلة الاتصال بالخادم — تحقق من الاتصال بالإنترنت أو إعدادات Supabase." }), 30000)
       );
@@ -102,10 +149,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const signOut = useCallback(async () => {
+    // ── local mode ──
+    if (IS_LOCAL) {
+      try { localStorage.removeItem(LOCAL_KEY); } catch {}
+      setUser(null);
+      return;
+    }
+
+    // ── Supabase mode ──
     // scope:'local' clears only this browser's session (no server round-trip).
-    // Faster, and avoids hangs when the auth-token Web Lock is contended by
-    // another tab. We then nuke any leftover sb-* cookies/localStorage so the
-    // user can never get stuck "logged in but unable to use the app".
     try {
       await supabase.auth.signOut({ scope: "local" });
     } catch {

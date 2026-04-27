@@ -105,7 +105,7 @@ export default function ManagerReportBlock() {
         .select(`created_by, ${amountCol}, currency`)
         .gte("created_at", since);
       const map: Record<string, { syp: number; usd: number }> = {};
-      (data ?? []).forEach((row: Record<string, unknown>) => {
+      ((data ?? []) as unknown as Array<Record<string, unknown>>).forEach((row) => {
         const uid = row.created_by as string;
         const cur = row.currency as string;
         const amt = Number(row[amountCol] ?? 0);

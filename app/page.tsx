@@ -3,7 +3,6 @@
 import { useState, useCallback } from "react";
 import Image from "next/image";
 import * as XLSX from "xlsx";
-import { CASH_SESSION } from "@/lib/mock-data";
 import { CurrencyProvider, useCurrency } from "@/lib/currency-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { StoreProvider, useStore } from "@/lib/store-context";
@@ -14,8 +13,6 @@ import KPIStrip from "@/components/KPIStrip";
 import LiveAlertsBlock from "@/components/LiveAlertsBlock";
 import SubscriptionsBlock from "@/components/SubscriptionsBlock";
 import StoreBlock from "@/components/StoreBlock";
-import ExpensesBlock from "@/components/ExpensesBlock";
-import ReconciliationBlock from "@/components/ReconciliationBlock";
 import CashSessionBlock from "@/components/CashSessionBlock";
 import SessionTransactionsList from "@/components/SessionTransactionsList";
 import ManagerReportBlock from "@/components/ManagerReportBlock";
@@ -23,7 +20,6 @@ import WeeklyReview from "@/components/WeeklyReview";
 import MonthlyReview from "@/components/MonthlyReview";
 import AuditLog from "@/components/AuditLog";
 import CalculationsBlock from "@/components/CalculationsBlock";
-import ExpenseRates from "@/components/ExpenseRates";
 import InBodyBlock from "@/components/InBodyBlock";
 import KitchenBlock from "@/components/KitchenBlock";
 import LoginScreen from "@/components/LoginScreen";
@@ -39,19 +35,15 @@ import {
   Activity,
   ShoppingCart,
   Dumbbell,
-  Receipt,
   Tag,
 } from "lucide-react";
 
 type Section =
   | "alerts"
-  | "reconciliation"
   | "subscriptions"
   | "store"
   | "inbody"
   | "kitchen"
-  | "expenses"
-  | "rates"
   | "calculations"
   | "weekly"
   | "monthly"
@@ -121,33 +113,24 @@ function exportMonthlyExcel(ctx: {
   sales: ReturnType<typeof useStore>["sales"];
   subscriptions: ReturnType<typeof useStore>["subscriptions"];
   inBodySessions: ReturnType<typeof useStore>["inBodySessions"];
-  expenses: ReturnType<typeof useStore>["expenses"];
-  expenseRates: ReturnType<typeof useStore>["expenseRates"];
   products: ReturnType<typeof useStore>["products"];
   exchangeRate: number;
 }) {
-  const { sales, subscriptions, inBodySessions, expenses, expenseRates, products, exchangeRate } = ctx;
+  const { sales, subscriptions, inBodySessions, products, exchangeRate } = ctx;
   const curLabel = (c?: string) => c === "syp" ? "ل.س" : "$";
 
   const wb = XLSX.utils.book_new();
 
   // ── 1. ملخص شهري ──────────────────────────────────────────────────────────
-  const totalSaleUSD    = sales.filter(s => !s.isReversal).reduce((s, r) => s + r.total, 0);
-  const totalInBodySYP  = inBodySessions.reduce((s, r) => s + r.priceSYP, 0);
-  const totalInBodyUSD  = Math.round((totalInBodySYP / exchangeRate) * 100) / 100;
-  const totalExpenses   = expenses.reduce((s, r) => s + r.amount, 0);
-  const totalSalaries   = expenseRates.filter(r => r.category === "salary" && r.active).reduce((s, r) => s + r.amount, 0);
+  const totalSaleUSD   = sales.filter(s => !s.isReversal).reduce((s, r) => s + r.total, 0);
+  const totalInBodySYP = inBodySessions.reduce((s, r) => s + r.priceSYP, 0);
+  const totalInBodyUSD = Math.round((totalInBodySYP / exchangeRate) * 100) / 100;
 
   const summaryData = [
     ["البند", "المبلغ ($)"],
     ["إجمالي مبيعات المتجر", totalSaleUSD],
-    ["إجمالي جلسات InBody (بالدولار)", totalInBodyUSD],
+    ["إجمالي جلسات InBody", totalInBodyUSD],
     ["إجمالي الإيرادات", totalSaleUSD + totalInBodyUSD],
-    ["", ""],
-    ["إجمالي المصروفات", totalExpenses],
-    ["إجمالي الرواتب", totalSalaries],
-    ["", ""],
-    ["صافي الربح التقديري", (totalSaleUSD + totalInBodyUSD) - totalExpenses],
     ["سعر الصرف (ل.س/$)", exchangeRate],
   ];
   const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
@@ -194,21 +177,7 @@ function exportMonthlyExcel(ctx: {
   const wsStore = XLSX.utils.aoa_to_sheet(storeRows);
   XLSX.utils.book_append_sheet(wb, wsStore, "مبيعات المتجر");
 
-  // ── 4. المصروفات ───────────────────────────────────────────────────────────
-  const expenseRows = [
-    ["التاريخ", "الوصف", "التصنيف", "المبلغ", "العملة"],
-    ...expenses.map(e => [
-      e.date,
-      e.description,
-      e.category,
-      e.amount,
-      curLabel(e.currency),
-    ]),
-  ];
-  const wsExpenses = XLSX.utils.aoa_to_sheet(expenseRows);
-  XLSX.utils.book_append_sheet(wb, wsExpenses, "المصروفات");
-
-  // ── 4b. الاشتراكات ─────────────────────────────────────────────────────────
+  // ── 4. الاشتراكات ──────────────────────────────────────────────────────────
   const subRows = [
     ["تاريخ الإنشاء", "العضو", "الخطة", "المبلغ", "العملة", "حالة الدفع", "الحالة"],
     ...subscriptions.map(s => {
@@ -227,21 +196,7 @@ function exportMonthlyExcel(ctx: {
   const wsSubs = XLSX.utils.aoa_to_sheet(subRows);
   XLSX.utils.book_append_sheet(wb, wsSubs, "الاشتراكات");
 
-  // ── 5. الرواتب والمصروفات الثابتة ────────────────────────────────────────
-  const rateRows = [
-    ["الوصف", "التصنيف", "المبلغ ($)", "التكرار", "الحالة"],
-    ...expenseRates.map(r => [
-      r.label,
-      r.category === "salary" ? "راتب" : r.category === "rent" ? "إيجار" : r.category === "utility" ? "مرافق" : "خدمات",
-      r.amount,
-      r.frequency === "monthly" ? "شهري" : r.frequency === "weekly" ? "أسبوعي" : "يومي",
-      r.active ? "فعّال" : "متوقف",
-    ]),
-  ];
-  const wsRates = XLSX.utils.aoa_to_sheet(rateRows);
-  XLSX.utils.book_append_sheet(wb, wsRates, "الرواتب والمصروفات الثابتة");
-
-  // ── 6. المخزون ─────────────────────────────────────────────────────────────
+  // ── 5. المخزون ─────────────────────────────────────────────────────────────
   const stockRows = [
     ["المنتج", "التصنيف", "التكلفة ($)", "سعر البيع ($)", "هامش الربح %", "المخزون"],
     ...products.map(p => {
@@ -259,10 +214,9 @@ function exportMonthlyExcel(ctx: {
 
 // ── Activity → Audit converter ────────────────────────────────────────────────
 
-const ACTIVITY_TO_AUDIT_ACTION: Record<ActivityType, AuditAction> = {
+const ACTIVITY_TO_AUDIT_ACTION: Partial<Record<ActivityType, AuditAction>> = {
   sale: "sale_created",
   inbody: "inbody_session",
-  expense: "expense_created",
   subscription: "subscription_created",
   price_edit: "price_edit",
 };
@@ -270,7 +224,7 @@ const ACTIVITY_TO_AUDIT_ACTION: Record<ActivityType, AuditAction> = {
 function activityFeedToAuditEntries(feed: ActivityEntry[]): AuditEntry[] {
   return feed.map((e) => ({
     id: e.id,
-    action: ACTIVITY_TO_AUDIT_ACTION[e.type],
+    action: ACTIVITY_TO_AUDIT_ACTION[e.type] ?? "sale_created",
     description: e.description,
     entityType: e.type,
     entityId: e.id,
@@ -293,13 +247,10 @@ function DashboardContent() {
 
   const [collapsed, setCollapsed] = useState<Record<Section, boolean>>({
     alerts: false,
-    reconciliation: false,
     subscriptions: false,
     store: false,
     inbody: false,
     kitchen: false,
-    expenses: false,
-    rates: false,
     calculations: false,
     weekly: true,
     monthly: true,
@@ -420,33 +371,19 @@ function DashboardContent() {
               wearablesRevenue={280}
               mealsRevenue={300}
               drinksRevenue={180}
-              totalExpenses={store.expenses.reduce((a, b) => a + b.amount, 0)}
-              salariesExpense={store.expenseRates.filter(r => r.category === "salary" && r.active).reduce((a, b) => a + b.amount, 0)}
-              rentExpense={store.expenseRates.filter(r => r.category === "rent" && r.active).reduce((a, b) => a + b.amount, 0)}
-              productsExpense={350}
-              maintenanceExpense={320}
-              suppliesExpense={120}
-              otherExpense={60}
+              totalExpenses={0}
+              salariesExpense={0}
+              rentExpense={0}
+              productsExpense={0}
+              maintenanceExpense={0}
+              suppliesExpense={0}
+              otherExpense={0}
               totalDiscounts={85}
-              cashOnHand={CASH_SESSION.openingCash}
-              expectedCash={CASH_SESSION.expectedCash}
+              cashOnHand={0}
+              expectedCash={0}
             />
           </CollapsibleSection>
         )}
-
-        {/* تسوية الصندوق */}
-        <CollapsibleSection title="تسوية الصندوق اليومية" collapsed={collapsed.reconciliation} onToggle={() => toggle("reconciliation")} accent>
-          <ReconciliationBlock
-            session={CASH_SESSION}
-            onCloseDay={(data) => console.log("تم إغلاق اليوم:", data)}
-            totalTransactions={store.sales.length + store.expenses.length}
-            cardTransferSales={
-              store.sales
-                .filter(s => s.paymentMethod === "card" || s.paymentMethod === "transfer")
-                .reduce((sum, s) => sum + s.total, 0)
-            }
-          />
-        </CollapsibleSection>
 
         {/* الاشتراكات */}
         <CollapsibleSection title="الاشتراكات" collapsed={collapsed.subscriptions} onToggle={() => toggle("subscriptions")}>
@@ -466,22 +403,6 @@ function DashboardContent() {
         {/* المطبخ — طلبات الاستقبال */}
         <CollapsibleSection title="المطبخ" collapsed={collapsed.kitchen} onToggle={() => toggle("kitchen")}>
           <KitchenBlock />
-        </CollapsibleSection>
-
-        {/* المصروفات — manager only */}
-        {isManager && (
-          <CollapsibleSection title="المصروفات" collapsed={collapsed.expenses} onToggle={() => toggle("expenses")}>
-            <ExpensesBlock />
-          </CollapsibleSection>
-        )}
-
-        {/* جدول الأسعار والرواتب — everyone sees it; editing is manager-only (enforced inside) */}
-        <CollapsibleSection
-          title={isManager ? "جدول الأسعار والرواتب" : "الرواتب والمصروفات الثابتة"}
-          collapsed={collapsed.rates}
-          onToggle={() => toggle("rates")}
-        >
-          <ExpenseRates />
         </CollapsibleSection>
 
         {/* مراجعة أسبوعية + شهرية — manager only */}
@@ -523,8 +444,6 @@ function DashboardContent() {
                   sales:          store.sales,
                   subscriptions:  store.subscriptions,
                   inBodySessions: store.inBodySessions,
-                  expenses:       store.expenses,
-                  expenseRates:   store.expenseRates,
                   products:       store.products,
                   exchangeRate,
                 })
@@ -547,16 +466,15 @@ function DashboardContent() {
 
 // ── Live feed panel (manager view of all staff actions) ───────────────────────
 
-const FEED_ICON: Record<ActivityType, React.ReactNode> = {
-  sale:       <ShoppingCart size={12} className="text-[#5CC45C]" />,
-  inbody:     <Dumbbell size={12} className="text-[#F5C100]" />,
-  expense:    <Receipt size={12} className="text-[#D42B2B]" />,
+const FEED_ICON: Partial<Record<ActivityType, React.ReactNode>> = {
+  sale:         <ShoppingCart size={12} className="text-[#5CC45C]" />,
+  inbody:       <Dumbbell size={12} className="text-[#F5C100]" />,
   subscription: <Activity size={12} className="text-[#AAAAAA]" />,
-  price_edit: <Tag size={12} className="text-[#F5C100]" />,
+  price_edit:   <Tag size={12} className="text-[#F5C100]" />,
 };
 
-const FEED_TYPE_LABEL: Record<ActivityType, string> = {
-  sale: "بيع", inbody: "InBody", expense: "مصروف", subscription: "اشتراك", price_edit: "تعديل سعر",
+const FEED_TYPE_LABEL: Partial<Record<ActivityType, string>> = {
+  sale: "بيع", inbody: "InBody", subscription: "اشتراك", price_edit: "تعديل سعر",
 };
 
 function LiveFeedPanel({ feed }: { feed: ActivityEntry[] }) {

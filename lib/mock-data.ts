@@ -2,6 +2,7 @@ import {
   Member, Subscription, Product, Sale, Expense, CashSession,
   AuditEntry, DashboardKPI, WeeklyReview, MonthlyReview, StaffUser,
 } from "./types";
+import { calculateRemainingDays } from "./business-logic";
 
 export const STAFF: StaffUser[] = [
   { id: "s1", name: "كوتش ادهم", role: "owner", active: true },
@@ -23,84 +24,94 @@ export const MEMBERS: Member[] = [
 
 export const SUBSCRIPTIONS: Subscription[] = [
   {
-    id: "sub1", memberId: "m1", memberName: "أحمد الراشد",
-    planType: "12_months", offer: "12_plus_2_free",
-    startDate: "2025-09-15", endDate: "2026-11-14", remainingDays: 214,
-    amount: 2400, paidAmount: 2400, paymentStatus: "paid", paymentMethod: "cash",
-    status: "active", createdAt: "2025-09-15T08:00:00Z", createdBy: "s3",
+    id: "seed-001", memberId: "m-001", memberName: "خالد الراشدي",
+    planType: "3_months", offer: "none", startDate: "2026-02-10", endDate: "2026-05-10",
+    remainingDays: calculateRemainingDays("2026-05-10"), amount: 90, paidAmount: 90,
+    paymentStatus: "paid", paymentMethod: "cash", status: "active",
+    createdAt: "2026-02-10T09:00:00Z", createdBy: "admin",
   },
   {
-    id: "sub2", memberId: "m2", memberName: "فاطمة نور",
-    planType: "4_months", offer: "4_plus_1_free",
-    startDate: "2026-02-01", endDate: "2026-07-01", remainingDays: 78,
-    amount: 800, paidAmount: 800, paymentStatus: "paid", paymentMethod: "card",
-    status: "active", createdAt: "2026-02-01T09:30:00Z", createdBy: "s3",
+    id: "seed-002", memberId: "m-002", memberName: "سارة بن طلال",
+    planType: "1_month", offer: "none", startDate: "2026-04-01", endDate: "2026-05-01",
+    remainingDays: calculateRemainingDays("2026-05-01"), amount: 35, paidAmount: 17,
+    paymentStatus: "partial", paymentMethod: "card", status: "active",
+    createdAt: "2026-04-01T10:00:00Z", createdBy: "admin",
   },
   {
-    id: "sub3", memberId: "m3", memberName: "خالد حسن",
-    planType: "3_months", offer: "3_plus_half_free",
-    startDate: "2026-01-10", endDate: "2026-04-25", remainingDays: 11,
-    amount: 600, paidAmount: 400, paymentStatus: "partial", paymentMethod: "cash",
-    status: "active", createdAt: "2026-01-10T10:00:00Z", createdBy: "s4",
+    id: "seed-003", memberId: "m-003", memberName: "عمر فيصل",
+    planType: "12_months", offer: "referral_9", startDate: "2025-04-01", endDate: "2026-06-01",
+    remainingDays: calculateRemainingDays("2026-06-01"), amount: 300, paidAmount: 300,
+    paymentStatus: "paid", paymentMethod: "transfer", status: "active",
+    createdAt: "2025-04-01T08:00:00Z", createdBy: "admin",
   },
   {
-    id: "sub4", memberId: "m4", memberName: "سارة إبراهيم",
-    planType: "1_month", offer: "college_student",
-    startDate: "2026-03-20", endDate: "2026-04-19", remainingDays: 5,
-    amount: 160, paidAmount: 160, paymentStatus: "paid", paymentMethod: "cash",
-    status: "active", createdAt: "2026-03-20T08:15:00Z", createdBy: "s3",
+    id: "seed-004", memberId: "m-004", memberName: "نورة القحطاني",
+    planType: "1_month", offer: "none", startDate: "2026-03-01", endDate: "2026-03-31",
+    remainingDays: 0, amount: 35, paidAmount: 0,
+    paymentStatus: "unpaid", paymentMethod: "cash", status: "expired",
+    createdAt: "2026-03-01T11:00:00Z", createdBy: "admin",
   },
   {
-    id: "sub5", memberId: "m5", memberName: "طارق منصور",
-    planType: "9_months", offer: "9_plus_1.5_free",
-    startDate: "2026-03-01", endDate: "2026-12-15", remainingDays: 245,
-    amount: 1800, paidAmount: 1800, paymentStatus: "paid", paymentMethod: "transfer",
-    status: "active", createdAt: "2026-03-01T11:00:00Z", createdBy: "s4",
-  },
-  {
-    id: "sub6", memberId: "m6", memberName: "نادية يوسف",
-    planType: "1_month", offer: "none",
-    startDate: "2026-03-15", endDate: "2026-04-14", remainingDays: 0,
-    amount: 200, paidAmount: 200, paymentStatus: "paid", paymentMethod: "cash",
-    status: "expired", createdAt: "2026-03-15T07:45:00Z", createdBy: "s3",
-  },
-  {
-    id: "sub7", memberId: "m7", memberName: "رامي الأمين",
-    planType: "3_months", offer: "none",
-    startDate: "2026-04-01", endDate: "2026-06-30", remainingDays: 77,
-    amount: 600, paidAmount: 0, paymentStatus: "unpaid", paymentMethod: "cash",
-    status: "active", createdAt: "2026-04-01T09:00:00Z", createdBy: "s3",
-  },
-  {
-    id: "sub8", memberId: "m8", memberName: "ليلى بدران",
-    planType: "daily", offer: "none",
-    startDate: "2026-04-14", endDate: "2026-04-14", remainingDays: 0,
-    amount: 30, paidAmount: 30, paymentStatus: "paid", paymentMethod: "cash",
-    status: "active", createdAt: "2026-04-14T10:30:00Z", createdBy: "s4",
+    id: "seed-005", memberId: "m-005", memberName: "يوسف حمدان",
+    planType: "3_months", offer: "referral_4", startDate: "2025-12-01", endDate: "2026-04-01",
+    remainingDays: calculateRemainingDays("2026-04-01"), amount: 90, paidAmount: 90,
+    paymentStatus: "paid", paymentMethod: "cash", status: "frozen",
+    createdAt: "2025-12-01T09:30:00Z", createdBy: "admin",
   },
 ];
 
 export const PRODUCTS: Product[] = [
-  { id: "p1", name: "واي بروتين ٢ كجم", category: "supplements", cost: 120, price: 180, stock: 15, lowStockThreshold: 5, createdAt: "2026-01-01" },
-  { id: "p2", name: "كبسولات BCAA", category: "supplements", cost: 45, price: 75, stock: 22, lowStockThreshold: 8, createdAt: "2026-01-01" },
-  { id: "p3", name: "خلطة بري-ورك أوت", category: "supplements", cost: 55, price: 90, stock: 3, lowStockThreshold: 5, createdAt: "2026-01-01" },
-  { id: "p4", name: "قفازات رياضية (زوج)", category: "wearables", cost: 15, price: 35, stock: 30, lowStockThreshold: 10, createdAt: "2026-01-01" },
-  { id: "p5", name: "تانك توب OX", category: "wearables", cost: 20, price: 45, stock: 18, lowStockThreshold: 5, createdAt: "2026-01-01" },
-  { id: "p6", name: "كوب بروتين (طازج)", category: "protein_cups", cost: 5, price: 15, stock: 40, lowStockThreshold: 10, createdAt: "2026-01-01" },
-  { id: "p7", name: "مشروب BCAA (بارد)", category: "bca_drinks", cost: 3, price: 10, stock: 50, lowStockThreshold: 15, createdAt: "2026-01-01" },
-  { id: "p8", name: "وجبة دجاج", category: "meals", cost: 12, price: 25, stock: 8, lowStockThreshold: 5, createdAt: "2026-01-01" },
-  { id: "p9", name: "كرياتين ٥٠٠ جم", category: "supplements", cost: 35, price: 60, stock: 2, lowStockThreshold: 5, createdAt: "2026-02-15" },
-  { id: "p10", name: "حزام رفع أثقال", category: "wearables", cost: 40, price: 85, stock: 7, lowStockThreshold: 3, createdAt: "2026-02-15" },
+  // ── Protein ────────────────────────────────────────────────────────────────
+  { id: "p01", name: "Levrone GOLD Whey 2kg",              category: "protein",     cost: 30, price: 47, stock: 8,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p02", name: "Levrone GOLD Iso 2kg",               category: "protein",     cost: 37, price: 57, stock: 6,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p03", name: "Levro Whey Supreme 2kg",             category: "protein",     cost: 32, price: 50, stock: 5,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p04", name: "Bad Ass Whey 2kg",                   category: "protein",     cost: 29, price: 45, stock: 7,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p05", name: "Bad Ass Anabolic Iso 2kg Vanilla",   category: "protein",     cost: 35, price: 54, stock: 4,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  // ── Mass Gainer ────────────────────────────────────────────────────────────
+  { id: "p06", name: "Levrone GOLD Lean Mass 6kg",         category: "mass_gainer", cost: 39, price: 60, stock: 5,  lowStockThreshold: 2, createdAt: "2026-01-01" },
+  { id: "p07", name: "Levrone GOLD Lean Mass 3kg Choco",   category: "mass_gainer", cost: 22, price: 35, stock: 7,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p08", name: "Levrone Anabolic Prime Pro 2kg Straw",category: "mass_gainer", cost: 36, price: 55, stock: 4,  lowStockThreshold: 2, createdAt: "2026-01-01" },
+  { id: "p09", name: "Levrone Anabolic Cream of Rice 2kg", category: "mass_gainer", cost: 19, price: 30, stock: 6,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  // ── Creatine ───────────────────────────────────────────────────────────────
+  { id: "p10", name: "Levrone GOLD Creatine 300g (2028)",  category: "creatine",    cost: 8,  price: 13, stock: 12, lowStockThreshold: 4, createdAt: "2026-01-01" },
+  { id: "p11", name: "Levrone GOLD Creatine 300g (2027)",  category: "creatine",    cost: 7,  price: 12, stock: 9,  lowStockThreshold: 4, createdAt: "2026-01-01" },
+  { id: "p12", name: "Levrone GOLD Creatine 500g",         category: "creatine",    cost: 14, price: 22, stock: 8,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p13", name: "Levrone GOLD Creatine 1kg",          category: "creatine",    cost: 20, price: 32, stock: 5,  lowStockThreshold: 2, createdAt: "2026-01-01" },
+  { id: "p14", name: "Levro Crea 240g",                    category: "creatine",    cost: 8,  price: 13, stock: 10, lowStockThreshold: 4, createdAt: "2026-01-01" },
+  { id: "p15", name: "Anabolic Crea 1kg",                  category: "creatine",    cost: 21, price: 33, stock: 4,  lowStockThreshold: 2, createdAt: "2026-01-01" },
+  // ── Amino Acids ────────────────────────────────────────────────────────────
+  { id: "p16", name: "Levrone GOLD Amino 350 tabs",        category: "amino",       cost: 15, price: 24, stock: 8,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p17", name: "Levrone GOLD Beef Amino 600 tabs",   category: "amino",       cost: 19, price: 30, stock: 6,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p18", name: "Levrone Anabolic Amino 300 tabs",    category: "amino",       cost: 17, price: 26, stock: 7,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p19", name: "Levrone Anabolic LEAA9 240g",        category: "amino",       cost: 13, price: 20, stock: 5,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p20", name: "Levrone Anabolic EAA+BCAA 1000ml Orange", category: "amino",  cost: 16, price: 25, stock: 9,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p21", name: "Levrone Anabolic Ice BCAA 375g",     category: "amino",       cost: 14, price: 21, stock: 7,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p22", name: "Levrone Anabolic Ice EAA 420g",      category: "amino",       cost: 14, price: 22, stock: 6,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p23", name: "Bad Ass BCAA 8:1:1 400g Exotic",    category: "amino",       cost: 13, price: 20, stock: 8,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p24", name: "Amino EAA Xplode 520g",              category: "amino",       cost: 17, price: 27, stock: 5,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p25", name: "Amino Target Xplode 275g Lemon",     category: "amino",       cost: 12, price: 19, stock: 6,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  // ── Pre-Workout / Pump ─────────────────────────────────────────────────────
+  { id: "p26", name: "Levrone Shaaboom Pump 385g",         category: "pre_workout", cost: 14, price: 22, stock: 6,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p27", name: "Bad Ass Pump 350g",                  category: "pre_workout", cost: 13, price: 20, stock: 5,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  // ── Fat Burners / Cutting ──────────────────────────────────────────────────
+  { id: "p28", name: "Levro Legendary Lipo Burn 90 tabs",  category: "fat_burner",  cost: 11, price: 18, stock: 7,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p29", name: "Levrone Anabolic Test 90 tabs",      category: "fat_burner",  cost: 19, price: 30, stock: 4,  lowStockThreshold: 2, createdAt: "2026-01-01" },
+  // ── Health / Recovery ──────────────────────────────────────────────────────
+  { id: "p30", name: "Levrone GOLD Glutamine 300g",        category: "health",      cost: 8,  price: 13, stock: 10, lowStockThreshold: 4, createdAt: "2026-01-01" },
+  { id: "p31", name: "Levrone GOLD PRO ZMAX 90 tabs",      category: "health",      cost: 9,  price: 14, stock: 8,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  { id: "p32", name: "Levrone Omega 3 90 caps",            category: "health",      cost: 9,  price: 14, stock: 9,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  // ── Focus / Performance ────────────────────────────────────────────────────
+  { id: "p33", name: "R-Weiler Focus 300g",                category: "focus",       cost: 8,  price: 13, stock: 5,  lowStockThreshold: 3, createdAt: "2026-01-01" },
 ];
 
 export const SALES: Sale[] = [
-  { id: "sl1", productId: "p6", productName: "كوب بروتين (طازج)", quantity: 3, unitPrice: 15, total: 45, paymentMethod: "cash", createdAt: "2026-04-14T07:30:00Z", createdBy: "s3", isReversal: false },
-  { id: "sl2", productId: "p7", productName: "مشروب BCAA (بارد)", quantity: 2, unitPrice: 10, total: 20, paymentMethod: "cash", createdAt: "2026-04-14T08:15:00Z", createdBy: "s3", isReversal: false },
-  { id: "sl3", productId: "p1", productName: "واي بروتين ٢ كجم", quantity: 1, unitPrice: 180, total: 180, paymentMethod: "card", createdAt: "2026-04-14T09:00:00Z", createdBy: "s4", isReversal: false },
-  { id: "sl4", productId: "p4", productName: "قفازات رياضية (زوج)", quantity: 2, unitPrice: 35, total: 70, paymentMethod: "cash", createdAt: "2026-04-14T10:00:00Z", createdBy: "s3", isReversal: false },
-  { id: "sl5", productId: "p8", productName: "وجبة دجاج", quantity: 1, unitPrice: 25, total: 25, paymentMethod: "cash", createdAt: "2026-04-14T11:30:00Z", createdBy: "s4", isReversal: false },
-  { id: "sl6", productId: "p6", productName: "كوب بروتين (طازج)", quantity: 1, unitPrice: 15, total: 15, paymentMethod: "cash", createdAt: "2026-04-14T12:00:00Z", createdBy: "s3", isReversal: false },
-  { id: "sl7", productId: "p5", productName: "تانك توب OX", quantity: 1, unitPrice: 45, total: 45, paymentMethod: "card", createdAt: "2026-04-14T13:45:00Z", createdBy: "s3", isReversal: false },
+  { id: "sl1", productId: "p01", productName: "Levrone GOLD Whey 2kg",        quantity: 1, unitPrice: 47, total: 47,  paymentMethod: "cash",     currency: "usd", createdAt: "2026-04-14T07:30:00Z", createdBy: "s3", isReversal: false },
+  { id: "sl2", productId: "p20", productName: "Levrone Anabolic EAA+BCAA 1000ml Orange", quantity: 2, unitPrice: 25, total: 50, paymentMethod: "cash", currency: "usd", createdAt: "2026-04-14T08:15:00Z", createdBy: "s3", isReversal: false },
+  { id: "sl3", productId: "p10", productName: "Levrone GOLD Creatine 300g (2028)", quantity: 2, unitPrice: 13, total: 26, paymentMethod: "transfer", currency: "usd", createdAt: "2026-04-14T09:00:00Z", createdBy: "s4", isReversal: false },
+  { id: "sl4", productId: "p26", productName: "Levrone Shaaboom Pump 385g",   quantity: 1, unitPrice: 22, total: 22,  paymentMethod: "cash",     currency: "usd", createdAt: "2026-04-14T10:00:00Z", createdBy: "s3", isReversal: false },
+  { id: "sl5", productId: "p30", productName: "Levrone GOLD Glutamine 300g",  quantity: 1, unitPrice: 13, total: 13,  paymentMethod: "cash",     currency: "usd", createdAt: "2026-04-14T11:30:00Z", createdBy: "s4", isReversal: false },
+  { id: "sl6", productId: "p02", productName: "Levrone GOLD Iso 2kg",         quantity: 1, unitPrice: 57, total: 57,  paymentMethod: "cash",     currency: "usd", createdAt: "2026-04-14T12:00:00Z", createdBy: "s3", isReversal: false },
+  { id: "sl7", productId: "p33", productName: "R-Weiler Focus 300g",          quantity: 2, unitPrice: 13, total: 26,  paymentMethod: "transfer", currency: "usd", createdAt: "2026-04-14T13:45:00Z", createdBy: "s3", isReversal: false },
 ];
 
 export const EXPENSES: Expense[] = [

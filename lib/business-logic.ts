@@ -1,36 +1,39 @@
-import { PlanType, OfferType, ExpenseCategory, ProductCategory } from "./types";
+import { PlanType, OfferType, ProductCategory } from "./types";
 
 // ============================================================
 // حساب مدة الاشتراك
 // ============================================================
 
 const PLAN_DAYS: Record<PlanType, number> = {
-  daily: 1,
   "1_month": 30,
   "3_months": 90,
-  "4_months": 120,
+  "6_months": 180,
   "9_months": 270,
   "12_months": 365,
 };
 
+export const PLAN_PRICES: Record<PlanType, number> = {
+  "1_month": 35,
+  "3_months": 90,
+  "6_months": 170,
+  "9_months": 235,
+  "12_months": 300,
+};
+
 const OFFER_BONUS_DAYS: Record<OfferType, number> = {
   none: 0,
-  "4_plus_1_free": 30,
-  "3_plus_half_free": 15,
-  "9_plus_1.5_free": 45,
-  "12_plus_2_free": 60,
-  married_couple: 0,
-  college_student: 0,
+  referral_4: 30,
+  referral_9: 60,
+  couple: 0,
+  corporate: 0,
 };
 
 const OFFER_DISCOUNT_PERCENT: Record<OfferType, number> = {
   none: 0,
-  "4_plus_1_free": 0,
-  "3_plus_half_free": 0,
-  "9_plus_1.5_free": 0,
-  "12_plus_2_free": 0,
-  married_couple: 15,
-  college_student: 20,
+  referral_4: 0,
+  referral_9: 0,
+  couple: 0,
+  corporate: 15,
 };
 
 export function calculateEndDate(
@@ -55,18 +58,19 @@ export function calculateRemainingDays(endDate: string): number {
 
 export function calculateDiscountedPrice(
   basePrice: number,
-  offer: OfferType
+  offer: OfferType,
+  plan?: PlanType
 ): number {
+  if (offer === "couple" && plan === "1_month") return 60;
   const discount = OFFER_DISCOUNT_PERCENT[offer];
   return Math.round(basePrice * (1 - discount / 100));
 }
 
 export function getPlanLabel(plan: PlanType): string {
   const labels: Record<PlanType, string> = {
-    daily: "يومي",
     "1_month": "شهر واحد",
     "3_months": "٣ أشهر",
-    "4_months": "٤ أشهر",
+    "6_months": "٦ أشهر",
     "9_months": "٩ أشهر",
     "12_months": "١٢ شهر",
   };
@@ -76,12 +80,10 @@ export function getPlanLabel(plan: PlanType): string {
 export function getOfferLabel(offer: OfferType): string {
   const labels: Record<OfferType, string> = {
     none: "بدون عرض",
-    "4_plus_1_free": "٤ أشهر + شهر مجاناً",
-    "3_plus_half_free": "٣ أشهر + نصف شهر مجاناً",
-    "9_plus_1.5_free": "٩ أشهر + شهر ونصف مجاناً",
-    "12_plus_2_free": "١٢ شهر + شهرين مجاناً",
-    married_couple: "عرض المتزوجين (خصم ١٥٪)",
-    college_student: "عرض الطلاب (خصم ٢٠٪)",
+    referral_4: "إحالة ٤ أصدقاء (شهر مجاناً)",
+    referral_9: "إحالة ٩ أصدقاء (شهرين مجاناً)",
+    couple: "عرض الزوجين ($60 لاثنين — شهر فقط)",
+    corporate: "شركات / بنك (خصم ١٥٪)",
   };
   return labels[offer];
 }
@@ -181,12 +183,15 @@ export function getCategoryLabel(cat: string): string {
 
 export function getProductCategoryLabel(cat: ProductCategory): string {
   const labels: Record<ProductCategory, string> = {
-    supplements: "مكملات",
-    wearables: "ملابس رياضية",
-    protein_cups: "أكواب بروتين",
-    bca_drinks: "مشروبات BCAA",
-    meals: "وجبات",
-    other: "أخرى",
+    protein:     "بروتين",
+    mass_gainer: "ماس جينر",
+    creatine:    "كرياتين",
+    amino:       "أمينو",
+    pre_workout: "بري-ورك أوت",
+    fat_burner:  "حرق دهون",
+    health:      "صحة وتعافي",
+    focus:       "تركيز وأداء",
+    other:       "أخرى",
   };
   return labels[cat];
 }
