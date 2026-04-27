@@ -222,7 +222,9 @@ const StoreContext = createContext<StoreContextType>({
 });
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [state, setStateRaw] = useState<StoreState>(INITIAL_STATE);
+  // Lazy initializer reads localStorage synchronously on first render —
+  // no INITIAL_STATE flash, data is available before the first paint.
+  const [state, setStateRaw] = useState<StoreState>(loadState);
   const stateRef = useRef(state);
 
   const setState = useCallback((updater: (prev: StoreState) => StoreState) => {
@@ -232,12 +234,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       saveState(next);
       return next;
     });
-  }, []);
-
-  useEffect(() => {
-    const loaded = loadState();
-    setStateRaw(loaded);
-    stateRef.current = loaded;
   }, []);
 
   useEffect(() => {

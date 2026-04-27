@@ -57,9 +57,33 @@ const LOCAL_ACCOUNTS: Array<{ email: string; displayName: string; role: AppRole 
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Synchronous local-mode session read — runs before first render so there
+// is no loading flash when the page is refreshed while logged in.
+function readLocalUser(): AuthUser | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const stored = localStorage.getItem(LOCAL_KEY);
+    return stored ? (JSON.parse(stored) as AuthUser) : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearSupabaseStorage() {
+  try {
+    Object.keys(localStorage)
+      .filter((k) => k.startsWith("sb-") || k.includes("supabase"))
+      .forEach((k) => localStorage.removeItem(k));
+  } catch {}
+}
+
+// If the Supabase session check takes longer than this, treat it as stale.
+const SESSION_TIMEOUT_MS = 4000;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Local mode: initialize synchronously so refresh never shows a loading screen.
+  const [user, setUser] = useState<AuthUser | null>(() => IS_LOCAL ? readLocalUser() : null);
+  const [loading, setLoading] = useState(!IS_LOCAL);
   const supabase = supabaseBrowser();
 
   const loadProfile = useCallback(
@@ -81,35 +105,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    // ── local mode: restore session from localStorage only ──
-    if (IS_LOCAL) {
-      try {
-        const stored = localStorage.getItem(LOCAL_KEY);
-        if (stored) setUser(JSON.parse(stored) as AuthUser);
-      } catch {}
-      setLoading(false);
-      return;
-    }
+    // Local mode is already resolved synchronously above — nothing to do.
+    if (IS_LOCAL) return;
 
-    // ── Supabase mode: bootstrap from existing session ──
-    // Wipe stale/partial Supabase tokens before attempting session restore.
-    // A lagged or timed-out login can leave corrupted sb-* keys that cause
-    // the auth state to hang indefinitely on subsequent page loads.
+    // ── Supabase mode: restore session with a hard timeout ──
+    // If getSession() doesn't respond within SESSION_TIMEOUT_MS we assume the
+    // stored tokens are stale, purge them, and show the login screen immediately
+    // rather than hanging until the 30-second network timeout fires.
     let alive = true;
     (async () => {
       let sess: { user?: { id: string; email?: string } } | null = null;
       try {
-        const { data, error } = await supabase.auth.getSession();
+        const timeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("session-timeout")), SESSION_TIMEOUT_MS)
+        );
+        const { data, error } = await Promise.race([
+          supabase.auth.getSession(),
+          timeout,
+        ]);
         if (error) throw error;
         sess = data.session;
       } catch {
-        // Stale or invalid session — purge all Supabase localStorage keys so
-        // the next load starts clean instead of hanging again.
-        try {
-          Object.keys(localStorage)
-            .filter((k) => k.startsWith("sb-") || k.includes("supabase"))
-            .forEach((k) => localStorage.removeItem(k));
-        } catch {}
+        // Stale tokens or network timeout — purge so next load starts clean.
+        clearSupabaseStorage();
         sess = null;
       }
       if (sess?.user && alive) {
