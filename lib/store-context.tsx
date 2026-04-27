@@ -10,8 +10,8 @@ import {
   ReactNode,
   useMemo,
 } from "react";
-import { Product, Sale, Expense, PaymentMethod, Subscription } from "./types";
-import { PRODUCTS, SALES, EXPENSES, SUBSCRIPTIONS } from "./mock-data";
+import { Product, Sale, Expense, PaymentMethod, Subscription, FoodItem } from "./types";
+import { PRODUCTS, SALES, EXPENSES, SUBSCRIPTIONS, FOOD_ITEMS } from "./mock-data";
 import { generateId } from "./business-logic";
 
 // ─── InBody ───────────────────────────────────────────────────────────────────
@@ -72,6 +72,12 @@ export interface LocalSession {
   actualCash?: number;
   closedAt?: string;
   status: "open" | "closed";
+  // Income snapshot recorded at close time
+  subsIncome?: number;
+  storeIncome?: number;
+  mealsIncome?: number;
+  inbodyIncome?: number;
+  totalIncome?: number;
 }
 
 // ─── Full store state ─────────────────────────────────────────────────────────
@@ -86,8 +92,10 @@ export interface StoreState {
   inBodyPrices: { member: number; nonMember: number };
   expenseRates: ExpenseRate[];
   exchangeRate: number;
+  foodItems: FoodItem[];
   // Local session
   localSession: LocalSession | null;
+  sessionHistory: LocalSession[];
   lastClosingCash: number;
 }
 
@@ -101,6 +109,11 @@ export interface StoreContextType extends StoreState {
   updateProductCost: (productId: string, cost: number) => void;
   updateProductPrice: (productId: string, cost: number, price: number) => void;
   adjustStock: (productId: string, delta: number) => void;
+  addProduct: (product: Omit<Product, "id" | "createdAt">) => void;
+  // Food items
+  addFoodItem: (item: Omit<FoodItem, "id">) => void;
+  updateFoodItem: (id: string, updates: Partial<FoodItem>) => void;
+  removeFoodItem: (id: string) => void;
   // Subscriptions
   addSubscription: (sub: Omit<Subscription, "id" | "createdAt">) => void;
   cancelSubscriptionLocal: (id: string) => void;
@@ -142,7 +155,9 @@ const INITIAL_STATE: StoreState = {
   inBodyPrices: { member: 60000, nonMember: 100000 },
   expenseRates: [],
   exchangeRate: 13200,
+  foodItems: FOOD_ITEMS,
   localSession: null,
+  sessionHistory: [],
   lastClosingCash: 0,
 };
 
@@ -180,6 +195,10 @@ const StoreContext = createContext<StoreContextType>({
   updateProductCost: () => {},
   updateProductPrice: () => {},
   adjustStock: () => {},
+  addProduct: () => {},
+  addFoodItem: () => {},
+  updateFoodItem: () => {},
+  removeFoodItem: () => {},
   addSubscription: () => {},
   cancelSubscriptionLocal: () => {},
   addInBodySession: () => {},
@@ -328,6 +347,30 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }));
   }, [setState]);
 
+  const addProduct = useCallback((product: Omit<Product, "id" | "createdAt">) => {
+    const full: Product = { ...product, id: generateId(), createdAt: new Date().toISOString().split("T")[0] };
+    setState((prev) => ({ ...prev, products: [...prev.products, full] }));
+  }, [setState]);
+
+  const addFoodItem = useCallback((item: Omit<FoodItem, "id">) => {
+    const full: FoodItem = { ...item, id: `food-${generateId()}` };
+    setState((prev) => ({ ...prev, foodItems: [...prev.foodItems, full] }));
+  }, [setState]);
+
+  const updateFoodItem = useCallback((id: string, updates: Partial<FoodItem>) => {
+    setState((prev) => ({
+      ...prev,
+      foodItems: prev.foodItems.map((f) => f.id === id ? { ...f, ...updates } : f),
+    }));
+  }, [setState]);
+
+  const removeFoodItem = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      foodItems: prev.foodItems.filter((f) => f.id !== id),
+    }));
+  }, [setState]);
+
   const addInBodySession = useCallback(
     (session: Omit<InBodySession, "id" | "createdAt">) => {
       const full: InBodySession = {
@@ -458,6 +501,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setState((prev) => {
       if (prev.localSession?.status === "open") return prev;
       const opening = openingCash !== undefined ? openingCash : prev.lastClosingCash;
+      // Archive previous closed session to history before opening a new one
+      const newHistory: LocalSession[] = prev.localSession?.status === "closed"
+        ? [prev.localSession, ...prev.sessionHistory.filter((s) => s.id !== prev.localSession!.id)]
+        : prev.sessionHistory;
       return {
         ...prev,
         localSession: {
@@ -466,6 +513,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           openedAt: new Date().toISOString(),
           status: "open",
         },
+        sessionHistory: newHistory,
       };
     });
   }, [setState]);
@@ -473,14 +521,37 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const closeLocalSession = useCallback((actualCash: number) => {
     setState((prev) => {
       if (!prev.localSession || prev.localSession.status !== "open") return prev;
+      const sessionStart = prev.localSession.openedAt;
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const inSess = (t: string) => t.startsWith(todayStr) && (!sessionStart || t >= sessionStart);
+
+      const subsIncome = prev.subscriptions
+        .filter((s) => s.status !== "cancelled" && inSess(s.createdAt))
+        .reduce((sum, s) => sum + s.paidAmount, 0);
+      const storeIncome = prev.sales
+        .filter((s) => !s.isReversal && !s.cancelled && s.source !== "kitchen" && inSess(s.createdAt))
+        .reduce((sum, s) => sum + s.total, 0);
+      const mealsIncome = prev.sales
+        .filter((s) => !s.isReversal && !s.cancelled && s.source === "kitchen" && inSess(s.createdAt))
+        .reduce((sum, s) => sum + s.total, 0);
+      const inbodyIncome = prev.inBodySessions
+        .filter((s) => !s.cancelled && inSess(s.createdAt))
+        .reduce((sum, s) => sum + s.priceUSD, 0);
+
+      const closedSession: LocalSession = {
+        ...prev.localSession,
+        actualCash,
+        closedAt: new Date().toISOString(),
+        status: "closed",
+        subsIncome,
+        storeIncome,
+        mealsIncome,
+        inbodyIncome,
+        totalIncome: subsIncome + storeIncome + mealsIncome + inbodyIncome,
+      };
       return {
         ...prev,
-        localSession: {
-          ...prev.localSession,
-          actualCash,
-          closedAt: new Date().toISOString(),
-          status: "closed",
-        },
+        localSession: closedSession,
         lastClosingCash: actualCash,
       };
     });
@@ -527,6 +598,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     updateProductCost,
     updateProductPrice,
     adjustStock,
+    addProduct,
+    addFoodItem,
+    updateFoodItem,
+    removeFoodItem,
     addSubscription,
     cancelSubscriptionLocal,
     addInBodySession,

@@ -52,6 +52,18 @@ export interface Subscription {
   lockedAt?: string;
 }
 
+// --- KITCHEN / FOOD ITEMS ---
+export type FoodItemCategory = "meals" | "breakfast" | "salads" | "drinks" | "snacks" | "other";
+
+export interface FoodItem {
+  id: string;
+  name: string;
+  category: FoodItemCategory;
+  cost?: number;
+  price_usd: number;
+  is_active: boolean;
+}
+
 // --- STORE / INVENTORY ---
 export type ProductCategory =
   | "protein"
@@ -104,6 +116,8 @@ export type ExpenseCategory =
   | "marketing"
   | "miscellaneous";
 
+export type ExpenseFrequency = "monthly" | "weekly" | "daily" | "one_time";
+
 export type PaymentMethod = "cash" | "card" | "transfer" | "other";
 
 export type Currency = "syp" | "usd";
@@ -115,6 +129,7 @@ export interface Expense {
   amount: number;
   paymentMethod: PaymentMethod;
   currency?: Currency;
+  frequency?: ExpenseFrequency;
   date: string;
   createdAt: string;
   createdBy: string;

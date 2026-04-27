@@ -1,6 +1,6 @@
 import {
   Member, Subscription, Product, Sale, Expense, CashSession,
-  AuditEntry, DashboardKPI, WeeklyReview, MonthlyReview, StaffUser,
+  AuditEntry, DashboardKPI, WeeklyReview, MonthlyReview, StaffUser, FoodItem,
 } from "./types";
 import { calculateRemainingDays } from "./business-logic";
 
@@ -58,6 +58,14 @@ export const SUBSCRIPTIONS: Subscription[] = [
     paymentStatus: "paid", paymentMethod: "cash", status: "frozen",
     createdAt: "2025-12-01T09:30:00Z", createdBy: "admin",
   },
+];
+
+export const FOOD_ITEMS: FoodItem[] = [
+  { id: "food-1", name: "أرز",   category: "meals",   price_usd: 3.00, is_active: true },
+  { id: "food-2", name: "دجاج",  category: "meals",   price_usd: 5.00, is_active: true },
+  { id: "food-3", name: "سلطة",  category: "salads",  price_usd: 2.50, is_active: true },
+  { id: "food-4", name: "تونة",  category: "meals",   price_usd: 4.00, is_active: true },
+  { id: "food-5", name: "شوفان", category: "meals",   price_usd: 2.00, is_active: true },
 ];
 
 export const PRODUCTS: Product[] = [

@@ -23,6 +23,7 @@ import CalculationsBlock from "@/components/CalculationsBlock";
 import InBodyBlock from "@/components/InBodyBlock";
 import KitchenBlock from "@/components/KitchenBlock";
 import LoginScreen from "@/components/LoginScreen";
+import ManagerDashboard from "@/components/ManagerDashboard";
 import {
   Shield,
   ChevronDown,
@@ -65,8 +66,9 @@ export default function DashboardPage() {
 }
 
 function AppRouter() {
-  const { user } = useAuth();
+  const { user, isManager } = useAuth();
   if (!user) return <LoginScreen />;
+  if (isManager) return <ManagerDashboard />;
   return (
     <>
       <DashboardContent />
