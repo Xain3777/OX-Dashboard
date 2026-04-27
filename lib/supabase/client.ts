@@ -12,7 +12,34 @@
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
+// All Supabase requests go through this fetch wrapper so they self-cancel
+// after 10 s instead of hanging forever on network blips or server hiccups.
+function fetchWithTimeout(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  const signal = init?.signal
+    ? anySignal([init.signal, controller.signal])
+    : controller.signal;
+  return fetch(url, { ...init, signal }).finally(() => clearTimeout(timer));
+}
+
+// Combines multiple AbortSignals — aborts when the first one fires.
+function anySignal(signals: AbortSignal[]): AbortSignal {
+  const controller = new AbortController();
+  for (const s of signals) {
+    if (s.aborted) { controller.abort(); break; }
+    s.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+  return controller.signal;
+}
+
 let _client: SupabaseClient | null = null;
+
+export function isSupabaseConfigured(): boolean {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  return !!(url && key && !url.includes("placeholder") && key !== "placeholder-anon-key");
+}
 
 export function supabaseBrowser(): SupabaseClient {
   if (_client) return _client;
@@ -25,6 +52,9 @@ export function supabaseBrowser(): SupabaseClient {
         autoRefreshToken: true,
         detectSessionInUrl: false,
         storageKey: "ox-auth",
+      },
+      global: {
+        fetch: fetchWithTimeout,
       },
     },
   );

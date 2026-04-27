@@ -8,7 +8,7 @@ import {
   useCallback,
   ReactNode,
 } from "react";
-import { supabaseBrowser } from "./supabase/client";
+import { supabaseBrowser, isSupabaseConfigured } from "./supabase/client";
 
 export type AppRole = "manager" | "reception";
 
@@ -91,10 +91,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = useCallback(
     async (email: string, password: string) => {
-      // 30s hard timeout so a hung network call surfaces an error instead
-      // of leaving the login button stuck on the busy state forever.
+      if (!isSupabaseConfigured()) {
+        return { error: "إعدادات Supabase مفقودة — تأكد من وجود ملف .env.local وإعادة تشغيل السيرفر." };
+      }
+
+      // 15s timeout: paused Supabase projects hang silently instead of
+      // returning an error, so we surface it early with a targeted message.
       const timeoutPromise = new Promise<{ error: string }>((resolve) =>
-        setTimeout(() => resolve({ error: "انتهت مهلة الاتصال بالخادم — تحقق من الاتصال بالإنترنت أو إعدادات Supabase." }), 30000)
+        setTimeout(() => resolve({ error: "انتهت مهلة الاتصال — قد يكون مشروع Supabase متوقفاً (pause). افتح لوحة Supabase وتأكد أنه نشط." }), 15000)
       );
       const signInPromise = supabase.auth
         .signInWithPassword({ email, password })
@@ -106,10 +110,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
           return {};
         })
-        .catch((e) => {
+        .catch((e: Error) => {
           // eslint-disable-next-line no-console
           console.error("[auth] signIn fetch error:", e);
-          return { error: String(e?.message ?? e) };
+          const msg = e?.message ?? String(e);
+          if (msg.toLowerCase().includes("failed to fetch") || msg.toLowerCase().includes("networkerror")) {
+            return { error: "تعذّر الوصول إلى الخادم — تحقق من الاتصال بالإنترنت." };
+          }
+          return { error: msg };
         });
       return Promise.race([signInPromise, timeoutPromise]);
     },

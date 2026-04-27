@@ -33,7 +33,13 @@ export default function LoginScreen() {
     setBusy(true);
     const { error } = await signIn(email, password);
     setBusy(false);
-    if (error) setError(error.includes("Invalid login") || error.includes("credentials") ? "الموظف أو كلمة المرور غير صحيحة." : error);
+    if (error) {
+      if (error.includes("Invalid login") || error.includes("credentials") || error.includes("invalid_credentials")) {
+        setError("الموظف أو كلمة المرور غير صحيحة.");
+      } else {
+        setError(error);
+      }
+    }
   }
 
   return (
