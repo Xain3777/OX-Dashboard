@@ -335,7 +335,7 @@ function DashboardContent() {
       {/* === المحتوى الرئيسي === */}
       <main className="max-w-[1280px] mx-auto px-4 sm:px-6 py-6 space-y-6">
 
-        <KPIStrip hideProfit={!isManager} />
+        <KPIStrip />
 
         {/* Cash session — top of page for the active user */}
         <CashSessionBlock />

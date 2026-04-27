@@ -17,8 +17,8 @@ let _client: SupabaseClient | null = null;
 export function supabaseBrowser(): SupabaseClient {
   if (_client) return _client;
   _client = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co",
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key",
     {
       auth: {
         persistSession: true,
