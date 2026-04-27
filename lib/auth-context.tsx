@@ -170,6 +170,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       // ── Supabase mode ──
+      // Wipe stale in-memory session before attempting sign-in. Without this,
+      // a previously-cached token keeps a background refresh running that
+      // conflicts with signInWithPassword and causes it to hang.
+      try { await supabase.auth.signOut({ scope: "local" }); } catch {}
+      clearSupabaseStorage();
+
       const timeoutPromise = new Promise<{ error: string }>((resolve) =>
         setTimeout(() => resolve({ error: "انتهت مهلة الاتصال بالخادم — تحقق من الاتصال بالإنترنت أو إعدادات Supabase." }), 30000)
       );
