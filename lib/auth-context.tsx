@@ -81,9 +81,8 @@ function clearSupabaseStorage() {
 const SESSION_TIMEOUT_MS = 4000;
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  // Local mode: initialize synchronously so refresh never shows a loading screen.
-  const [user, setUser] = useState<AuthUser | null>(() => IS_LOCAL ? readLocalUser() : null);
-  const [loading, setLoading] = useState(!IS_LOCAL);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [loading, setLoading] = useState(true);
   const supabase = supabaseBrowser();
 
   const loadProfile = useCallback(
@@ -105,8 +104,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    // Local mode is already resolved synchronously above — nothing to do.
-    if (IS_LOCAL) return;
+    if (IS_LOCAL) {
+      setUser(readLocalUser());
+      setLoading(false);
+      return;
+    }
 
     // ── Supabase mode: restore session with a hard timeout ──
     // If getSession() doesn't respond within SESSION_TIMEOUT_MS we assume the

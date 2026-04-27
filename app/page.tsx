@@ -66,7 +66,8 @@ export default function DashboardPage() {
 }
 
 function AppRouter() {
-  const { user, isManager } = useAuth();
+  const { user, isManager, loading } = useAuth();
+  if (loading) return <div className="min-h-screen bg-void" />;
   if (!user) return <LoginScreen />;
   if (isManager) return <ManagerDashboard />;
   return (
