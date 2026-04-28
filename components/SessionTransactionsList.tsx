@@ -45,51 +45,55 @@ export default function SessionTransactionsList() {
   }, [supabase, user, isManager]);
 
   const load = useCallback(async () => {
-    const sid = await resolveSession();
-    setSessionId(sid);
-    if (!sid) { setRows([]); return; }
+    try {
+      const sid = await resolveSession();
+      setSessionId(sid);
+      if (!sid) { setRows([]); return; }
 
-    const fetchTable = async <T,>(table: string, select: string) => {
-      const { data } = await supabase
-        .from(table)
-        .select(select)
-        .eq("cash_session_id", sid)
-        .order("created_at", { ascending: false });
-      return (data ?? []) as T[];
-    };
+      const fetchTable = async <T,>(table: string, select: string) => {
+        const { data } = await supabase
+          .from(table)
+          .select(select)
+          .eq("cash_session_id", sid)
+          .order("created_at", { ascending: false });
+        return (data ?? []) as T[];
+      };
 
-    type SaleRow   = { id: string; product_name: string; quantity: number; total: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
-    type SubRow    = { id: string; member_name: string; plan_type: string; paid_amount: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
-    type InBodyRow = { id: string; member_name: string; session_type: string; amount: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
+      type SaleRow   = { id: string; product_name: string; quantity: number; total: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
+      type SubRow    = { id: string; member_name: string; plan_type: string; paid_amount: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
+      type InBodyRow = { id: string; member_name: string; session_type: string; amount: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
 
-    const [sales, subs, inbody] = await Promise.all([
-      fetchTable<SaleRow>("sales",            "id, product_name, quantity, total, created_at, cancelled_at, cancelled_reason"),
-      fetchTable<SubRow>("subscriptions",     "id, member_name, plan_type, paid_amount, created_at, cancelled_at, cancelled_reason"),
-      fetchTable<InBodyRow>("inbody_sessions","id, member_name, session_type, amount, created_at, cancelled_at, cancelled_reason"),
-    ]);
+      const [sales, subs, inbody] = await Promise.all([
+        fetchTable<SaleRow>("sales",            "id, product_name, quantity, total, created_at, cancelled_at, cancelled_reason"),
+        fetchTable<SubRow>("subscriptions",     "id, member_name, plan_type, paid_amount, created_at, cancelled_at, cancelled_reason"),
+        fetchTable<InBodyRow>("inbody_sessions","id, member_name, session_type, amount, created_at, cancelled_at, cancelled_reason"),
+      ]);
 
-    const all: Row[] = [
-      ...sales.map((s): Row => ({
-        id: s.id, kind: "sale", table: "sales",
-        label: `${s.quantity}× ${s.product_name}`,
-        amount: Number(s.total),
-        createdAt: s.created_at, cancelledAt: s.cancelled_at, cancelledReason: s.cancelled_reason,
-      })),
-      ...subs.map((s): Row => ({
-        id: s.id, kind: "subscription", table: "subscriptions",
-        label: `${s.member_name} (${s.plan_type})`,
-        amount: Number(s.paid_amount),
-        createdAt: s.created_at, cancelledAt: s.cancelled_at, cancelledReason: s.cancelled_reason,
-      })),
-      ...inbody.map((s): Row => ({
-        id: s.id, kind: "inbody", table: "inbody_sessions",
-        label: `${s.member_name} — ${s.session_type}`,
-        amount: Number(s.amount),
-        createdAt: s.created_at, cancelledAt: s.cancelled_at, cancelledReason: s.cancelled_reason,
-      })),
-    ];
-    all.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    setRows(all);
+      const all: Row[] = [
+        ...sales.map((s): Row => ({
+          id: s.id, kind: "sale", table: "sales",
+          label: `${s.quantity}× ${s.product_name}`,
+          amount: Number(s.total),
+          createdAt: s.created_at, cancelledAt: s.cancelled_at, cancelledReason: s.cancelled_reason,
+        })),
+        ...subs.map((s): Row => ({
+          id: s.id, kind: "subscription", table: "subscriptions",
+          label: `${s.member_name} (${s.plan_type})`,
+          amount: Number(s.paid_amount),
+          createdAt: s.created_at, cancelledAt: s.cancelled_at, cancelledReason: s.cancelled_reason,
+        })),
+        ...inbody.map((s): Row => ({
+          id: s.id, kind: "inbody", table: "inbody_sessions",
+          label: `${s.member_name} — ${s.session_type}`,
+          amount: Number(s.amount),
+          createdAt: s.created_at, cancelledAt: s.cancelled_at, cancelledReason: s.cancelled_reason,
+        })),
+      ];
+      all.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setRows(all);
+    } catch (e) {
+      console.error("SessionTransactionsList load failed:", e);
+    }
   }, [supabase, resolveSession]);
 
   useEffect(() => { void load(); }, [load]);
@@ -118,17 +122,22 @@ export default function SessionTransactionsList() {
     if (!confirming || !user) return;
     setBusy(true);
     setErr(null);
-    const r = await cancelTransaction({
-      user: { id: user.id, displayName: user.displayName },
-      table: confirming.row.table,
-      id: confirming.row.id,
-      reason: reason.trim() || undefined,
-    });
-    setBusy(false);
-    if (r.error) { setErr(r.error); return; }
-    setConfirming(null);
-    setReason("");
-    await load();
+    try {
+      const r = await cancelTransaction({
+        user: { id: user.id, displayName: user.displayName },
+        table: confirming.row.table,
+        id: confirming.row.id,
+        reason: reason.trim() || undefined,
+      });
+      if (r.error) { setErr(r.error); return; }
+      setConfirming(null);
+      setReason("");
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "حدث خطأ غير متوقع");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (

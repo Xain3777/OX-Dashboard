@@ -137,11 +137,15 @@ export async function pushSubscription(opts: {
   paymentMethod?: string;
   currency?: Currency;
   exchangeRate: number;
+  groupId?: string;
 }): Promise<{ data?: DbRow; error?: string }> {
   try {
     assertUser(opts.user);
     if (!opts.exchangeRate || opts.exchangeRate <= 0) return { error: "سعر الصرف غير صالح" };
     if (opts.paidAmount < 0 || opts.amount < 0) return { error: "مبلغ غير صالح" };
+
+    if (opts.offer === undefined) opts.offer = "none";
+    if (opts.offer === "none") opts.groupId = undefined;
 
     const supabase = supabaseBrowser();
     const cashSessionId = await getOpenSessionId(opts.user.id);
@@ -167,6 +171,7 @@ export async function pushSubscription(opts: {
         exchange_rate: opts.exchangeRate,
         amount_syp: amountSYP,
         status: "active",
+        group_id: opts.groupId ?? null,
         cash_session_id: cashSessionId,
         created_by: opts.user.id,
       })
@@ -378,7 +383,7 @@ export async function cancelTransaction(opts: {
 
     const { data: row, error: readErr } = await supabase
       .from(opts.table)
-      .select("amount_syp, currency, cancelled_at, member_name, product_name, description")
+      .select("*")
       .eq("id", opts.id)
       .maybeSingle();
     if (readErr) { logError(opts.table, "select-for-cancel", readErr); return { error: readErr.message }; }
@@ -575,6 +580,118 @@ export async function closeCashSession(
     return { data: (data as DbRow[])[0] };
   } catch (e) {
     logError("cash_sessions", "update-close", e);
+    return { error: String(e) };
+  }
+}
+
+// ── Private training sessions ─────────────────────────────────
+
+function ptGroupPrice(n: number): number {
+  return n <= 2 ? 10 : n <= 5 ? 15 : 18;
+}
+
+export async function pushPrivateSession(opts: {
+  user: CurrentUser;
+  numberOfPlayers: number;
+  playerNames: string[];
+  groupId?: string;
+  notes?: string;
+  exchangeRate: number;
+}): Promise<{ data?: DbRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.exchangeRate || opts.exchangeRate <= 0) return { error: "سعر الصرف غير صالح" };
+    if (opts.numberOfPlayers <= 0) return { error: "عدد اللاعبين يجب أن يكون أكبر من صفر" };
+
+    const BASE_TRAINER_FEE = 18;
+    const groupPrice = ptGroupPrice(opts.numberOfPlayers);
+    const totalPrice = BASE_TRAINER_FEE + groupPrice;
+    const amountSYP = Math.round(totalPrice * opts.exchangeRate);
+
+    const supabase = supabaseBrowser();
+    const cashSessionId = await getOpenSessionId(opts.user.id);
+
+    const { data, error } = await supabase
+      .from("private_sessions")
+      .insert({
+        number_of_players: opts.numberOfPlayers,
+        player_names: opts.playerNames.filter((n) => n.trim()),
+        base_trainer_fee: BASE_TRAINER_FEE,
+        group_price: groupPrice,
+        total_price: totalPrice,
+        currency: "usd",
+        exchange_rate: opts.exchangeRate,
+        amount_syp: amountSYP,
+        group_id: opts.groupId ?? null,
+        notes: opts.notes?.trim() || null,
+        cash_session_id: cashSessionId,
+        created_by: opts.user.id,
+        created_by_name: opts.user.displayName,
+      })
+      .select()
+      .single();
+
+    if (error) { logError("private_sessions", "insert", error); return { error: error.message }; }
+    if (!data) { logError("private_sessions", "insert", "no row returned"); return { error: "لم يتم حفظ الجلسة — تحقق من RLS" }; }
+    logSuccess("private_sessions", "insert", data);
+
+    await pushActivity({
+      user: opts.user,
+      action: "private_session_create",
+      description: `تدريب خاص — ${opts.numberOfPlayers} لاعبين — $${totalPrice}`,
+      amountUSD: totalPrice,
+      entityType: "private_session",
+      entityId: (data as DbRow).id as string,
+    });
+    return { data: data as DbRow };
+  } catch (e) {
+    logError("private_sessions", "insert", e);
+    return { error: String(e) };
+  }
+}
+
+// ── Group offers metadata ─────────────────────────────────────
+
+export async function pushGroupOffer(opts: {
+  user: CurrentUser;
+  groupId: string;
+  offerType: "referral" | "couple" | "corporate";
+  members: { name: string; userId?: string }[];
+  referralCount?: number;
+  rewardType?: string;
+  rewardValue?: number;
+  discountPercent?: number;
+  organizationType?: string;
+  priceApplied?: number;
+}): Promise<{ data?: DbRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    const supabase = supabaseBrowser();
+    const cashSessionId = await getOpenSessionId(opts.user.id);
+
+    const { data, error } = await supabase
+      .from("group_offers")
+      .insert({
+        group_id: opts.groupId,
+        offer_type: opts.offerType,
+        members: opts.members,
+        referral_count: opts.referralCount ?? null,
+        reward_type: opts.rewardType ?? null,
+        reward_value: opts.rewardValue ?? null,
+        discount_percent: opts.discountPercent ?? null,
+        organization_type: opts.organizationType ?? null,
+        price_applied: opts.priceApplied ?? null,
+        cash_session_id: cashSessionId,
+        created_by: opts.user.id,
+      })
+      .select()
+      .single();
+
+    if (error) { logError("group_offers", "insert", error); return { error: error.message }; }
+    logSuccess("group_offers", "insert", data);
+    return { data: data as DbRow };
+  } catch (e) {
+    logError("group_offers", "insert", e);
     return { error: String(e) };
   }
 }
