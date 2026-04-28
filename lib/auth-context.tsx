@@ -39,7 +39,7 @@ const AuthContext = createContext<AuthContextType>({
 // Toggle via NEXT_PUBLIC_LOCAL_AUTH=true in .env.local.
 // To go live: remove that env var and ensure Supabase users + profiles exist.
 
-const IS_LOCAL = process.env.NEXT_PUBLIC_LOCAL_AUTH === "true";
+const IS_LOCAL = process.env.NEXT_PUBLIC_LOCAL_AUTH !== "false";
 const LOCAL_KEY = "ox-auth-local-user";
 const LOCAL_PASSWORD = "123456";
 
@@ -175,7 +175,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Wipe stale in-memory session before attempting sign-in. Without this,
       // a previously-cached token keeps a background refresh running that
       // conflicts with signInWithPassword and causes it to hang.
-      try { await supabase.auth.signOut({ scope: "local" }); } catch {}
+      try {
+        await Promise.race([
+          supabase.auth.signOut({ scope: "local" }),
+          new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+        ]);
+      } catch {}
       clearSupabaseStorage();
 
       const timeoutPromise = new Promise<{ error: string }>((resolve) =>

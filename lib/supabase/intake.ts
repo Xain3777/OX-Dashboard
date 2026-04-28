@@ -11,7 +11,7 @@ export type Currency = "syp" | "usd";
 // When NEXT_PUBLIC_LOCAL_AUTH=true all writes are no-ops and reads return
 // sensible defaults. Remove this block (and IS_LOCAL guards below) before
 // going to production with a real Supabase project.
-const IS_LOCAL = process.env.NEXT_PUBLIC_LOCAL_AUTH === "true";
+const IS_LOCAL = process.env.NEXT_PUBLIC_LOCAL_AUTH !== "false";
 function localId() { return `local-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
 
 export interface CurrentUser {
