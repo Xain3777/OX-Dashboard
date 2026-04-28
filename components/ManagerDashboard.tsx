@@ -10,11 +10,12 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
 import type { LocalSession } from "@/lib/store-context";
-import type { FoodItem, FoodItemCategory, ProductCategory, ExpenseCategory, ExpenseFrequency } from "@/lib/types";
+import type { FoodItem, FoodItemCategory, ProductCategory, ExpenseCategory, ExpenseFrequency, Expense } from "@/lib/types";
 import type { Product } from "@/lib/types";
 import {
   getPlanLabel, getOfferLabel, getProductCategoryLabel, getCategoryLabel,
 } from "@/lib/business-logic";
+import { pushExpense } from "@/lib/supabase/intake";
 import KPIStrip from "@/components/KPIStrip";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -775,13 +776,34 @@ function ExpensesManager() {
   );
   const total = useMemo(() => sorted.reduce((s, e) => s + e.amount, 0), [sorted]);
 
-  function handleAdd() {
+  async function handleAdd() {
     setError(""); setSuccess("");
     if (!description.trim()) { setError("أدخل وصف المصروف."); return; }
     const a = parseFloat(amount);
     if (isNaN(a) || a <= 0) { setError("المبلغ غير صحيح."); return; }
     if (!user) return;
-    addExpense({ description: description.trim(), category, amount: a, paymentMethod: "cash", currency: "usd", frequency, date: new Date().toISOString().slice(0, 10), createdBy: user.id });
+    const r = await pushExpense({
+      user: { id: user.id, displayName: user.displayName },
+      description: description.trim(),
+      amount: a,
+      currency: "usd",
+      category,
+    });
+    if (r.error) { setError(r.error); return; }
+    const row = r.data!;
+    const full: Expense = {
+      id: String(row.id),
+      description: description.trim(),
+      category,
+      amount: a,
+      paymentMethod: "cash",
+      currency: "usd",
+      frequency,
+      date: new Date().toISOString().slice(0, 10),
+      createdAt: String(row.created_at ?? new Date().toISOString()),
+      createdBy: user.id,
+    };
+    addExpense(full);
     setDescription(""); setAmount("");
     setSuccess("تم تسجيل المصروف."); setTimeout(() => setSuccess(""), 2000);
   }

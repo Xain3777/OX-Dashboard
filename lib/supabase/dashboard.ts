@@ -6,7 +6,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { supabaseBrowser } from "./client";
 
-const IS_LOCAL = process.env.NEXT_PUBLIC_LOCAL_AUTH !== "false";
 
 export interface LiveKPI {
   todayRevenueUSD: number;
@@ -62,7 +61,6 @@ async function sumUSD(
 }
 
 export async function fetchLiveKPI(): Promise<LiveKPI> {
-  if (IS_LOCAL) return ZERO;
   const supabase = supabaseBrowser();
   const today = startOfTodayISO();
   const month = startOfMonthISO();
@@ -149,7 +147,7 @@ const REALTIME_TABLES = [
 export function useLiveKPI() {
   const supabase = supabaseBrowser();
   const [kpi, setKpi] = useState<LiveKPI>(ZERO);
-  const [loading, setLoading] = useState(!IS_LOCAL);
+  const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     try {
@@ -161,7 +159,6 @@ export function useLiveKPI() {
   }, []);
 
   useEffect(() => {
-    if (IS_LOCAL) { setLoading(false); return; }
     void refresh();
     const channel = supabase.channel("live-kpi");
     for (const table of REALTIME_TABLES) {

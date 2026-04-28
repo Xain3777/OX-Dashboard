@@ -4,12 +4,16 @@ import { useMemo, useState } from "react";
 import { ChefHat, Plus, Minus, AlertTriangle, CheckCircle, Undo2 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
+import { useCurrency } from "@/lib/currency-context";
+import { pushSale, cancelTransaction } from "@/lib/supabase/intake";
+import type { Sale } from "@/lib/types";
 
 interface QtyMap { [id: string]: number }
 
 export default function KitchenBlock() {
   const { user } = useAuth();
   const { foodItems, addSale, cancelSale, sales } = useStore();
+  const { exchangeRate } = useCurrency();
 
   const [qty,     setQty]     = useState<QtyMap>({});
   const [busy,    setBusy]    = useState(false);
@@ -39,27 +43,45 @@ export default function KitchenBlock() {
   const inc = (id: string) => setQty((q) => ({ ...q, [id]: (q[id] ?? 0) + 1 }));
   const dec = (id: string) => setQty((q) => ({ ...q, [id]: Math.max(0, (q[id] ?? 0) - 1) }));
 
-  function handleOrder() {
+  async function handleOrder() {
     setError(""); setSuccess("");
     if (!user) { setError("يجب تسجيل الدخول."); return; }
     const lines = activeItems.map((it) => ({ it, q: qty[it.id] ?? 0 })).filter((l) => l.q > 0);
     if (lines.length === 0) { setError("اختر صنفاً واحداً على الأقل."); return; }
 
     setBusy(true);
+    const currentUser = { id: user.id, displayName: user.displayName };
     for (const { it, q } of lines) {
       const unitPrice = Number(it.price_usd);
-      addSale({
-        productId:     it.id,
-        productName:   it.name,
-        quantity:      q,
+      const total = Number((q * unitPrice).toFixed(4));
+      const r = await pushSale({
+        user: currentUser,
+        productName: it.name,
+        quantity: q,
         unitPrice,
-        total:         Number((q * unitPrice).toFixed(4)),
-        currency:      "usd",
-        source:        "kitchen",
+        total,
+        currency: "usd",
+        exchangeRate,
+        source: "kitchen",
         paymentMethod: "cash",
-        createdBy:     user.id,
-        isReversal:    false,
       });
+      if (r.error) { setError(r.error); setBusy(false); return; }
+      const row = r.data!;
+      const sale: Sale = {
+        id: String(row.id),
+        productId: it.id,
+        productName: it.name,
+        quantity: q,
+        unitPrice,
+        total,
+        paymentMethod: "cash",
+        currency: "usd",
+        source: "kitchen",
+        createdAt: String(row.created_at ?? new Date().toISOString()),
+        createdBy: user.id,
+        isReversal: false,
+      };
+      addSale(sale);
     }
     setBusy(false);
     setSuccess(`تم تسجيل الطلب — $${totalUSD.toFixed(2)}`);
@@ -175,7 +197,15 @@ export default function KitchenBlock() {
                 </span>
                 {!s.cancelled ? (
                   <button
-                    onClick={() => cancelSale(s.id)}
+                    onClick={async () => {
+                      if (!user) return;
+                      const r = await cancelTransaction({
+                        user: { id: user.id, displayName: user.displayName },
+                        table: "sales",
+                        id: s.id,
+                      });
+                      if (!r.error) cancelSale(s.id);
+                    }}
                     className="p-1 text-[#555555] hover:text-[#FF3333] transition-colors cursor-pointer"
                     title="إلغاء"
                   >

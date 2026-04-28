@@ -29,7 +29,7 @@ import { STAFF } from "@/lib/mock-data";
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
 import { useCurrency } from "@/lib/currency-context";
-import { pushSale } from "@/lib/supabase/intake";
+import { pushSale, cancelTransaction } from "@/lib/supabase/intake";
 import BarcodeScanner, { type CatalogItem } from "@/components/BarcodeScanner";
 
 // ── Category badge colours ────────────────────────────────────────────────────
@@ -273,7 +273,9 @@ export default function StoreBlock() {
     });
     if (r.error) { setSaleError(r.error); return; }
 
+    const row = r.data!;
     addSale({
+      id:            String(row.id),
       productId:     product.id,
       productName:   product.name,
       quantity:      saleQty,
@@ -281,6 +283,8 @@ export default function StoreBlock() {
       total:         product.price * saleQty,
       paymentMethod: saleCurrency === "syp" ? "cash" : "transfer",
       currency:      saleCurrency,
+      source:        "store",
+      createdAt:     String(row.created_at ?? new Date().toISOString()),
       createdBy:     user.id,
       isReversal:    false,
     });
@@ -601,7 +605,15 @@ export default function StoreBlock() {
                     <td className="px-4 py-2.5 text-center">
                       {!sale.isReversal && !sale.cancelled ? (
                         <button
-                          onClick={() => cancelSale(sale.id)}
+                          onClick={async () => {
+                            if (!user) return;
+                            const r = await cancelTransaction({
+                              user: { id: user.id, displayName: user.displayName },
+                              table: "sales",
+                              id: sale.id,
+                            });
+                            if (!r.error) cancelSale(sale.id);
+                          }}
                           className="p-1 text-[#555555] hover:text-[#FF3333] transition-colors cursor-pointer"
                           title="إلغاء"
                         >

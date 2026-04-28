@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
-  Subscription,
+  type Subscription,
   PlanType,
   OfferType,
   PaymentStatus,
@@ -16,13 +16,12 @@ import {
   calculateEndDate,
   calculateRemainingDays,
   calculateDiscountedPrice,
-  generateId,
 } from "@/lib/business-logic";
 import PriceTag from "@/components/PriceTag";
 import { useStore } from "@/lib/store-context";
 import { useAuth } from "@/lib/auth-context";
 import { useCurrency } from "@/lib/currency-context";
-import { pushSubscription } from "@/lib/supabase/intake";
+import { pushSubscription, cancelTransaction } from "@/lib/supabase/intake";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -275,6 +274,7 @@ export default function SubscriptionsBlock() {
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState<FormState>(DEFAULT_FORM);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   // ── Derived: auto-calculate amount when plan/offer changes ──────────────────
 
@@ -342,8 +342,10 @@ export default function SubscriptionsBlock() {
 
   // ── Form submit ──────────────────────────────────────────────────────────────
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!user) return;
+    setSubmitError(null);
 
     const endDate = computedEndDate;
     const remaining = calculateRemainingDays(endDate);
@@ -354,10 +356,28 @@ export default function SubscriptionsBlock() {
         : form.paymentStatus === "paid"
         ? amount
         : 0;
-
     const cur = form.currency;
-    addSubscription({
-      memberId: generateId(),
+
+    const r = await pushSubscription({
+      user: { id: user.id, displayName: user.displayName },
+      memberName: form.memberName.trim(),
+      planType: form.planType,
+      offer: form.offer,
+      startDate: form.startDate,
+      endDate,
+      amount,
+      paidAmount: paidAmt,
+      paymentStatus: form.paymentStatus,
+      currency: cur as "syp" | "usd",
+      exchangeRate,
+    });
+
+    if (r.error) { setSubmitError(r.error); return; }
+
+    const row = r.data!;
+    const sub: Subscription = {
+      id: String(row.id),
+      memberId: String(row.created_by ?? user.id),
       memberName: form.memberName.trim(),
       planType: form.planType,
       offer: form.offer,
@@ -370,24 +390,11 @@ export default function SubscriptionsBlock() {
       paymentMethod: cur === "syp" ? "cash" : "transfer",
       currency: cur,
       status: remaining > 0 ? "active" : "expired",
-      createdBy: user?.id ?? "local",
-      lockedAt: new Date().toISOString(),
-    });
-    if (user) {
-      void pushSubscription({
-        user: { id: user.id, displayName: user.displayName },
-        memberName: form.memberName.trim(),
-        planType: form.planType,
-        offer: form.offer,
-        startDate: form.startDate,
-        endDate,
-        amount,
-        paidAmount: paidAmt,
-        paymentStatus: form.paymentStatus,
-        currency: cur as "syp" | "usd",
-        exchangeRate,
-      });
-    }
+      createdAt: String(row.created_at ?? new Date().toISOString()),
+      createdBy: user.id,
+      lockedAt: String(row.created_at ?? new Date().toISOString()),
+    };
+    addSubscription(sub);
     setForm(DEFAULT_FORM);
     setFormOpen(false);
     setToastMessage("تم حفظ الاشتراك بنجاح");
@@ -668,6 +675,12 @@ export default function SubscriptionsBlock() {
                 </div>
               )}
 
+              {submitError && (
+                <div className="flex items-center gap-2 p-2.5 bg-red/10 border border-red/30 rounded font-mono text-xs text-red">
+                  {submitError}
+                </div>
+              )}
+
               {/* ── Actions ──────────────────────────────────────────────── */}
               <div className="flex items-center gap-3 pt-1">
                 <button
@@ -836,7 +849,15 @@ export default function SubscriptionsBlock() {
                   <td className="px-3.5 py-3 text-center">
                     {sub.status !== "expired" && sub.status !== "cancelled" ? (
                       <button
-                        onClick={() => cancelSubscriptionLocal(sub.id)}
+                        onClick={async () => {
+                          if (!user) return;
+                          const r = await cancelTransaction({
+                            user: { id: user.id, displayName: user.displayName },
+                            table: "subscriptions",
+                            id: sub.id,
+                          });
+                          if (!r.error) cancelSubscriptionLocal(sub.id);
+                        }}
                         className="p-1 text-secondary hover:text-red transition-colors cursor-pointer"
                         title="إلغاء الاشتراك"
                       >

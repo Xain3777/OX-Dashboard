@@ -4,8 +4,9 @@ import { useState, useMemo, useRef, useEffect } from "react";
 import { Activity, Plus, CheckCircle, AlertTriangle, Users, Undo2 } from "lucide-react";
 import { MEMBERS } from "@/lib/mock-data";
 import { useAuth } from "@/lib/auth-context";
-import { useStore, type InBodyMemberType } from "@/lib/store-context";
+import { useStore, type InBodyMemberType, type InBodySession } from "@/lib/store-context";
 import { useCurrency } from "@/lib/currency-context";
+import { pushInBody, cancelTransaction } from "@/lib/supabase/intake";
 
 const MEMBER_PRICE_USD     = 5;
 const NON_MEMBER_PRICE_USD = 8;
@@ -89,7 +90,7 @@ export default function InBodyBlock() {
     [todaySessions]
   );
 
-  function handleRecord() {
+  async function handleRecord() {
     setError(""); setSuccess(false);
     let name = "";
     if (memberType === "gym_member") {
@@ -101,17 +102,31 @@ export default function InBodyBlock() {
     }
     if (!user) { setError("يجب تسجيل الدخول."); return; }
 
-    addInBodySession({
+    const r = await pushInBody({
+      user: { id: user.id, displayName: user.displayName },
+      memberName: name,
       memberType,
-      memberId:      memberType === "gym_member" ? memberId : undefined,
-      memberName:    name,
-      priceUSD,
-      priceSYP:      Math.round(priceUSD * exchangeRate),
-      currency:      "usd",
-      paymentMethod: "cash",
-      createdBy:     user.id,
-      createdByName: user.displayName,
+      amountUSD: priceUSD,
+      exchangeRate,
     });
+
+    if (r.error) { setError(r.error); return; }
+
+    const row = r.data!;
+    const session: InBodySession = {
+      id: String(row.id),
+      memberType,
+      memberId: memberType === "gym_member" ? memberId : undefined,
+      memberName: name,
+      priceUSD,
+      priceSYP: Math.round(priceUSD * exchangeRate),
+      currency: "usd",
+      paymentMethod: "cash",
+      createdAt: String(row.created_at ?? new Date().toISOString()),
+      createdBy: user.id,
+      createdByName: user.displayName,
+    };
+    addInBodySession(session);
 
     setMemberId(""); setMemberName(""); setGuestName("");
     setSuccess(true);
@@ -181,7 +196,16 @@ export default function InBodyBlock() {
                   <td className="px-4 py-2.5 text-[#777777] text-xs whitespace-nowrap">{s.createdByName}</td>
                   <td className="px-4 py-2.5 text-center">
                     {!s.cancelled ? (
-                      <button onClick={() => cancelInBodySession(s.id)}
+                      <button
+                        onClick={async () => {
+                          if (!user) return;
+                          const r = await cancelTransaction({
+                            user: { id: user.id, displayName: user.displayName },
+                            table: "inbody_sessions",
+                            id: s.id,
+                          });
+                          if (!r.error) cancelInBodySession(s.id);
+                        }}
                         className="p-1 text-[#555555] hover:text-[#FF3333] transition-colors cursor-pointer" title="إلغاء">
                         <Undo2 size={13} />
                       </button>

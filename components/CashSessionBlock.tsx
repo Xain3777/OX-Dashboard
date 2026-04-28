@@ -3,7 +3,8 @@
 import { useState, useMemo } from "react";
 import { LogIn, LogOut, Banknote, Clock, Lock, AlertTriangle } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
-import { useStore } from "@/lib/store-context";
+import { useStore, type LocalSession } from "@/lib/store-context";
+import { openCashSession, closeCashSession } from "@/lib/supabase/intake";
 
 function fmt(n: number) { return `$${n.toFixed(2)}`; }
 
@@ -26,7 +27,7 @@ export default function CashSessionBlock() {
   const {
     localSession,
     lastClosingCash,
-    openLocalSession,
+    setLocalSession,
     closeLocalSession,
     storeIncome,
     mealsIncome,
@@ -58,27 +59,47 @@ export default function CashSessionBlock() {
 
   const hasDiscrepancy = diff !== null && Math.abs(diff) >= 0.01;
 
-  function handleOpen() {
+  async function handleOpen() {
     setMsg(null);
+    if (!user) return;
     const isHandoff = lastClosingCash > 0;
-    const opening   = isHandoff ? lastClosingCash : Math.max(0, Number(openingInput) || 0);
-    openLocalSession(opening);
+    const openingOverride = isHandoff ? undefined : Math.max(0, Number(openingInput) || 0);
+    const r = await openCashSession(
+      { id: user.id, displayName: user.displayName },
+      openingOverride
+    );
+    if (r.error) { setMsg({ kind: "err", text: r.error }); return; }
+    const row = r.data!;
+    const session: LocalSession = {
+      id: String(row.id),
+      openingCash: Number(row.opening_cash ?? openingOverride ?? 0),
+      openedAt: String(row.opened_at ?? new Date().toISOString()),
+      status: "open",
+    };
+    setLocalSession(session);
     setOpeningInput("");
-    setMsg({ kind: "ok", text: `فُتحت الجلسة — افتتاحي ${fmt(opening)}` });
+    setMsg({ kind: "ok", text: `فُتحت الجلسة — افتتاحي ${fmt(session.openingCash)}` });
   }
 
-  function handleClose() {
+  async function handleClose() {
     setMsg(null);
+    if (!user || !localSession) return;
     if (closingValue === null || closingValue < 0) {
       setMsg({ kind: "err", text: "المبلغ لا يمكن أن يكون سالباً." }); return;
     }
     if (hasDiscrepancy && !discrepancyNote.trim()) {
       setMsg({ kind: "err", text: "يرجى إدخال سبب الفرق قبل الإغلاق." }); return;
     }
+    const r = await closeCashSession(
+      { id: user.id, displayName: user.displayName },
+      localSession.id,
+      closingValue
+    );
+    if (r.error) { setMsg({ kind: "err", text: r.error }); return; }
     closeLocalSession(closingValue, hasDiscrepancy ? discrepancyNote.trim() : undefined);
     setClosingInput("");
     setDiscrepancyNote("");
-    setMsg({ kind: "ok", text: `أُغلقت الجلسة — ${user?.displayName} — الفعلي: ${fmt(closingValue)}` });
+    setMsg({ kind: "ok", text: `أُغلقت الجلسة — ${user.displayName} — الفعلي: ${fmt(closingValue)}` });
   }
 
   return (

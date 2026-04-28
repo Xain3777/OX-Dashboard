@@ -1,18 +1,13 @@
 "use client";
 
-// All persistence to Supabase goes through this module.
-// All amounts are stored in USD. The exchange rate is kept only for
-// optional display conversion in the UI.
+// All Supabase writes go through this module.
+// Every function calls Supabase first, adds .select() to confirm the write,
+// logs success/failure, and returns the DB row on success.
 
 import { supabaseBrowser } from "./client";
 
 export type Currency = "syp" | "usd";
-
-// When NEXT_PUBLIC_LOCAL_AUTH=true all writes are no-ops and reads return
-// sensible defaults. Remove this block (and IS_LOCAL guards below) before
-// going to production with a real Supabase project.
-const IS_LOCAL = process.env.NEXT_PUBLIC_LOCAL_AUTH !== "false";
-function localId() { return `local-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
+export type DbRow = Record<string, unknown>;
 
 export interface CurrentUser {
   id: string;
@@ -25,9 +20,12 @@ function assertUser(user: CurrentUser | null | undefined): asserts user is Curre
   if (!user || !user.id) throw new Error("missing authenticated user");
 }
 
-function logErr(scope: string, err: unknown) {
-  // eslint-disable-next-line no-console
-  console.warn(`[supabase ${scope}]`, err);
+function logSuccess(table: string, operation: string, data: unknown) {
+  console.log("Supabase write success:", { table, operation, data });
+}
+
+function logError(table: string, operation: string, error: unknown) {
+  console.error("Supabase write failed:", { table, operation, error });
 }
 
 async function getOpenSessionId(userId: string): Promise<string | null> {
@@ -48,7 +46,6 @@ async function getOpenSessionId(userId: string): Promise<string | null> {
 const RATE_KEY = "exchange_rate_usd_syp";
 
 export async function fetchExchangeRate(): Promise<number> {
-  if (IS_LOCAL) return FALLBACK_RATE;
   try {
     const supabase = supabaseBrowser();
     const { data } = await supabase
@@ -60,20 +57,27 @@ export async function fetchExchangeRate(): Promise<number> {
     const n = typeof v === "number" ? v : Number(v);
     return Number.isFinite(n) && n > 0 ? n : FALLBACK_RATE;
   } catch (e) {
-    logErr("fetch rate", e);
+    logError("app_settings", "select", e);
     return FALLBACK_RATE;
   }
 }
 
-export async function persistExchangeRate(user: CurrentUser, rate: number): Promise<{ error?: string }> {
+export async function persistExchangeRate(
+  user: CurrentUser,
+  rate: number
+): Promise<{ error?: string }> {
   if (!Number.isFinite(rate) || rate <= 0) return { error: "سعر صرف غير صالح" };
-  if (IS_LOCAL) return {};
   try {
     const supabase = supabaseBrowser();
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("app_settings")
-      .upsert({ key: RATE_KEY, value: rate, updated_at: new Date().toISOString(), updated_by: user.id }, { onConflict: "key" });
-    if (error) return { error: error.message };
+      .upsert(
+        { key: RATE_KEY, value: rate, updated_at: new Date().toISOString(), updated_by: user.id },
+        { onConflict: "key" }
+      )
+      .select();
+    if (error) { logError("app_settings", "upsert", error); return { error: error.message }; }
+    logSuccess("app_settings", "upsert", data);
     await pushActivity({
       user,
       action: "exchange_rate_update",
@@ -81,7 +85,7 @@ export async function persistExchangeRate(user: CurrentUser, rate: number): Prom
     });
     return {};
   } catch (e) {
-    logErr("persist rate", e);
+    logError("app_settings", "upsert", e);
     return { error: String(e) };
   }
 }
@@ -97,7 +101,6 @@ export async function pushActivity(opts: {
   entityType?: string;
   entityId?: string;
 }) {
-  if (IS_LOCAL) return;
   try {
     assertUser(opts.user);
     const supabase = supabaseBrowser();
@@ -113,9 +116,9 @@ export async function pushActivity(opts: {
       created_by: opts.user.id,
       created_by_name: opts.user.displayName,
     });
-    if (error) logErr("activity insert", error);
+    if (error) logError("activity_feed", "insert", error);
   } catch (e) {
-    logErr("activity throw", e);
+    logError("activity_feed", "insert", e);
   }
 }
 
@@ -131,10 +134,10 @@ export async function pushSubscription(opts: {
   amount: number;
   paidAmount: number;
   paymentStatus: "paid" | "partial" | "unpaid";
+  paymentMethod?: string;
   currency?: Currency;
   exchangeRate: number;
-}): Promise<{ id?: string; error?: string }> {
-  if (IS_LOCAL) return { id: localId() };
+}): Promise<{ data?: DbRow; error?: string }> {
   try {
     assertUser(opts.user);
     if (!opts.exchangeRate || opts.exchangeRate <= 0) return { error: "سعر الصرف غير صالح" };
@@ -143,9 +146,10 @@ export async function pushSubscription(opts: {
     const supabase = supabaseBrowser();
     const cashSessionId = await getOpenSessionId(opts.user.id);
     const currency = opts.currency ?? "usd";
-    const amountSYP = currency === "syp"
-      ? Math.round(opts.paidAmount)
-      : Math.round(opts.paidAmount * opts.exchangeRate);
+    const amountSYP =
+      currency === "syp"
+        ? Math.round(opts.paidAmount)
+        : Math.round(opts.paidAmount * opts.exchangeRate);
 
     const { data, error } = await supabase
       .from("subscriptions")
@@ -158,6 +162,7 @@ export async function pushSubscription(opts: {
         amount: opts.amount,
         paid_amount: opts.paidAmount,
         payment_status: opts.paymentStatus,
+        payment_method: opts.paymentMethod ?? "cash",
         currency,
         exchange_rate: opts.exchangeRate,
         amount_syp: amountSYP,
@@ -165,10 +170,12 @@ export async function pushSubscription(opts: {
         cash_session_id: cashSessionId,
         created_by: opts.user.id,
       })
-      .select("id")
+      .select()
       .single();
 
-    if (error) { logErr("subscription insert", error); return { error: error.message }; }
+    if (error) { logError("subscriptions", "insert", error); return { error: error.message }; }
+    if (!data) { logError("subscriptions", "insert", "no row returned"); return { error: "لم يتم حفظ الاشتراك — تحقق من RLS" }; }
+    logSuccess("subscriptions", "insert", data);
 
     await pushActivity({
       user: opts.user,
@@ -176,11 +183,11 @@ export async function pushSubscription(opts: {
       description: `اشتراك جديد — ${opts.memberName} (${opts.planType}) — $${opts.paidAmount}`,
       amountUSD: currency === "usd" ? opts.paidAmount : undefined,
       entityType: "subscription",
-      entityId: data?.id as string,
+      entityId: (data as DbRow).id as string,
     });
-    return { id: data?.id as string };
+    return { data: data as DbRow };
   } catch (e) {
-    logErr("subscription throw", e);
+    logError("subscriptions", "insert", e);
     return { error: String(e) };
   }
 }
@@ -192,13 +199,13 @@ export async function pushSale(opts: {
   productName: string;
   productId?: string;
   quantity: number;
-  unitPrice: number;   // USD
-  total: number;       // USD
+  unitPrice: number;
+  total: number;
   currency?: Currency;
   exchangeRate: number;
   source?: "store" | "kitchen";
-}): Promise<{ id?: string; error?: string }> {
-  if (IS_LOCAL) return { id: localId() };
+  paymentMethod?: string;
+}): Promise<{ data?: DbRow; error?: string }> {
   try {
     assertUser(opts.user);
     if (!opts.exchangeRate || opts.exchangeRate <= 0) return { error: "سعر الصرف غير صالح" };
@@ -207,9 +214,10 @@ export async function pushSale(opts: {
     const supabase = supabaseBrowser();
     const cashSessionId = await getOpenSessionId(opts.user.id);
     const currency = opts.currency ?? "usd";
-    const amountSYP = currency === "syp"
-      ? Math.round(opts.total)
-      : Math.round(opts.total * opts.exchangeRate);
+    const amountSYP =
+      currency === "syp"
+        ? Math.round(opts.total)
+        : Math.round(opts.total * opts.exchangeRate);
 
     const { data, error } = await supabase
       .from("sales")
@@ -223,13 +231,17 @@ export async function pushSale(opts: {
         exchange_rate: opts.exchangeRate,
         amount_syp: amountSYP,
         source: opts.source ?? "store",
+        payment_method: opts.paymentMethod ?? "cash",
         cash_session_id: cashSessionId,
         created_by: opts.user.id,
+        created_by_name: opts.user.displayName,
       })
-      .select("id")
+      .select()
       .single();
 
-    if (error) { logErr("sale insert", error); return { error: error.message }; }
+    if (error) { logError("sales", "insert", error); return { error: error.message }; }
+    if (!data) { logError("sales", "insert", "no row returned"); return { error: "لم يتم حفظ البيع — تحقق من RLS" }; }
+    logSuccess("sales", "insert", data);
 
     await pushActivity({
       user: opts.user,
@@ -237,11 +249,11 @@ export async function pushSale(opts: {
       description: `بيع ${opts.quantity}× ${opts.productName} — $${opts.total}`,
       amountUSD: currency === "usd" ? opts.total : undefined,
       entityType: "sale",
-      entityId: data?.id as string,
+      entityId: (data as DbRow).id as string,
     });
-    return { id: data?.id as string };
+    return { data: data as DbRow };
   } catch (e) {
-    logErr("sale throw", e);
+    logError("sales", "insert", e);
     return { error: String(e) };
   }
 }
@@ -252,10 +264,9 @@ export async function pushInBody(opts: {
   user: CurrentUser;
   memberName: string;
   memberType: "gym_member" | "non_member";
-  amountUSD: number;   // fixed: $5 member / $8 non-member
+  amountUSD: number;
   exchangeRate: number;
-}): Promise<{ id?: string; error?: string }> {
-  if (IS_LOCAL) return { id: localId() };
+}): Promise<{ data?: DbRow; error?: string }> {
   try {
     assertUser(opts.user);
     if (!opts.exchangeRate || opts.exchangeRate <= 0) return { error: "سعر الصرف غير صالح" };
@@ -276,11 +287,14 @@ export async function pushInBody(opts: {
         amount_syp: amountSYP,
         cash_session_id: cashSessionId,
         created_by: opts.user.id,
+        created_by_name: opts.user.displayName,
       })
-      .select("id")
+      .select()
       .single();
 
-    if (error) { logErr("inbody insert", error); return { error: error.message }; }
+    if (error) { logError("inbody_sessions", "insert", error); return { error: error.message }; }
+    if (!data) { logError("inbody_sessions", "insert", "no row returned"); return { error: "لم يتم حفظ الجلسة — تحقق من RLS" }; }
+    logSuccess("inbody_sessions", "insert", data);
 
     await pushActivity({
       user: opts.user,
@@ -288,11 +302,62 @@ export async function pushInBody(opts: {
       description: `جلسة InBody — ${opts.memberName} — $${opts.amountUSD}`,
       amountUSD: opts.amountUSD,
       entityType: "inbody",
-      entityId: data?.id as string,
+      entityId: (data as DbRow).id as string,
     });
-    return { id: data?.id as string };
+    return { data: data as DbRow };
   } catch (e) {
-    logErr("inbody throw", e);
+    logError("inbody_sessions", "insert", e);
+    return { error: String(e) };
+  }
+}
+
+// ── expenses ──────────────────────────────────────────────────
+
+export async function pushExpense(opts: {
+  user: CurrentUser;
+  description: string;
+  amount: number;
+  currency: Currency;
+  category: string;
+}): Promise<{ data?: DbRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (opts.amount <= 0) return { error: "المبلغ يجب أن يكون أكبر من صفر" };
+
+    const supabase = supabaseBrowser();
+    const cashSessionId = await getOpenSessionId(opts.user.id);
+
+    const payload = {
+      description: opts.description,
+      amount: opts.amount,
+      currency: opts.currency,
+      category: opts.category,
+      cash_session_id: cashSessionId,
+      created_by: opts.user.id,
+    };
+    console.log("Supabase write payload:", { table: "expenses", operation: "insert", payload });
+
+    const { data, error } = await supabase
+      .from("expenses")
+      .insert(payload)
+      .select()
+      .single();
+
+    if (error) { logError("expenses", "insert", error); return { error: error.message }; }
+    if (!data) { logError("expenses", "insert", "no row returned"); return { error: "لم يتم حفظ المصروف — تحقق من RLS" }; }
+    logSuccess("expenses", "insert", data);
+
+    await pushActivity({
+      user: opts.user,
+      action: "expense_create",
+      description: `مصروف — ${opts.description} — $${opts.amount}`,
+      amountUSD: opts.currency === "usd" ? opts.amount : undefined,
+      entityType: "expense",
+      entityId: (data as DbRow).id as string,
+    });
+    return { data: data as DbRow };
+  } catch (e) {
+    logError("expenses", "insert", e);
     return { error: String(e) };
   }
 }
@@ -307,7 +372,6 @@ export async function cancelTransaction(opts: {
   id: string;
   reason?: string;
 }): Promise<{ error?: string }> {
-  if (IS_LOCAL) return {};
   try {
     assertUser(opts.user);
     const supabase = supabaseBrowser();
@@ -317,27 +381,30 @@ export async function cancelTransaction(opts: {
       .select("amount_syp, currency, cancelled_at, member_name, product_name, description")
       .eq("id", opts.id)
       .maybeSingle();
-    if (readErr) return { error: readErr.message };
+    if (readErr) { logError(opts.table, "select-for-cancel", readErr); return { error: readErr.message }; }
     if (!row) return { error: "العملية غير موجودة" };
-    if (row.cancelled_at) return { error: "العملية ملغاة بالفعل" };
+    if ((row as DbRow).cancelled_at) return { error: "العملية ملغاة بالفعل" };
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from(opts.table)
       .update({
         cancelled_at: new Date().toISOString(),
         cancelled_by: opts.user.id,
         cancelled_reason: opts.reason ?? null,
       })
-      .eq("id", opts.id);
-    if (error) return { error: error.message };
+      .eq("id", opts.id)
+      .select();
 
-    const label =
-      (row as Record<string, unknown>).product_name ||
-      (row as Record<string, unknown>).member_name ||
-      (row as Record<string, unknown>).description ||
-      "عملية";
-    const amtSYP = Number((row as Record<string, unknown>).amount_syp ?? 0);
+    if (error) { logError(opts.table, "update-cancel", error); return { error: error.message }; }
+    if (!data || (data as unknown[]).length === 0) {
+      logError(opts.table, "update-cancel", "no rows updated — RLS may be blocking");
+      return { error: "لم يتم تحديث الصف — تحقق من صلاحيات RLS" };
+    }
+    logSuccess(opts.table, "cancel", data);
 
+    const r = row as Record<string, unknown>;
+    const label = r.product_name || r.member_name || r.description || "عملية";
+    const amtSYP = Number(r.amount_syp ?? 0);
     await pushActivity({
       user: opts.user,
       action: `${opts.table}_cancel`,
@@ -346,10 +413,9 @@ export async function cancelTransaction(opts: {
       entityType: opts.table,
       entityId: opts.id,
     });
-
     return {};
   } catch (e) {
-    logErr("cancel throw", e);
+    logError(opts.table, "cancel", e);
     return { error: String(e) };
   }
 }
@@ -363,106 +429,71 @@ export async function computeSessionIncome(sessionId: string): Promise<{
   mealsTotal: number;
   totalIncome: number;
 }> {
-  if (IS_LOCAL) return { subsTotal: 0, inbodyTotal: 0, storeTotal: 0, mealsTotal: 0, totalIncome: 0 };
   const supabase = supabaseBrowser();
 
-  const sumUSD = async (table: string, col: string, filter?: { col: string; val: string }): Promise<number> => {
+  const sumUSD = async (
+    table: string,
+    col: string,
+    filter?: { col: string; val: string }
+  ): Promise<number> => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let q: any = supabase.from(table).select(col).eq("cash_session_id", sessionId).is("cancelled_at", null);
     if (filter) q = q.eq(filter.col, filter.val);
     const { data } = await q;
-    return (data ?? []).reduce((a: number, r: unknown) => a + Number((r as Record<string, unknown>)[col] ?? 0), 0);
+    return (data ?? []).reduce(
+      (a: number, r: unknown) => a + Number((r as Record<string, unknown>)[col] ?? 0),
+      0
+    );
   };
 
   const [subsTotal, inbodyTotal, storeTotal, mealsTotal] = await Promise.all([
-    sumUSD("subscriptions",   "paid_amount"),
+    sumUSD("subscriptions", "paid_amount"),
     sumUSD("inbody_sessions", "amount"),
-    sumUSD("sales",           "total", { col: "source", val: "store" }),
-    sumUSD("sales",           "total", { col: "source", val: "kitchen" }),
+    sumUSD("sales", "total", { col: "source", val: "store" }),
+    sumUSD("sales", "total", { col: "source", val: "kitchen" }),
   ]);
 
   return {
-    subsTotal:   Number(subsTotal.toFixed(2)),
+    subsTotal: Number(subsTotal.toFixed(2)),
     inbodyTotal: Number(inbodyTotal.toFixed(2)),
-    storeTotal:  Number(storeTotal.toFixed(2)),
-    mealsTotal:  Number(mealsTotal.toFixed(2)),
+    storeTotal: Number(storeTotal.toFixed(2)),
+    mealsTotal: Number(mealsTotal.toFixed(2)),
     totalIncome: Number((subsTotal + inbodyTotal + storeTotal + mealsTotal).toFixed(2)),
-  };
-}
-
-export async function computePreviousSessionsIncome(currentSessionId: string): Promise<{
-  subsTotal: number;
-  inbodyTotal: number;
-  storeTotal: number;
-  mealsTotal: number;
-}> {
-  if (IS_LOCAL) return { subsTotal: 0, inbodyTotal: 0, storeTotal: 0, mealsTotal: 0 };
-  const supabase = supabaseBrowser();
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-
-  const { data: prevSessions } = await supabase
-    .from("cash_sessions")
-    .select("id")
-    .eq("status", "closed")
-    .gte("opened_at", todayStart.toISOString())
-    .neq("id", currentSessionId);
-
-  if (!prevSessions || prevSessions.length === 0) {
-    return { subsTotal: 0, inbodyTotal: 0, storeTotal: 0, mealsTotal: 0 };
-  }
-
-  const sessionIds = (prevSessions as { id: string }[]).map((s) => s.id);
-
-  const sumUSD = async (table: string, col: string, filter?: { col: string; val: string }): Promise<number> => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let q: any = supabase.from(table).select(col).in("cash_session_id", sessionIds).is("cancelled_at", null);
-    if (filter) q = q.eq(filter.col, filter.val);
-    const { data } = await q;
-    return (data ?? []).reduce((a: number, r: unknown) => a + Number((r as Record<string, unknown>)[col] ?? 0), 0);
-  };
-
-  const [subsTotal, inbodyTotal, storeTotal, mealsTotal] = await Promise.all([
-    sumUSD("subscriptions",   "paid_amount"),
-    sumUSD("inbody_sessions", "amount"),
-    sumUSD("sales",           "total", { col: "source", val: "store" }),
-    sumUSD("sales",           "total", { col: "source", val: "kitchen" }),
-  ]);
-
-  return {
-    subsTotal:   Number(subsTotal.toFixed(2)),
-    inbodyTotal: Number(inbodyTotal.toFixed(2)),
-    storeTotal:  Number(storeTotal.toFixed(2)),
-    mealsTotal:  Number(mealsTotal.toFixed(2)),
   };
 }
 
 // ── Cash session lifecycle ────────────────────────────────────
 
-export async function fetchHandoffOpening(): Promise<{ openingUSD: number; previousSessionId: string | null }> {
-  if (IS_LOCAL) return { openingUSD: 0, previousSessionId: null };
+export async function fetchHandoffOpening(): Promise<{
+  openingUSD: number;
+  previousSessionId: string | null;
+}> {
   try {
     const supabase = supabaseBrowser();
     const { data, error } = await supabase.rpc("last_closed_session_for_today");
-    if (error) { logErr("handoff rpc", error); return { openingUSD: 0, previousSessionId: null }; }
-    const row = Array.isArray(data) && data.length > 0
-      ? data[0] as { id: string; actual_cash: number }
-      : null;
+    if (error) { logError("cash_sessions", "rpc-handoff", error); return { openingUSD: 0, previousSessionId: null }; }
+    const row =
+      Array.isArray(data) && data.length > 0
+        ? (data[0] as { id: string; actual_cash: number })
+        : null;
     return {
       openingUSD: row ? Number(row.actual_cash ?? 0) : 0,
       previousSessionId: row?.id ?? null,
     };
   } catch (e) {
-    logErr("handoff throw", e);
+    logError("cash_sessions", "rpc-handoff", e);
     return { openingUSD: 0, previousSessionId: null };
   }
 }
 
-export async function openCashSession(user: CurrentUser, openingCashUSDOverride?: number) {
-  if (IS_LOCAL) return { id: localId() };
+export async function openCashSession(
+  user: CurrentUser,
+  openingCashUSDOverride?: number
+): Promise<{ data?: DbRow; error?: string }> {
   try {
     assertUser(user);
     const supabase = supabaseBrowser();
+
     const { data: existing } = await supabase
       .from("cash_sessions")
       .select("id")
@@ -473,22 +504,25 @@ export async function openCashSession(user: CurrentUser, openingCashUSDOverride?
     }
 
     const handoff = await fetchHandoffOpening();
-    const openingCash   = openingCashUSDOverride ?? handoff.openingUSD;
+    const openingCash = openingCashUSDOverride ?? handoff.openingUSD;
     const opening_locked = handoff.previousSessionId !== null;
 
     const { data, error } = await supabase
       .from("cash_sessions")
       .insert({
-        opened_by:          user.id,
-        employee_name:      user.displayName,
-        opening_cash:       openingCash,
+        opened_by: user.id,
+        employee_name: user.displayName,
+        opening_cash: openingCash,
         previous_session_id: handoff.previousSessionId,
         opening_locked,
         status: "open",
       })
-      .select("id")
+      .select()
       .single();
-    if (error) return { error: error.message };
+
+    if (error) { logError("cash_sessions", "insert", error); return { error: error.message }; }
+    if (!data) { logError("cash_sessions", "insert", "no row returned"); return { error: "لم يتم فتح الجلسة — تحقق من RLS" }; }
+    logSuccess("cash_sessions", "insert", data);
 
     await pushActivity({
       user,
@@ -498,9 +532,9 @@ export async function openCashSession(user: CurrentUser, openingCashUSDOverride?
         : `فتح جلسة نقدية — أول وردية اليوم — افتتاحي $${openingCash.toFixed(2)}`,
       amountUSD: openingCash,
     });
-    return { id: data?.id as string };
+    return { data: data as DbRow };
   } catch (e) {
-    logErr("open session throw", e);
+    logError("cash_sessions", "insert", e);
     return { error: String(e) };
   }
 }
@@ -508,23 +542,29 @@ export async function openCashSession(user: CurrentUser, openingCashUSDOverride?
 export async function closeCashSession(
   user: CurrentUser,
   sessionId: string,
-  actualCashUSD: number,
-) {
-  if (IS_LOCAL) return {};
+  actualCashUSD: number
+): Promise<{ data?: DbRow; error?: string }> {
   try {
     assertUser(user);
     const supabase = supabaseBrowser();
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("cash_sessions")
       .update({
-        closed_by:   user.id,
-        closed_at:   new Date().toISOString(),
+        closed_by: user.id,
+        closed_at: new Date().toISOString(),
         actual_cash: actualCashUSD,
-        status:      "closed",
+        status: "closed",
       })
-      .eq("id", sessionId);
-    if (error) return { error: error.message };
+      .eq("id", sessionId)
+      .select();
+
+    if (error) { logError("cash_sessions", "update-close", error); return { error: error.message }; }
+    if (!data || (data as unknown[]).length === 0) {
+      logError("cash_sessions", "update-close", "no rows updated");
+      return { error: "لم يتم إغلاق الجلسة — تحقق من RLS" };
+    }
+    logSuccess("cash_sessions", "update-close", data);
 
     await pushActivity({
       user,
@@ -532,10 +572,9 @@ export async function closeCashSession(
       description: `إغلاق جلسة — المبلغ الفعلي: $${actualCashUSD.toFixed(2)}`,
       amountUSD: actualCashUSD,
     });
-
-    return {};
+    return { data: (data as DbRow[])[0] };
   } catch (e) {
-    logErr("close session throw", e);
+    logError("cash_sessions", "update-close", e);
     return { error: String(e) };
   }
 }

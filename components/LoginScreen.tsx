@@ -2,21 +2,19 @@
 
 import { useState } from "react";
 import Image from "next/image";
-import { Shield, LogIn, ChevronDown } from "lucide-react";
+import { Shield, LogIn } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 
-// Pre-seeded accounts (must match scripts/seed-users.mjs)
-// All passwords = 123456 for now.
 const ACCOUNTS = [
-  { email: "adham@ox.local",      displayName: "كوتش أدهم",    roleLabel: "المالك",        role: "manager"   as const },
-  { email: "haider@ox.local",     displayName: "حيدر",          roleLabel: "مدير",          role: "manager"   as const },
-  { email: "reception1@ox.local", displayName: "نوار",          roleLabel: "موظف استقبال", role: "reception" as const },
-  { email: "reception2@ox.local", displayName: "ساميلا راعي",   roleLabel: "موظف استقبال", role: "reception" as const },
-  { email: "reception3@ox.local", displayName: "آيه ابراهيم",  roleLabel: "موظف استقبال", role: "reception" as const },
-  { email: "reception4@ox.local", displayName: "سالي رجب",      roleLabel: "موظف استقبال", role: "reception" as const },
-  { email: "reception5@ox.local", displayName: "رند اسماعيل",   roleLabel: "موظف استقبال", role: "reception" as const },
-  { email: "reception6@ox.local", displayName: "ناديا ابراهيم", roleLabel: "موظف استقبال", role: "reception" as const },
-  { email: "reception7@ox.local", displayName: "استقبال ٧",     roleLabel: "موظف استقبال", role: "reception" as const },
+  { displayName: "كوتش أدهم",    email: "adham@ox.local"       },
+  { displayName: "حيدر",          email: "haider@ox.local"      },
+  { displayName: "نوار",          email: "reception1@ox.local"  },
+  { displayName: "موظف 2",        email: "reception2@ox.local"  },
+  { displayName: "موظف 3",        email: "reception3@ox.local"  },
+  { displayName: "موظف 4",        email: "reception4@ox.local"  },
+  { displayName: "موظف 5",        email: "reception5@ox.local"  },
+  { displayName: "موظف 6",        email: "reception6@ox.local"  },
+  { displayName: "موظف 7",        email: "reception7@ox.local"  },
 ];
 
 export default function LoginScreen() {
@@ -28,18 +26,22 @@ export default function LoginScreen() {
 
   async function handleLogin(e?: React.FormEvent) {
     e?.preventDefault();
-    if (!email) return;
+    if (!email || !password) return;
     setError("");
     setBusy(true);
-    const { error } = await signIn(email, password);
+    const { error } = await signIn(email.trim(), password);
     setBusy(false);
-    if (error) setError(error.includes("Invalid login") || error.includes("credentials") ? "الموظف أو كلمة المرور غير صحيحة." : error);
+    if (error)
+      setError(
+        error.includes("Invalid login") || error.includes("credentials")
+          ? "البريد الإلكتروني أو كلمة المرور غير صحيحة."
+          : error
+      );
   }
 
   return (
     <div className="min-h-screen bg-void flex items-center justify-center px-4 py-8" dir="rtl">
       <div className="w-full max-w-md space-y-6">
-        {/* Logo + title */}
         <div className="flex flex-col items-center gap-3">
           <Image
             src="/logo-full.png"
@@ -60,36 +62,41 @@ export default function LoginScreen() {
           onSubmit={handleLogin}
           className="bg-charcoal border border-gunmetal p-6 clip-corner space-y-5"
         >
-          {/* Staff dropdown */}
           <div className="space-y-1">
             <label className="block font-mono text-[10px] text-secondary tracking-widest text-left">
               الموظف
             </label>
-            <div className="relative">
-              <select
-                value={email}
-                onChange={(e) => { setEmail(e.target.value); setError(""); }}
-                className="ox-input w-full appearance-none pr-3 pl-10 text-center font-body text-base text-offwhite cursor-pointer"
-                dir="rtl"
-              >
-                <option value="">— اختر —</option>
-                {ACCOUNTS.map((a) => (
-                  <option key={a.email} value={a.email}>
-                    {a.displayName} — {a.roleLabel}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown
-                size={16}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate pointer-events-none"
-              />
-            </div>
+            <select
+              value={email}
+              onChange={(e) => { setEmail(e.target.value); setError(""); }}
+              className="ox-input w-full font-body text-base text-offwhite"
+              dir="rtl"
+            >
+              <option value="">— اختر الموظف —</option>
+              {ACCOUNTS.map((a) => (
+                <option key={a.email} value={a.email}>{a.displayName}</option>
+              ))}
+            </select>
           </div>
 
-          {/* Password */}
           <div className="space-y-1">
             <label className="block font-mono text-[10px] text-secondary tracking-widest text-left">
-              رمز الدخول التجريبي: 123456
+              البريد الإلكتروني
+            </label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => { setEmail(e.target.value); setError(""); }}
+              placeholder="example@ox.local"
+              className="ox-input w-full font-body text-base text-offwhite"
+              dir="ltr"
+              autoComplete="username"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="block font-mono text-[10px] text-secondary tracking-widest text-left">
+              كلمة المرور
             </label>
             <input
               type="password"

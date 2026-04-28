@@ -10,9 +10,14 @@ import {
   ReactNode,
   useMemo,
 } from "react";
-import { Product, Sale, Expense, PaymentMethod, Subscription, FoodItem } from "./types";
-import { PRODUCTS, SALES, EXPENSES, SUBSCRIPTIONS, FOOD_ITEMS } from "./mock-data";
-import { generateId } from "./business-logic";
+import {
+  Product, Sale, Expense, PaymentMethod, Subscription, FoodItem,
+  PlanType, OfferType, PaymentStatus, SubStatus, Currency, FoodItemCategory,
+} from "./types";
+import { PRODUCTS, FOOD_ITEMS } from "./mock-data";
+import { generateId, calculateRemainingDays } from "./business-logic";
+import { useAuth } from "./auth-context";
+import { supabaseBrowser } from "./supabase/client";
 
 // ─── InBody ───────────────────────────────────────────────────────────────────
 
@@ -72,7 +77,6 @@ export interface LocalSession {
   actualCash?: number;
   closedAt?: string;
   status: "open" | "closed";
-  // Income snapshot recorded at close time
   subsIncome?: number;
   storeIncome?: number;
   mealsIncome?: number;
@@ -94,7 +98,6 @@ export interface StoreState {
   expenseRates: ExpenseRate[];
   exchangeRate: number;
   foodItems: FoodItem[];
-  // Local session
   localSession: LocalSession | null;
   sessionHistory: LocalSession[];
   lastClosingCash: number;
@@ -103,39 +106,30 @@ export interface StoreState {
 // ─── Context type ─────────────────────────────────────────────────────────────
 
 export interface StoreContextType extends StoreState {
-  // Store
-  addSale: (sale: Omit<Sale, "id" | "createdAt">) => void;
+  addSale: (sale: Sale) => void;
   reverseSale: (saleId: string, reason?: string) => void;
   cancelSale: (id: string) => void;
   updateProductCost: (productId: string, cost: number) => void;
   updateProductPrice: (productId: string, cost: number, price: number) => void;
   adjustStock: (productId: string, delta: number) => void;
   addProduct: (product: Omit<Product, "id" | "createdAt">) => void;
-  // Food items
   addFoodItem: (item: Omit<FoodItem, "id">) => void;
   updateFoodItem: (id: string, updates: Partial<FoodItem>) => void;
   removeFoodItem: (id: string) => void;
-  // Subscriptions
-  addSubscription: (sub: Omit<Subscription, "id" | "createdAt">) => void;
+  addSubscription: (sub: Subscription) => void;
   cancelSubscriptionLocal: (id: string) => void;
-  // InBody
-  addInBodySession: (session: Omit<InBodySession, "id" | "createdAt">) => void;
+  addInBodySession: (session: InBodySession) => void;
   cancelInBodySession: (id: string) => void;
   updateInBodyPrices: (member: number, nonMember: number) => void;
-  // Expenses
-  addExpense: (expense: Omit<Expense, "id" | "createdAt">) => void;
-  // Rates
+  addExpense: (expense: Expense) => void;
   updateExpenseRate: (id: string, amount: number) => void;
   addExpenseRate: (rate: Omit<ExpenseRate, "id" | "lastUpdated">) => void;
   toggleExpenseRate: (id: string) => void;
-  // Currency
   setExchangeRate: (rate: number) => void;
-  // Activity
   pushActivity: (entry: Omit<ActivityEntry, "id" | "timestamp">) => void;
-  // Local session
+  setLocalSession: (session: LocalSession | null) => void;
   openLocalSession: (openingCash?: number) => void;
   closeLocalSession: (actualCash: number, discrepancyNote?: string) => void;
-  // Computed income (today's, non-cancelled)
   storeIncome: number;
   mealsIncome: number;
   subsIncome: number;
@@ -148,10 +142,10 @@ export interface StoreContextType extends StoreState {
 
 const INITIAL_STATE: StoreState = {
   products: PRODUCTS,
-  sales: SALES,
-  subscriptions: SUBSCRIPTIONS,
+  sales: [],
+  subscriptions: [],
   inBodySessions: [],
-  expenses: EXPENSES,
+  expenses: [],
   activityFeed: [],
   inBodyPrices: { member: 60000, nonMember: 100000 },
   expenseRates: [],
@@ -162,24 +156,137 @@ const INITIAL_STATE: StoreState = {
   lastClosingCash: 0,
 };
 
-const STORAGE_KEY = "ox_store_v5";
+// ─── Supabase hydration ───────────────────────────────────────────────────────
 
-function loadState(): StoreState {
-  if (typeof window === "undefined") return INITIAL_STATE;
+async function hydrateFromSupabase(userId: string): Promise<Partial<StoreState>> {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return INITIAL_STATE;
-    const parsed = JSON.parse(raw) as Partial<StoreState>;
-    return { ...INITIAL_STATE, ...parsed };
-  } catch {
-    return INITIAL_STATE;
+    const supabase = supabaseBrowser();
+    const today = new Date().toISOString().slice(0, 10);
+
+    const [subsRes, salesRes, inbodyRes, sessRes, foodRes, rateRes] = await Promise.all([
+      supabase
+        .from("subscriptions")
+        .select("*")
+        .is("cancelled_at", null)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("sales")
+        .select("*")
+        .gte("created_at", today + "T00:00:00")
+        .order("created_at", { ascending: true }),
+      supabase
+        .from("inbody_sessions")
+        .select("*")
+        .gte("created_at", today + "T00:00:00"),
+      supabase
+        .from("cash_sessions")
+        .select("*")
+        .eq("opened_by", userId)
+        .eq("status", "open")
+        .order("opened_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      supabase.from("food_items").select("*"),
+      supabase
+        .from("app_settings")
+        .select("value")
+        .eq("key", "exchange_rate_usd_syp")
+        .maybeSingle(),
+    ]);
+
+    type Row = Record<string, unknown>;
+
+    const subscriptions: Subscription[] = (subsRes.data ?? []).map((row: Row) => ({
+      id: String(row.id),
+      memberId: String(row.created_by ?? ""),
+      memberName: String(row.member_name ?? ""),
+      planType: String(row.plan_type ?? "1_month") as PlanType,
+      offer: String(row.offer ?? "none") as OfferType,
+      startDate: String(row.start_date ?? ""),
+      endDate: String(row.end_date ?? ""),
+      remainingDays: calculateRemainingDays(String(row.end_date ?? "")),
+      amount: Number(row.amount ?? 0),
+      paidAmount: Number(row.paid_amount ?? 0),
+      paymentStatus: String(row.payment_status ?? "paid") as PaymentStatus,
+      paymentMethod: String(row.payment_method ?? "cash") as PaymentMethod,
+      currency: String(row.currency ?? "usd") as Currency,
+      status: String(row.status ?? "active") as SubStatus,
+      createdAt: String(row.created_at ?? ""),
+      createdBy: String(row.created_by ?? ""),
+      lockedAt: String(row.created_at ?? ""),
+    }));
+
+    const sales: Sale[] = (salesRes.data ?? []).map((row: Row) => ({
+      id: String(row.id),
+      productId: String(row.product_id ?? ""),
+      productName: String(row.product_name ?? ""),
+      quantity: Number(row.quantity ?? 1),
+      unitPrice: Number(row.unit_price ?? 0),
+      total: Number(row.total ?? 0),
+      paymentMethod: String(row.payment_method ?? "cash") as PaymentMethod,
+      currency: String(row.currency ?? "usd") as Currency,
+      source: String(row.source ?? "store") as "store" | "kitchen",
+      cancelled: !!row.cancelled_at,
+      createdAt: String(row.created_at ?? ""),
+      createdBy: String(row.created_by ?? ""),
+      isReversal: false,
+    }));
+
+    const inBodySessions: InBodySession[] = (inbodyRes.data ?? []).map((row: Row) => ({
+      id: String(row.id),
+      memberType: String(row.session_type ?? "gym_member") as InBodyMemberType,
+      memberName: String(row.member_name ?? ""),
+      priceUSD: Number(row.amount ?? 0),
+      priceSYP: Number(row.amount_syp ?? 0),
+      currency: "usd" as const,
+      paymentMethod: "cash" as PaymentMethod,
+      cancelled: !!row.cancelled_at,
+      createdAt: String(row.created_at ?? ""),
+      createdBy: String(row.created_by ?? ""),
+      createdByName: String(row.created_by_name ?? ""),
+    }));
+
+    let localSession: LocalSession | null = null;
+    if (sessRes.data) {
+      const s = sessRes.data as Row;
+      localSession = {
+        id: String(s.id),
+        openingCash: Number(s.opening_cash ?? 0),
+        openedAt: String(s.opened_at ?? ""),
+        status: "open",
+      };
+    }
+
+    const foodRows = (foodRes.data ?? []) as Row[];
+    const foodItems: FoodItem[] =
+      foodRows.length > 0
+        ? foodRows.map((row) => ({
+            id: String(row.id),
+            name: String(row.name ?? ""),
+            category: String(row.category ?? "other") as FoodItemCategory,
+            price_usd: Number(row.price_usd ?? 0),
+            is_active: !!row.is_active,
+          }))
+        : FOOD_ITEMS;
+
+    const rateVal = rateRes.data?.value;
+    const rateNum = typeof rateVal === "number" ? rateVal : Number(rateVal);
+    const exchangeRate = Number.isFinite(rateNum) && rateNum > 0 ? rateNum : 13200;
+
+    console.log("Supabase hydration:", {
+      subscriptions: subscriptions.length,
+      sales: sales.length,
+      inBodySessions: inBodySessions.length,
+      hasOpenSession: !!localSession,
+      foodItems: foodItems.length,
+      exchangeRate,
+    });
+
+    return { subscriptions, sales, inBodySessions, localSession, foodItems, exchangeRate };
+  } catch (e) {
+    console.error("Supabase hydration failed:", e);
+    return {};
   }
-}
-
-function saveState(state: StoreState) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {}
 }
 
 function todayPrefix() {
@@ -211,6 +318,7 @@ const StoreContext = createContext<StoreContextType>({
   toggleExpenseRate: () => {},
   setExchangeRate: () => {},
   pushActivity: () => {},
+  setLocalSession: () => {},
   openLocalSession: () => {},
   closeLocalSession: (_a: number, _n?: string) => {},
   storeIncome: 0,
@@ -222,42 +330,39 @@ const StoreContext = createContext<StoreContextType>({
 });
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  // Lazy initializer reads localStorage synchronously on first render —
-  // no INITIAL_STATE flash, data is available before the first paint.
-  const [state, setStateRaw] = useState<StoreState>(loadState);
+  const [state, setStateRaw] = useState<StoreState>(INITIAL_STATE);
   const stateRef = useRef(state);
+  const { user } = useAuth();
 
   const setState = useCallback((updater: (prev: StoreState) => StoreState) => {
     setStateRaw((prev) => {
       const next = updater(prev);
       stateRef.current = next;
-      saveState(next);
       return next;
     });
   }, []);
 
+  // ── Hydration on login / logout ────────────────────────────────────────────
+
   useEffect(() => {
-    const handler = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY && e.newValue) {
-        try {
-          const newState = JSON.parse(e.newValue) as StoreState;
-          setStateRaw({ ...INITIAL_STATE, ...newState });
-          stateRef.current = { ...INITIAL_STATE, ...newState };
-        } catch {}
-      }
-    };
-    window.addEventListener("storage", handler);
-    return () => window.removeEventListener("storage", handler);
-  }, []);
+    if (!user) {
+      setStateRaw(INITIAL_STATE);
+      return;
+    }
+    hydrateFromSupabase(user.id).then((partial) => {
+      setStateRaw((prev) => ({ ...prev, ...partial }));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   // ── Actions ────────────────────────────────────────────────────────────────
 
-  const addSale = useCallback((sale: Omit<Sale, "id" | "createdAt">) => {
-    const full: Sale = { ...sale, id: generateId(), createdAt: new Date().toISOString() };
+  const addSale = useCallback((sale: Sale) => {
     const cur = sale.currency ?? "usd";
-    const amountLabel = cur === "syp"
-      ? `${sale.total.toLocaleString("en-US")} ل.س`
-      : `$${sale.total}`;
+    const amountLabel =
+      cur === "syp"
+        ? `${sale.total.toLocaleString("en-US")} ل.س`
+        : `$${sale.total}`;
     const entry: ActivityEntry = {
       id: generateId(),
       type: "sale",
@@ -266,11 +371,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       amountSYP: cur === "syp" ? sale.total : undefined,
       userId: sale.createdBy,
       userName: sale.createdBy,
-      timestamp: new Date().toISOString(),
+      timestamp: sale.createdAt,
     };
     setState((prev) => ({
       ...prev,
-      sales: [...prev.sales, full],
+      sales: [...prev.sales, sale],
       products: prev.products.map((p) =>
         p.id === sale.productId ? { ...p, stock: Math.max(0, p.stock - sale.quantity) } : p
       ),
@@ -281,7 +386,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const cancelSale = useCallback((id: string) => {
     setState((prev) => ({
       ...prev,
-      sales: prev.sales.map((s) => s.id === id ? { ...s, cancelled: true } : s),
+      sales: prev.sales.map((s) => (s.id === id ? { ...s, cancelled: true } : s)),
     }));
   }, [setState]);
 
@@ -310,9 +415,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const updateProductCost = useCallback((productId: string, cost: number) => {
     setState((prev) => ({
       ...prev,
-      products: prev.products.map((p) =>
-        p.id === productId ? { ...p, cost } : p
-      ),
+      products: prev.products.map((p) => (p.id === productId ? { ...p, cost } : p)),
     }));
   }, [setState]);
 
@@ -328,9 +431,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
     setState((prev) => ({
       ...prev,
-      products: prev.products.map((p) =>
-        p.id === productId ? { ...p, cost, price } : p
-      ),
+      products: prev.products.map((p) => (p.id === productId ? { ...p, cost, price } : p)),
       activityFeed: [entry, ...prev.activityFeed].slice(0, 100),
     }));
   }, [setState]);
@@ -345,7 +446,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [setState]);
 
   const addProduct = useCallback((product: Omit<Product, "id" | "createdAt">) => {
-    const full: Product = { ...product, id: generateId(), createdAt: new Date().toISOString().split("T")[0] };
+    const full: Product = {
+      ...product,
+      id: generateId(),
+      createdAt: new Date().toISOString().split("T")[0],
+    };
     setState((prev) => ({ ...prev, products: [...prev.products, full] }));
   }, [setState]);
 
@@ -357,7 +462,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const updateFoodItem = useCallback((id: string, updates: Partial<FoodItem>) => {
     setState((prev) => ({
       ...prev,
-      foodItems: prev.foodItems.map((f) => f.id === id ? { ...f, ...updates } : f),
+      foodItems: prev.foodItems.map((f) => (f.id === id ? { ...f, ...updates } : f)),
     }));
   }, [setState]);
 
@@ -368,30 +473,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }));
   }, [setState]);
 
-  const addInBodySession = useCallback(
-    (session: Omit<InBodySession, "id" | "createdAt">) => {
-      const full: InBodySession = {
-        ...session,
-        id: generateId(),
-        createdAt: new Date().toISOString(),
-      };
-      const entry: ActivityEntry = {
-        id: generateId(),
-        type: "inbody",
-        description: `جلسة InBody — ${session.memberName} — $${session.priceUSD}`,
-        amountUSD: session.priceUSD,
-        userId: session.createdBy,
-        userName: session.createdByName,
-        timestamp: new Date().toISOString(),
-      };
-      setState((prev) => ({
-        ...prev,
-        inBodySessions: [...prev.inBodySessions, full],
-        activityFeed: [entry, ...prev.activityFeed].slice(0, 100),
-      }));
-    },
-    [setState]
-  );
+  const addInBodySession = useCallback((session: InBodySession) => {
+    const entry: ActivityEntry = {
+      id: generateId(),
+      type: "inbody",
+      description: `جلسة InBody — ${session.memberName} — $${session.priceUSD}`,
+      amountUSD: session.priceUSD,
+      userId: session.createdBy,
+      userName: session.createdByName,
+      timestamp: session.createdAt,
+    };
+    setState((prev) => ({
+      ...prev,
+      inBodySessions: [...prev.inBodySessions, session],
+      activityFeed: [entry, ...prev.activityFeed].slice(0, 100),
+    }));
+  }, [setState]);
 
   const cancelInBodySession = useCallback((id: string) => {
     setState((prev) => ({
@@ -402,16 +499,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }));
   }, [setState]);
 
-  const updateInBodyPrices = useCallback(
-    (member: number, nonMember: number) => {
-      setState((prev) => ({ ...prev, inBodyPrices: { member, nonMember } }));
-    },
-    [setState]
-  );
+  const updateInBodyPrices = useCallback((member: number, nonMember: number) => {
+    setState((prev) => ({ ...prev, inBodyPrices: { member, nonMember } }));
+  }, [setState]);
 
-  const addExpense = useCallback((expense: Omit<Expense, "id" | "createdAt">) => {
-    const full: Expense = { ...expense, id: generateId(), createdAt: new Date().toISOString() };
-    setState((prev) => ({ ...prev, expenses: [...prev.expenses, full] }));
+  const addExpense = useCallback((expense: Expense) => {
+    setState((prev) => ({ ...prev, expenses: [...prev.expenses, expense] }));
   }, [setState]);
 
   const updateExpenseRate = useCallback((id: string, amount: number) => {
@@ -425,17 +518,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }));
   }, [setState]);
 
-  const addExpenseRate = useCallback(
-    (rate: Omit<ExpenseRate, "id" | "lastUpdated">) => {
-      const full: ExpenseRate = {
-        ...rate,
-        id: generateId(),
-        lastUpdated: new Date().toISOString().split("T")[0],
-      };
-      setState((prev) => ({ ...prev, expenseRates: [...prev.expenseRates, full] }));
-    },
-    [setState]
-  );
+  const addExpenseRate = useCallback((rate: Omit<ExpenseRate, "id" | "lastUpdated">) => {
+    const full: ExpenseRate = {
+      ...rate,
+      id: generateId(),
+      lastUpdated: new Date().toISOString().split("T")[0],
+    };
+    setState((prev) => ({ ...prev, expenseRates: [...prev.expenseRates, full] }));
+  }, [setState]);
 
   const toggleExpenseRate = useCallback((id: string) => {
     setState((prev) => ({
@@ -450,27 +540,23 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, exchangeRate: rate }));
   }, [setState]);
 
-  const addSubscription = useCallback(
-    (sub: Omit<Subscription, "id" | "createdAt">) => {
-      const full: Subscription = { ...sub, id: generateId(), createdAt: new Date().toISOString() };
-      const cur = sub.currency ?? "usd";
-      const entry: ActivityEntry = {
-        id: generateId(),
-        type: "subscription",
-        description: `اشتراك جديد — ${sub.memberName} ($${sub.paidAmount})`,
-        amountUSD: cur === "usd" ? sub.paidAmount : undefined,
-        userId: sub.createdBy,
-        userName: sub.createdBy,
-        timestamp: new Date().toISOString(),
-      };
-      setState((prev) => ({
-        ...prev,
-        subscriptions: [full, ...prev.subscriptions],
-        activityFeed: [entry, ...prev.activityFeed].slice(0, 100),
-      }));
-    },
-    [setState]
-  );
+  const addSubscription = useCallback((sub: Subscription) => {
+    const cur = sub.currency ?? "usd";
+    const entry: ActivityEntry = {
+      id: generateId(),
+      type: "subscription",
+      description: `اشتراك جديد — ${sub.memberName} ($${sub.paidAmount})`,
+      amountUSD: cur === "usd" ? sub.paidAmount : undefined,
+      userId: sub.createdBy,
+      userName: sub.createdBy,
+      timestamp: sub.createdAt,
+    };
+    setState((prev) => ({
+      ...prev,
+      subscriptions: [sub, ...prev.subscriptions],
+      activityFeed: [entry, ...prev.activityFeed].slice(0, 100),
+    }));
+  }, [setState]);
 
   const cancelSubscriptionLocal = useCallback((id: string) => {
     setState((prev) => ({
@@ -481,27 +567,28 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }));
   }, [setState]);
 
-  const pushActivity = useCallback(
-    (entry: Omit<ActivityEntry, "id" | "timestamp">) => {
-      const full: ActivityEntry = { ...entry, id: generateId(), timestamp: new Date().toISOString() };
-      setState((prev) => ({
-        ...prev,
-        activityFeed: [full, ...prev.activityFeed].slice(0, 100),
-      }));
-    },
-    [setState]
-  );
+  const pushActivity = useCallback((entry: Omit<ActivityEntry, "id" | "timestamp">) => {
+    const full: ActivityEntry = { ...entry, id: generateId(), timestamp: new Date().toISOString() };
+    setState((prev) => ({
+      ...prev,
+      activityFeed: [full, ...prev.activityFeed].slice(0, 100),
+    }));
+  }, [setState]);
 
   // ── Local session ──────────────────────────────────────────────────────────
+
+  const setLocalSession = useCallback((session: LocalSession | null) => {
+    setState((prev) => ({ ...prev, localSession: session }));
+  }, [setState]);
 
   const openLocalSession = useCallback((openingCash?: number) => {
     setState((prev) => {
       if (prev.localSession?.status === "open") return prev;
       const opening = openingCash !== undefined ? openingCash : prev.lastClosingCash;
-      // Archive previous closed session to history before opening a new one
-      const newHistory: LocalSession[] = prev.localSession?.status === "closed"
-        ? [prev.localSession, ...prev.sessionHistory.filter((s) => s.id !== prev.localSession!.id)]
-        : prev.sessionHistory;
+      const newHistory: LocalSession[] =
+        prev.localSession?.status === "closed"
+          ? [prev.localSession, ...prev.sessionHistory.filter((s) => s.id !== prev.localSession!.id)]
+          : prev.sessionHistory;
       return {
         ...prev,
         localSession: {
@@ -520,7 +607,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (!prev.localSession || prev.localSession.status !== "open") return prev;
       const sessionStart = prev.localSession.openedAt;
       const todayStr = new Date().toISOString().slice(0, 10);
-      const inSess = (t: string) => t.startsWith(todayStr) && (!sessionStart || t >= sessionStart);
+      const inSess = (t: string) =>
+        t.startsWith(todayStr) && (!sessionStart || t >= sessionStart);
 
       const subsIncome = prev.subscriptions
         .filter((s) => s.status !== "cancelled" && inSess(s.createdAt))
@@ -547,11 +635,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         totalIncome: subsIncome + storeIncome + mealsIncome + inbodyIncome,
         discrepancyNote,
       };
-      return {
-        ...prev,
-        localSession: closedSession,
-        lastClosingCash: actualCash,
-      };
+      return { ...prev, localSession: closedSession, lastClosingCash: actualCash };
     });
   }, [setState]);
 
@@ -611,6 +695,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     toggleExpenseRate,
     setExchangeRate,
     pushActivity,
+    setLocalSession,
     openLocalSession,
     closeLocalSession,
     ...computedValues,
