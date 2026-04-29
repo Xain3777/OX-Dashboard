@@ -15,6 +15,7 @@ import {
   getOfferLabel,
   calculateEndDate,
   calculateRemainingDays,
+  calculateDiscountedPrice,
 } from "@/lib/business-logic";
 import PriceTag from "@/components/PriceTag";
 import { useStore } from "@/lib/store-context";
@@ -63,7 +64,7 @@ function ptCalc(n: number) {
 
 type MainTab  = "subscriptions" | "offers";
 type SubType  = "normal" | "private";
-type OfferTab = "couple" | "referral" | "corporate";
+type OfferTab = "couple" | "referral" | "corporate" | "college";
 type SortMode = "alpha" | "date";
 type FilterTab = "all" | "active" | "expiring" | "unpaid" | "expired";
 // ─── Form state ───────────────────────────────────────────────────────────────
@@ -257,6 +258,14 @@ export default function SubscriptionsBlock() {
   const [corpPayStatus, setCorpPayStatus] = useState<PaymentStatus>("paid");
   const [corpBusy,      setCorpBusy]      = useState(false);
   const [corpError,     setCorpError]     = useState<string | null>(null);
+
+  // College offer
+  const [collegeName,      setCollegeName]      = useState("");
+  const [collegePlan,      setCollegePlan]      = useState<PlanType>("1_month");
+  const [collegeStart,     setCollegeStart]     = useState(new Date().toISOString().split("T")[0]);
+  const [collegePayStatus, setCollegePayStatus] = useState<PaymentStatus>("paid");
+  const [collegeBusy,      setCollegeBusy]      = useState(false);
+  const [collegeError,     setCollegeError]     = useState<string | null>(null);
 
   // ── Toast ──────────────────────────────────────────────────────────────────
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -542,6 +551,50 @@ export default function SubscriptionsBlock() {
     setCorpName(""); setCorpPlan("1_month");
     setCorpStart(new Date().toISOString().split("T")[0]);
     setToastMessage(`تم تسجيل اشتراك شركة بخصم ١٥٪ — $${discountedPrice}`);
+  };
+
+  // ── College offer submit ───────────────────────────────────────────────────
+  const handleCollegeSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    setCollegeError(null);
+    setCollegeBusy(true);
+    const basePrice       = PLAN_BASE_PRICES[collegePlan];
+    const discountedPrice = calculateDiscountedPrice(basePrice, "college");
+    const endDate         = calculateEndDate(collegeStart, collegePlan, "college");
+    const paidAmt         = collegePayStatus === "paid" ? discountedPrice : 0;
+
+    const r = await pushSubscription({
+      user: { id: user.id, displayName: user.displayName },
+      memberName: collegeName.trim(),
+      planType: collegePlan, offer: "college",
+      startDate: collegeStart, endDate,
+      amount: discountedPrice, paidAmount: paidAmt,
+      paymentStatus: collegePayStatus,
+      currency: "usd", exchangeRate,
+    });
+    if (r.error) { setCollegeError(r.error); setCollegeBusy(false); return; }
+
+    const rem = calculateRemainingDays(endDate);
+    addSubscription({
+      id: String(r.data!.id),
+      memberId: String(r.data!.created_by ?? user.id),
+      memberName: collegeName.trim(),
+      planType: collegePlan, offer: "college",
+      startDate: collegeStart, endDate,
+      remainingDays: rem, amount: discountedPrice, paidAmount: paidAmt,
+      paymentStatus: collegePayStatus, paymentMethod: "cash",
+      currency: "usd",
+      status: rem > 0 ? "active" : "expired",
+      createdAt: String(r.data!.created_at ?? new Date().toISOString()),
+      createdBy: user.id,
+      lockedAt: String(r.data!.created_at ?? new Date().toISOString()),
+    });
+
+    setCollegeBusy(false);
+    setCollegeName(""); setCollegePlan("1_month");
+    setCollegeStart(new Date().toISOString().split("T")[0]);
+    setToastMessage(`تم تسجيل اشتراك طالب جامعي بخصم ٢٠٪ — $${discountedPrice}`);
   };
 
   // ── Row accent helper ──────────────────────────────────────────────────────
@@ -920,12 +973,12 @@ export default function SubscriptionsBlock() {
 
             {/* Offer sub-tabs */}
             <div className="flex items-center gap-1 border-b border-gunmetal pb-0 -mb-px">
-              {(["couple", "referral", "corporate"] as const).map((tab) => (
+              {(["couple", "referral", "corporate", "college"] as const).map((tab) => (
                 <button key={tab} onClick={() => setOfferTab(tab)}
                   className={`px-3.5 py-2 font-mono text-[11px] uppercase tracking-wider border-b-2 -mb-px transition-colors ${
                     offerTab === tab ? "border-gold text-gold" : "border-transparent text-secondary hover:text-ghost"
                   }`}>
-                  {tab === "couple" ? "عرض الزوجين" : tab === "referral" ? "الإحالة" : "شركات / بنوك"}
+                  {tab === "couple" ? "عرض الزوجين" : tab === "referral" ? "الإحالة" : tab === "corporate" ? "شركات / بنوك" : "طلاب جامعات"}
                 </button>
               ))}
             </div>
@@ -1151,6 +1204,70 @@ export default function SubscriptionsBlock() {
                   <button type="submit" disabled={corpBusy}
                     className="inline-flex items-center gap-2 px-5 py-2.5 bg-gold hover:bg-gold-bright text-void font-display text-sm tracking-widest uppercase clip-corner-sm transition-colors disabled:opacity-40">
                     <LockIcon size={13} />{corpBusy ? "جاري الحفظ…" : "تسجيل اشتراك الشركة"}
+                  </button>
+                </form>
+              </div>
+            )}
+
+            {/* ── College form ────────────────────────────────────────────── */}
+            {offerTab === "college" && (
+              <div className="border border-gunmetal bg-charcoal rounded clip-corner p-5">
+                <div className="mb-4">
+                  <p className="font-mono text-[10px] text-secondary uppercase tracking-widest">خصم طلاب الجامعات</p>
+                  <p className="font-mono text-[9px] text-slate mt-0.5">خصم ٢٠٪ على أي خطة — لطلاب الجامعات</p>
+                </div>
+                <form onSubmit={handleCollegeSubmit} className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className={labelCls}>اسم العضو</label>
+                      <input required type="text" className={inputCls} placeholder="الاسم الكامل"
+                        value={collegeName} onChange={(e) => setCollegeName(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className={labelCls}>نوع الخطة</label>
+                      <div className="relative">
+                        <select className={selectCls} value={collegePlan}
+                          onChange={(e) => setCollegePlan(e.target.value as PlanType)}>
+                          {PLAN_TYPES.map((p) => (
+                            <option key={p} value={p}>
+                              {getPlanLabel(p)} — {PLAN_BASE_PRICES[p]} $
+                            </option>
+                          ))}
+                        </select>
+                        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-secondary"><ChevronIcon open={false} /></span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className={labelCls}>تاريخ البدء</label>
+                      <input required type="date" className={inputCls} value={collegeStart}
+                        onChange={(e) => setCollegeStart(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className={labelCls}>حالة الدفع</label>
+                      <div className="relative">
+                        <select className={selectCls} value={collegePayStatus}
+                          onChange={(e) => setCollegePayStatus(e.target.value as PaymentStatus)}>
+                          <option value="paid">مدفوع</option>
+                          <option value="partial">جزئي</option>
+                          <option value="unpaid">غير مدفوع</option>
+                        </select>
+                        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-secondary"><ChevronIcon open={false} /></span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between p-3 bg-void border border-gunmetal rounded">
+                    <div>
+                      <p className="font-mono text-[9px] text-slate uppercase tracking-wider">السعر بعد خصم ٢٠٪</p>
+                      <p className="font-mono text-xs text-secondary line-through mt-0.5">{PLAN_BASE_PRICES[collegePlan]} $</p>
+                    </div>
+                    <span className="font-display text-2xl text-gold-bright">${calculateDiscountedPrice(PLAN_BASE_PRICES[collegePlan], "college")}</span>
+                  </div>
+                  {collegeError && <div className="p-2.5 bg-red/10 border border-red/30 rounded font-mono text-xs text-red">{collegeError}</div>}
+                  <button type="submit" disabled={collegeBusy}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 bg-gold hover:bg-gold-bright text-void font-display text-sm tracking-widest uppercase clip-corner-sm transition-colors disabled:opacity-40">
+                    <LockIcon size={13} />{collegeBusy ? "جاري الحفظ…" : "تسجيل اشتراك الطالب"}
                   </button>
                 </form>
               </div>

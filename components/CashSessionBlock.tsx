@@ -5,6 +5,7 @@ import { LogIn, LogOut, Banknote, Clock, Lock, AlertTriangle } from "lucide-reac
 import { useAuth } from "@/lib/auth-context";
 import { useStore, type LocalSession } from "@/lib/store-context";
 import { openCashSession, closeCashSession } from "@/lib/supabase/intake";
+import { formatTime } from "@/lib/utils/time";
 
 function fmt(n: number) { return `$${n.toFixed(2)}`; }
 
@@ -27,12 +28,14 @@ export default function CashSessionBlock() {
   const {
     localSession,
     lastClosingCash,
+    lastClosedByName,
     setLocalSession,
     closeLocalSession,
     storeIncome,
     mealsIncome,
     subsIncome,
     inbodyIncome,
+    totalIncome,
     runningCash,
   } = useStore();
 
@@ -74,6 +77,7 @@ export default function CashSessionBlock() {
       id: String(row.id),
       openingCash: Number(row.opening_cash ?? openingOverride ?? 0),
       openedAt: String(row.opened_at ?? new Date().toISOString()),
+      openedByName: user.displayName,
       status: "open",
     };
     setLocalSession(session);
@@ -96,7 +100,7 @@ export default function CashSessionBlock() {
       closingValue
     );
     if (r.error) { setMsg({ kind: "err", text: r.error }); return; }
-    closeLocalSession(closingValue, hasDiscrepancy ? discrepancyNote.trim() : undefined);
+    closeLocalSession(closingValue, { subsIncome, storeIncome, mealsIncome, inbodyIncome, totalIncome }, hasDiscrepancy ? discrepancyNote.trim() : undefined);
     setClosingInput("");
     setDiscrepancyNote("");
     setMsg({ kind: "ok", text: `أُغلقت الجلسة — ${user.displayName} — الفعلي: ${fmt(closingValue)}` });
@@ -109,14 +113,19 @@ export default function CashSessionBlock() {
         <div className="flex items-center gap-3">
           <Banknote size={15} className="text-[#F5C100]" />
           <h2 className="font-display text-xl tracking-widest text-[#F0EDE6] uppercase">
-            جلسة الكاش — {user.displayName}
+            جلسة الكاش
           </h2>
+          {isOpen && localSession?.openedByName && (
+            <span className="font-mono text-[10px] text-[#777777] tracking-widest">
+              فتحت بواسطة: <span className="text-[#AAAAAA]">{localSession.openedByName}</span>
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {isOpen ? (
             <div className="flex items-center gap-2 text-xs font-mono text-[#5CC45C]">
               <span className="w-2 h-2 rounded-full bg-[#5CC45C] animate-pulse" />
-              مفتوحة منذ {new Date(localSession!.openedAt).toLocaleTimeString("ar-EG-u-nu-latn", { hour: "2-digit", minute: "2-digit" })}
+              مفتوحة منذ {formatTime(localSession!.openedAt)}
             </div>
           ) : (
             <div className="flex items-center gap-2 text-xs font-mono text-[#777777]">
@@ -130,6 +139,11 @@ export default function CashSessionBlock() {
         {!isOpen ? (
           /* ── OPEN FORM ── */
           <div className="space-y-3">
+            {lastClosedByName && (
+              <p className="font-mono text-[10px] text-[#555555] tracking-widest">
+                آخر جلسة بواسطة: <span className="text-[#777777]">{lastClosedByName}</span>
+              </p>
+            )}
             {lastClosingCash > 0 ? (
               <div className="flex items-center gap-2 p-3 bg-[#F5C100]/5 border border-[#F5C100]/20 clip-corner-sm">
                 <Lock size={14} className="text-[#F5C100]" />

@@ -19,6 +19,7 @@ import {
 import type { CashSession } from "@/lib/types";
 import { formatCurrency } from "@/lib/business-logic";
 import PriceTag from "@/components/PriceTag";
+import { formatTime } from "@/lib/utils/time";
 
 interface ReconciliationBlockProps {
   session: CashSession;
@@ -323,7 +324,7 @@ function ClosedStateView({ session }: { session: CashSession }) {
           {session.closedAt && (
             <span className="flex items-center gap-1 font-mono text-[10px] text-secondary">
               <Clock size={10} />
-              تم الإغلاق في {new Date(session.closedAt).toLocaleTimeString("ar-EG-u-nu-latn", { hour: "2-digit", minute: "2-digit" })}
+              تم الإغلاق في {formatTime(session.closedAt)}
             </span>
           )}
         </div>
@@ -365,8 +366,10 @@ export default function ReconciliationBlock({
   const isClosed = session.status === "closed" || session.status === "discrepancy";
 
   const formattedDate = useMemo(() => {
-    const d = new Date(session.date);
-    return d.toLocaleDateString("ar-EG-u-nu-latn", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
+    return new Date(session.date).toLocaleDateString("ar-SY", {
+      timeZone: "Asia/Damascus",
+      weekday: "long", day: "2-digit", month: "long", year: "numeric",
+    });
   }, [session.date]);
 
   return (

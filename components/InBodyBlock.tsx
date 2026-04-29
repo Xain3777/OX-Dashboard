@@ -2,11 +2,11 @@
 
 import { useState, useMemo, useRef, useEffect } from "react";
 import { Activity, Plus, CheckCircle, AlertTriangle, Users, Undo2 } from "lucide-react";
-import { MEMBERS } from "@/lib/mock-data";
 import { useAuth } from "@/lib/auth-context";
 import { useStore, type InBodyMemberType, type InBodySession } from "@/lib/store-context";
 import { useCurrency } from "@/lib/currency-context";
 import { pushInBody, cancelTransaction } from "@/lib/supabase/intake";
+import { supabaseBrowser } from "@/lib/supabase/client";
 
 const MEMBER_PRICE_USD     = 5;
 const NON_MEMBER_PRICE_USD = 8;
@@ -15,18 +15,28 @@ function fmtUSD(n: number) { return `$${n.toFixed(2)}`; }
 
 // ── Member search ─────────────────────────────────────────────────────────────
 
-function MemberSearch({ value, onChange }: { value: string; onChange: (id: string, name: string) => void }) {
+type DbMember = { id: string; name: string };
+
+function MemberSearch({
+  value,
+  onChange,
+  members,
+}: {
+  value: string;
+  onChange: (id: string, name: string) => void;
+  members: DbMember[];
+}) {
   const [query, setQuery] = useState("");
   const [open,  setOpen]  = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   const results = useMemo(() => {
-    if (!query.trim()) return MEMBERS.slice(0, 8);
+    if (!query.trim()) return members.slice(0, 8);
     const q = query.toLowerCase();
-    return MEMBERS.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
-  }, [query]);
+    return members.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
+  }, [query, members]);
 
-  const selected = MEMBERS.find((m) => m.id === value);
+  const selected = members.find((m) => m.id === value);
 
   useEffect(() => {
     function onClick(e: MouseEvent) {
@@ -71,12 +81,22 @@ export default function InBodyBlock() {
   const { exchangeRate } = useCurrency();
   const { inBodySessions, addInBodySession, cancelInBodySession } = useStore();
 
+  const [members,    setMembers]    = useState<DbMember[]>([]);
   const [memberType, setMemberType] = useState<InBodyMemberType>("gym_member");
   const [memberId,   setMemberId]   = useState("");
   const [memberName, setMemberName] = useState("");
   const [guestName,  setGuestName]  = useState("");
   const [error,      setError]      = useState("");
   const [success,    setSuccess]    = useState(false);
+
+  useEffect(() => {
+    const supabase = supabaseBrowser();
+    supabase
+      .from("members")
+      .select("id, name")
+      .order("name")
+      .then(({ data }) => { if (data) setMembers(data as DbMember[]); });
+  }, []);
 
   const priceUSD = memberType === "gym_member" ? MEMBER_PRICE_USD : NON_MEMBER_PRICE_USD;
 
@@ -104,6 +124,7 @@ export default function InBodyBlock() {
 
     const r = await pushInBody({
       user: { id: user.id, displayName: user.displayName },
+      memberId: memberType === "gym_member" ? memberId : undefined,
       memberName: name,
       memberType,
       amountUSD: priceUSD,
@@ -244,7 +265,7 @@ export default function InBodyBlock() {
           </div>
 
           {memberType === "gym_member" ? (
-            <MemberSearch value={memberId}
+            <MemberSearch value={memberId} members={members}
               onChange={(id, name) => { setMemberId(id); setMemberName(name); setError(""); }} />
           ) : (
             <div className="flex flex-col gap-1 min-w-[180px] flex-1">

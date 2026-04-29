@@ -5,6 +5,8 @@ import { ListChecks, X, Undo2, ShoppingCart, Activity, Dumbbell } from "lucide-r
 import { useAuth } from "@/lib/auth-context";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { cancelTransaction, type CancellableTable } from "@/lib/supabase/intake";
+import { getActiveSession } from "@/lib/supabase/session";
+import { formatTime } from "@/lib/utils/time";
 
 type Kind = "sale" | "subscription" | "inbody";
 
@@ -28,7 +30,7 @@ const KIND_META: Record<Kind, { label: string; icon: React.ReactNode; color: str
 function fmtUSD(n: number) { return `$${n.toFixed(2)}`; }
 
 export default function SessionTransactionsList() {
-  const { user, isManager } = useAuth();
+  const { user } = useAuth();
   const supabase = supabaseBrowser();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[]>([]);
@@ -39,10 +41,9 @@ export default function SessionTransactionsList() {
 
   const resolveSession = useCallback(async () => {
     if (!user) return null;
-    const q = supabase.from("cash_sessions").select("id").eq("status", "open").order("opened_at", { ascending: false }).limit(1);
-    const { data } = isManager ? await q : await q.eq("opened_by", user.id);
-    return (data?.[0]?.id as string | undefined) ?? null;
-  }, [supabase, user, isManager]);
+    const session = await getActiveSession();
+    return session?.id ?? null;
+  }, [user]);
 
   const load = useCallback(async () => {
     try {
@@ -163,7 +164,7 @@ export default function SessionTransactionsList() {
         <div className="divide-y divide-[#252525]/60 max-h-[420px] overflow-y-auto">
           {rows.map((r) => {
             const meta = KIND_META[r.kind];
-            const time = new Date(r.createdAt).toLocaleTimeString("ar-SY", { hour: "2-digit", minute: "2-digit" });
+            const time = formatTime(r.createdAt);
             const cancelled = !!r.cancelledAt;
             return (
               <div

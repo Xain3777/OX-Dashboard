@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import type { Subscription, Product, CashSession } from "@/lib/types";
 import { formatDate, getProductCategoryLabel } from "@/lib/business-logic";
+import { formatTime } from "@/lib/utils/time";
 
 // ─── Alert model ───────────────────────────────────────────────────────────────
 
@@ -156,7 +157,7 @@ export default function AlertsBlock({
         severity: "critical",
         icon: <Clock size={15} />,
         message: "الجلسة النقدية لا تزال مفتوحة بعد الساعة 8:00 مساءً",
-        detail: `فتحها ${cashSession.openedBy} في ${new Date(cashSession.openedAt).toLocaleTimeString("ar-EG-u-nu-latn", { hour: "2-digit", minute: "2-digit" })} · يجب إغلاقها ومطابقتها`,
+        detail: `فتحها ${cashSession.openedBy} في ${formatTime(cashSession.openedAt)} · يجب إغلاقها ومطابقتها`,
       });
     }
   }

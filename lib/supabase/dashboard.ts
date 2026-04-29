@@ -136,6 +136,155 @@ export async function fetchLiveKPI(): Promise<LiveKPI> {
   };
 }
 
+// ─── Daily Report ─────────────────────────────────────────────────────────────
+
+export interface DailyReportRow {
+  time: string;
+  type: "subscription" | "sale_store" | "sale_kitchen" | "inbody" | "expense";
+  description: string;
+  by: string;
+  amount: number; // positive = income, negative = expense
+}
+
+export interface DailyReport {
+  date: string;
+  sessionsCount: number;
+  totalIncome: number;
+  totalExpenses: number;
+  net: number;
+  rows: DailyReportRow[];
+}
+
+export async function fetchDailyReport(date: string): Promise<DailyReport> {
+  const supabase = supabaseBrowser();
+  const dayStart = `${date}T00:00:00.000Z`;
+  const dayEnd   = `${date}T23:59:59.999Z`;
+
+  // Fetch sessions for the day to get session IDs
+  const { data: sessions } = await supabase
+    .from("cash_sessions")
+    .select("id")
+    .gte("opened_at", dayStart)
+    .lte("opened_at", dayEnd);
+
+  const sessionIds = (sessions ?? []).map((s: Record<string, unknown>) => String(s.id));
+
+  // Fetch profiles for name resolution
+  const { data: profiles } = await supabase
+    .from("profiles")
+    .select("id, display_name");
+  const nameMap: Record<string, string> = {};
+  for (const p of profiles ?? []) {
+    const pr = p as Record<string, unknown>;
+    nameMap[String(pr.id)] = String(pr.display_name ?? "");
+  }
+
+  const rows: DailyReportRow[] = [];
+
+  if (sessionIds.length > 0) {
+    // Subscriptions
+    const { data: subs } = await supabase
+      .from("subscriptions")
+      .select("created_at, member_name, paid_amount, created_by")
+      .in("cash_session_id", sessionIds)
+      .is("cancelled_at", null);
+    for (const s of subs ?? []) {
+      const r = s as Record<string, unknown>;
+      rows.push({
+        time: String(r.created_at ?? ""),
+        type: "subscription",
+        description: `اشتراك — ${String(r.member_name ?? "")}`,
+        by: nameMap[String(r.created_by ?? "")] ?? String(r.created_by ?? ""),
+        amount: Number(r.paid_amount ?? 0),
+      });
+    }
+
+    // Store sales
+    const { data: storeSales } = await supabase
+      .from("sales")
+      .select("created_at, notes, total, created_by_name")
+      .in("cash_session_id", sessionIds)
+      .eq("source", "store")
+      .is("cancelled_at", null);
+    for (const s of storeSales ?? []) {
+      const r = s as Record<string, unknown>;
+      rows.push({
+        time: String(r.created_at ?? ""),
+        type: "sale_store",
+        description: `متجر — ${String(r.notes ?? "")}`,
+        by: String(r.created_by_name ?? ""),
+        amount: Number(r.total ?? 0),
+      });
+    }
+
+    // Kitchen sales
+    const { data: kitchenSales } = await supabase
+      .from("sales")
+      .select("created_at, notes, total, created_by_name")
+      .in("cash_session_id", sessionIds)
+      .eq("source", "kitchen")
+      .is("cancelled_at", null);
+    for (const s of kitchenSales ?? []) {
+      const r = s as Record<string, unknown>;
+      rows.push({
+        time: String(r.created_at ?? ""),
+        type: "sale_kitchen",
+        description: `مطبخ — ${String(r.notes ?? "")}`,
+        by: String(r.created_by_name ?? ""),
+        amount: Number(r.total ?? 0),
+      });
+    }
+
+    // InBody sessions
+    const { data: inbody } = await supabase
+      .from("inbody_sessions")
+      .select("created_at, member_name, amount, created_by_name")
+      .in("cash_session_id", sessionIds)
+      .is("cancelled_at", null);
+    for (const s of inbody ?? []) {
+      const r = s as Record<string, unknown>;
+      rows.push({
+        time: String(r.created_at ?? ""),
+        type: "inbody",
+        description: `InBody — ${String(r.member_name ?? "")}`,
+        by: String(r.created_by_name ?? ""),
+        amount: Number(r.amount ?? 0),
+      });
+    }
+
+    // Expenses
+    const { data: expenses } = await supabase
+      .from("expenses")
+      .select("created_at, description, amount_usd, created_by")
+      .in("cash_session_id", sessionIds)
+      .is("cancelled_at", null);
+    for (const s of expenses ?? []) {
+      const r = s as Record<string, unknown>;
+      rows.push({
+        time: String(r.created_at ?? ""),
+        type: "expense",
+        description: `مصروف — ${String(r.description ?? "")}`,
+        by: nameMap[String(r.created_by ?? "")] ?? String(r.created_by ?? ""),
+        amount: -Number(r.amount_usd ?? 0),
+      });
+    }
+  }
+
+  rows.sort((a, b) => a.time.localeCompare(b.time));
+
+  const totalIncome   = rows.filter(r => r.amount > 0).reduce((a, r) => a + r.amount, 0);
+  const totalExpenses = rows.filter(r => r.amount < 0).reduce((a, r) => a + Math.abs(r.amount), 0);
+
+  return {
+    date,
+    sessionsCount: sessionIds.length,
+    totalIncome:   Number(totalIncome.toFixed(2)),
+    totalExpenses: Number(totalExpenses.toFixed(2)),
+    net:           Number((totalIncome - totalExpenses).toFixed(2)),
+    rows,
+  };
+}
+
 const REALTIME_TABLES = [
   "subscriptions",
   "sales",

@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Image from "next/image";
 import { Shield, LogIn } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { supabaseBrowser } from "@/lib/supabase/client";
 
 const ACCOUNTS = [
   { displayName: "كوتش أدهم",    email: "adham@ox.local"       },
@@ -23,6 +24,11 @@ export default function LoginScreen() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // Clear any stale session when the login screen appears.
+  useEffect(() => {
+    void supabaseBrowser().auth.signOut();
+  }, []);
 
   async function handleLogin(e?: React.FormEvent) {
     e?.preventDefault();

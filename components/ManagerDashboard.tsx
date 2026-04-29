@@ -5,7 +5,7 @@ import Image from "next/image";
 import {
   Shield, LogOut, ChevronDown, ChevronUp, Plus, Trash2,
   Check, X, AlertTriangle, ChefHat, Package, ReceiptText,
-  Users, Dumbbell, Clock, Edit2, ShoppingBag,
+  Users, Dumbbell, Clock, Edit2, ShoppingBag, FileSpreadsheet,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
@@ -16,6 +16,8 @@ import {
   getPlanLabel, getOfferLabel, getProductCategoryLabel, getCategoryLabel,
 } from "@/lib/business-logic";
 import { pushExpense } from "@/lib/supabase/intake";
+import { fetchDailyReport } from "@/lib/supabase/dashboard";
+import { formatTime, formatDate } from "@/lib/utils/time";
 import KPIStrip from "@/components/KPIStrip";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -73,7 +75,7 @@ function useSessionLabel() {
       (s) => s.openedAt <= createdAt && (!s.closedAt || s.closedAt >= createdAt)
     );
     if (!sess) return "—";
-    return new Date(sess.openedAt).toLocaleDateString("ar-SY", { month: "short", day: "numeric" });
+    return new Date(sess.openedAt).toLocaleDateString("ar-SY", { timeZone: "Asia/Damascus", month: "short", day: "numeric" });
   }, [sessions]);
 }
 
@@ -181,8 +183,8 @@ function SessionsAccordion() {
         const inbodyI  = isLive ? store.inbodyIncome : (sess.inbodyIncome ?? 0);
         const totalI   = isLive ? store.totalIncome  : (sess.totalIncome  ?? 0);
         const running  = isLive ? store.runningCash  : (sess.actualCash   ?? 0);
-        const openedDt = new Date(sess.openedAt);
-        const closedDt = sess.closedAt ? new Date(sess.closedAt) : null;
+        const openedDt = sess.openedAt;
+        const closedDt = sess.closedAt ?? null;
         const diff     = sess.actualCash != null ? sess.actualCash - (sess.openingCash + totalI) : null;
 
         return (
@@ -191,11 +193,11 @@ function SessionsAccordion() {
               <div className="flex items-center gap-3 min-w-0">
                 <span className={`w-2 h-2 rounded-full shrink-0 ${isLive ? "bg-[#5CC45C] animate-pulse" : "bg-[#555555]"}`} />
                 <span className="font-display text-sm tracking-wider text-[#F0EDE6] truncate">
-                  {openedDt.toLocaleDateString("ar-SY", { weekday: "short", month: "short", day: "numeric" })}
+                  {new Date(openedDt).toLocaleDateString("ar-SY", { timeZone: "Asia/Damascus", weekday: "short", month: "short", day: "numeric" })}
                 </span>
                 <span className="font-mono text-[10px] text-[#555555] whitespace-nowrap">
-                  {openedDt.toLocaleTimeString("ar-SY", { hour: "2-digit", minute: "2-digit" })}
-                  {closedDt && ` ← ${closedDt.toLocaleTimeString("ar-SY", { hour: "2-digit", minute: "2-digit" })}`}
+                  {formatTime(openedDt)}
+                  {closedDt && ` ← ${formatTime(closedDt)}`}
                 </span>
                 {isLive
                   ? <span className="px-2 py-0.5 bg-[#5CC45C]/10 border border-[#5CC45C]/30 rounded text-[9px] font-mono text-[#5CC45C]">مفتوحة</span>
@@ -291,10 +293,8 @@ function SubscriptionsLog() {
               {sorted.map((sub) => (
                 <tr key={sub.id} className="hover:bg-[#252525]/20 transition-colors">
                   <td className="px-4 py-2.5 font-mono text-[#777777] whitespace-nowrap">
-                    {new Date(sub.createdAt).toLocaleDateString("ar-SY")}{" "}
-                    <span className="text-[9px] text-[#555555]">
-                      {new Date(sub.createdAt).toLocaleTimeString("ar-SY", { hour: "2-digit", minute: "2-digit" })}
-                    </span>
+                    {formatDate(sub.createdAt)}{" "}
+                    <span className="text-[9px] text-[#555555]">{formatTime(sub.createdAt)}</span>
                   </td>
                   <td className="px-4 py-2.5 text-[#F0EDE6] whitespace-nowrap font-medium">{sub.memberName}</td>
                   <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA] whitespace-nowrap">{getPlanLabel(sub.planType)}</td>
@@ -339,12 +339,11 @@ function InBodyLog() {
             <THead cols={["تاريخ التسجيل", "الاسم", "عضو / خارجي", "المبلغ المدفوع", "الموظف", "الجلسة", "الحالة"]} />
             <tbody className="divide-y divide-[#252525]/60">
               {sorted.map((s) => {
-                const d = new Date(s.createdAt);
                 return (
                   <tr key={s.id} className={`hover:bg-[#252525]/20 transition-colors ${s.cancelled ? "opacity-50" : ""}`}>
                     <td className="px-4 py-2.5 font-mono text-[#777777] whitespace-nowrap">
-                      {d.toLocaleDateString("ar-SY")}{" "}
-                      <span className="text-[9px] text-[#555555]">{d.toLocaleTimeString("ar-SY", { hour: "2-digit", minute: "2-digit" })}</span>
+                      {formatDate(s.createdAt)}{" "}
+                      <span className="text-[9px] text-[#555555]">{formatTime(s.createdAt)}</span>
                     </td>
                     <td className={`px-4 py-2.5 font-medium whitespace-nowrap ${s.cancelled ? "line-through text-[#777777]" : "text-[#F0EDE6]"}`}>
                       {s.memberName}
@@ -452,8 +451,8 @@ function StoreDashboard() {
                 {storeSales.map((s) => (
                   <tr key={s.id} className="hover:bg-[#252525]/20 transition-colors">
                     <td className="px-4 py-2 font-mono text-[#777777] whitespace-nowrap">
-                      {new Date(s.createdAt).toLocaleDateString("ar-SY")}{" "}
-                      <span className="text-[9px] text-[#555555]">{new Date(s.createdAt).toLocaleTimeString("ar-SY", { hour: "2-digit", minute: "2-digit" })}</span>
+                      {formatDate(s.createdAt)}{" "}
+                      <span className="text-[9px] text-[#555555]">{formatTime(s.createdAt)}</span>
                     </td>
                     <td className="px-4 py-2 text-[#F0EDE6] max-w-[180px] truncate">{s.productName}</td>
                     <td className="px-4 py-2 font-mono tabular-nums text-[#AAAAAA]">{s.quantity}</td>
@@ -644,8 +643,8 @@ function KitchenDashboard() {
                 {kitchenSales.map((s) => (
                   <tr key={s.id} className="hover:bg-[#252525]/20 transition-colors">
                     <td className="px-4 py-2 font-mono text-[#777777] whitespace-nowrap">
-                      {new Date(s.createdAt).toLocaleDateString("ar-SY")}{" "}
-                      <span className="text-[9px] text-[#555555]">{new Date(s.createdAt).toLocaleTimeString("ar-SY", { hour: "2-digit", minute: "2-digit" })}</span>
+                      {formatDate(s.createdAt)}{" "}
+                      <span className="text-[9px] text-[#555555]">{formatTime(s.createdAt)}</span>
                     </td>
                     <td className="px-4 py-2 text-[#F0EDE6]">{s.productName}</td>
                     <td className="px-4 py-2 font-mono tabular-nums text-[#AAAAAA]">{s.quantity}</td>
@@ -839,7 +838,7 @@ function ExpensesManager() {
               <tbody className="divide-y divide-[#252525]/60">
                 {sorted.map((exp) => (
                   <tr key={exp.id} className="hover:bg-[#252525]/20 transition-colors">
-                    <td className="px-4 py-2.5 font-mono text-[#777777] whitespace-nowrap">{new Date(exp.createdAt).toLocaleDateString("ar-SY")}</td>
+                    <td className="px-4 py-2.5 font-mono text-[#777777] whitespace-nowrap">{formatDate(exp.createdAt)}</td>
                     <td className="px-4 py-2.5 text-[#F0EDE6]">{exp.description}</td>
                     <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA] whitespace-nowrap">{getCategoryLabel(exp.category)}</td>
                     <td className="px-4 py-2.5 font-mono tabular-nums text-[#FF3333]">${exp.amount.toFixed(2)}</td>
@@ -855,6 +854,74 @@ function ExpensesManager() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ─── Daily Export ─────────────────────────────────────────────────────────────
+
+function DailyExportButton() {
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [loading, setLoading] = useState(false);
+
+  async function handleExport() {
+    setLoading(true);
+    try {
+      const XLSX = await import("xlsx");
+      const report = await fetchDailyReport(date);
+
+      const typeLabel: Record<string, string> = {
+        subscription: "اشتراك",
+        sale_store: "متجر",
+        sale_kitchen: "مطبخ",
+        inbody: "InBody",
+        expense: "مصروف",
+      };
+
+      const summaryRows = [
+        ["التقرير اليومي", date],
+        [],
+        ["عدد الجلسات", report.sessionsCount],
+        ["إجمالي الدخل ($)", report.totalIncome],
+        ["إجمالي المصاريف ($)", report.totalExpenses],
+        ["الصافي ($)", report.net],
+        [],
+        ["الوقت", "النوع", "التفاصيل", "بواسطة", "المبلغ ($)"],
+        ...report.rows.map(r => [
+          new Date(r.time).toLocaleTimeString("ar-SY", { timeZone: "Asia/Damascus", hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+          typeLabel[r.type] ?? r.type,
+          r.description,
+          r.by,
+          r.amount,
+        ]),
+      ];
+
+      const ws = XLSX.utils.aoa_to_sheet(summaryRows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, date);
+      XLSX.writeFile(wb, `OX-Report-${date}.xlsx`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-3 flex-wrap">
+      <input
+        type="date"
+        value={date}
+        onChange={e => setDate(e.target.value)}
+        className="ox-input font-mono text-sm"
+        dir="ltr"
+      />
+      <button
+        onClick={handleExport}
+        disabled={loading}
+        className="flex items-center gap-2 px-4 py-2 bg-[#F5C100]/15 border border-[#F5C100]/30 text-[#F5C100] font-display tracking-wider clip-corner-sm hover:bg-[#F5C100]/25 transition-colors disabled:opacity-40 cursor-pointer"
+      >
+        <FileSpreadsheet size={15} />
+        {loading ? "جاري التحميل..." : "تحميل التقرير اليومي"}
+      </button>
     </div>
   );
 }
@@ -933,9 +1000,12 @@ export default function ManagerDashboard() {
           <ExpensesManager />
         </Section>
 
-        <footer className="border-t border-gunmetal pt-6 pb-8 flex items-center gap-2">
-          <Image src="/logo-icon.png" alt="OX" width={20} height={20} className="h-5 w-auto" />
-          <span className="font-mono text-[10px] text-slate">نظام OX GYM المالي — لوحة المدير</span>
+        <footer className="border-t border-gunmetal pt-6 pb-8 space-y-4">
+          <DailyExportButton />
+          <div className="flex items-center gap-2">
+            <Image src="/logo-icon.png" alt="OX" width={20} height={20} className="h-5 w-auto" />
+            <span className="font-mono text-[10px] text-slate">نظام OX GYM المالي — لوحة المدير</span>
+          </div>
         </footer>
       </main>
     </div>

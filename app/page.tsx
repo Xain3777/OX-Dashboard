@@ -38,6 +38,7 @@ import {
   Dumbbell,
   Tag,
 } from "lucide-react";
+import { formatTime, formatDate } from "@/lib/utils/time";
 
 type Section =
   | "alerts"
@@ -143,10 +144,9 @@ function exportMonthlyExcel(ctx: {
   const inBodyRows = [
     ["التاريخ", "الوقت", "الاسم", "النوع", "نوع الجلسة", "السعر (ل.س)", "السعر ($)", "العملة", "الموظف"],
     ...inBodySessions.map(s => {
-      const d = new Date(s.createdAt);
       return [
-        d.toLocaleDateString("ar-SY"),
-        d.toLocaleTimeString("ar-SY", { hour: "2-digit", minute: "2-digit" }),
+        formatDate(s.createdAt),
+        formatTime(s.createdAt),
         s.memberName,
         s.memberType === "gym_member" ? "عضو النادي" : "زيارة خارجية",
         s.sessionType ?? "single",
@@ -164,10 +164,9 @@ function exportMonthlyExcel(ctx: {
   const storeRows = [
     ["التاريخ", "الوقت", "المنتج", "الكمية", "سعر الوحدة", "الإجمالي", "العملة", "ملاحظات"],
     ...sales.map(s => {
-      const d = new Date(s.createdAt);
       return [
-        d.toLocaleDateString("ar-SY"),
-        d.toLocaleTimeString("ar-SY", { hour: "2-digit", minute: "2-digit" }),
+        formatDate(s.createdAt),
+        formatTime(s.createdAt),
         s.productName,
         s.quantity,
         s.unitPrice,
@@ -184,9 +183,8 @@ function exportMonthlyExcel(ctx: {
   const subRows = [
     ["تاريخ الإنشاء", "العضو", "الخطة", "المبلغ", "العملة", "حالة الدفع", "الحالة"],
     ...subscriptions.map(s => {
-      const d = new Date(s.createdAt);
       return [
-        d.toLocaleDateString("ar-SY"),
+        formatDate(s.createdAt),
         s.memberName,
         s.planType,
         s.amount,
@@ -211,7 +209,7 @@ function exportMonthlyExcel(ctx: {
   XLSX.utils.book_append_sheet(wb, wsStock, "المخزون");
 
   // ── Save ───────────────────────────────────────────────────────────────────
-  const month = new Date().toLocaleDateString("ar-SY", { month: "long", year: "numeric" });
+  const month = new Date().toLocaleDateString("ar-SY", { timeZone: "Asia/Damascus", month: "long", year: "numeric" });
   XLSX.writeFile(wb, `ملخص_OX_GYM_${month}.xlsx`);
 }
 
@@ -501,8 +499,8 @@ function LiveFeedPanel({ feed }: { feed: ActivityEntry[] }) {
       </div>
       <div className="divide-y divide-[#252525]/60">
         {feed.slice(0, 30).map((entry) => {
-          const time = new Date(entry.timestamp).toLocaleTimeString("ar-SY", { hour: "2-digit", minute: "2-digit" });
-          const date = new Date(entry.timestamp).toLocaleDateString("ar-SY", { month: "short", day: "numeric" });
+          const time = formatTime(entry.timestamp);
+          const date = new Date(entry.timestamp).toLocaleDateString("ar-SY", { timeZone: "Asia/Damascus", month: "short", day: "numeric" });
           return (
             <div key={entry.id} className="flex items-center gap-3 px-5 py-2.5 hover:bg-[#252525]/30 transition-colors">
               <div className="shrink-0 w-5 h-5 flex items-center justify-center">

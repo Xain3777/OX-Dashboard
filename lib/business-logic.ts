@@ -26,6 +26,7 @@ const OFFER_BONUS_DAYS: Record<OfferType, number> = {
   referral_9: 60,
   couple: 0,
   corporate: 0,
+  college: 0,
 };
 
 const OFFER_DISCOUNT_PERCENT: Record<OfferType, number> = {
@@ -34,6 +35,7 @@ const OFFER_DISCOUNT_PERCENT: Record<OfferType, number> = {
   referral_9: 0,
   couple: 0,
   corporate: 15,
+  college: 20,
 };
 
 export function calculateEndDate(
@@ -84,6 +86,7 @@ export function getOfferLabel(offer: OfferType): string {
     referral_9: "إحالة ٩ أصدقاء (شهرين مجاناً)",
     couple: "عرض الزوجين ($60 لاثنين — شهر فقط)",
     corporate: "شركات / بنك (خصم ١٥٪)",
+    college: "خصم طلاب ٢٠٪",
   };
   return labels[offer];
 }
@@ -155,11 +158,10 @@ export function formatDate(dateStr: string): string {
 }
 
 export function formatTime(dateStr: string): string {
-  const d = new Date(dateStr);
-  return d.toLocaleTimeString("en-US", {
+  return new Date(dateStr).toLocaleTimeString("ar-SY", {
+    timeZone: "Asia/Damascus",
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false,
   });
 }
 

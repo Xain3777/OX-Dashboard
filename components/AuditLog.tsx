@@ -125,15 +125,16 @@ const FILTER_ACTIONS: Record<FilterTab, AuditAction[] | null> = {
 // ── TIMESTAMP FORMAT ──────────────────────────────────────────
 
 function formatHHMM(isoStr: string): string {
-  const d = new Date(isoStr);
-  const hh = d.getHours().toString().padStart(2, "0");
-  const mm = d.getMinutes().toString().padStart(2, "0");
-  return `${hh}:${mm}`;
+  return new Date(isoStr).toLocaleTimeString("ar-SY", {
+    timeZone: "Asia/Damascus",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function formatDateShort(isoStr: string): string {
-  const d = new Date(isoStr);
-  return d.toLocaleDateString("ar-EG-u-nu-latn", {
+  return new Date(isoStr).toLocaleDateString("ar-SY", {
+    timeZone: "Asia/Damascus",
     day: "2-digit",
     month: "short",
   });

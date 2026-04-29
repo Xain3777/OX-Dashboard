@@ -35,9 +35,6 @@ const AuthContext = createContext<AuthContextType>({
   isManager: false,
 });
 
-// If the Supabase session check takes longer than this, treat tokens as stale.
-const SESSION_TIMEOUT_MS = 4000;
-
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -67,36 +64,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let alive = true;
 
+    // Load initial session without a timeout — middleware keeps cookies fresh.
     (async () => {
-      let sess: { user?: { id: string; email?: string } } | null = null;
-      try {
-        const timeout = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("session-timeout")), SESSION_TIMEOUT_MS)
-        );
-        const { data, error } = await Promise.race([
-          supabase.auth.getSession(),
-          timeout,
-        ]);
-        if (error) throw error;
-        sess = data.session;
-      } catch {
-        sess = null;
-      }
-      if (sess?.user && alive) {
-        const profile = await loadProfile(sess.user.id, sess.user.email ?? "");
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user && alive) {
+        const profile = await loadProfile(session.user.id, session.user.email ?? "");
         if (alive) setUser(profile);
       }
       if (alive) setLoading(false);
     })();
 
-    const { data: sub } = supabase.auth.onAuthStateChange(
-      async (_evt: string, session: { user?: { id: string; email?: string } } | null) => {
-        if (!alive) return;
+    // Only react to explicit sign-in/sign-out events.
+    // INITIAL_SESSION and TOKEN_REFRESHED are intentionally ignored to prevent
+    // stale-cookie auto-login races.
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!alive) return;
+      if (event === "SIGNED_OUT") {
+        setUser(null);
+        return;
+      }
+      if (event === "SIGNED_IN") {
         if (!session?.user) { setUser(null); return; }
         const profile = await loadProfile(session.user.id, session.user.email ?? "");
-        setUser(profile);
+        if (alive) setUser(profile);
       }
-    );
+      // TOKEN_REFRESHED / INITIAL_SESSION / USER_UPDATED: no state change.
+    });
 
     return () => {
       alive = false;
@@ -123,10 +116,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = useCallback(async () => {
     try {
-      await Promise.race([
-        supabase.auth.signOut({ scope: "local" }),
-        new Promise<void>((resolve) => setTimeout(resolve, 3000)),
-      ]);
+      await supabase.auth.signOut();
     } catch {
       // ignore — clear state below regardless
     }

@@ -27,7 +27,8 @@ export type OfferType =
   | "referral_4"   // bring 4 friends → 1 month free
   | "referral_9"   // bring 9 friends → 2 months free
   | "couple"       // 2 people on 1-month → $60 flat
-  | "corporate";   // 15% discount on any plan
+  | "corporate"    // 15% discount on any plan
+  | "college";     // 20% discount for university students
 
 export type PaymentStatus = "paid" | "partial" | "unpaid";
 export type SubStatus = "active" | "expired" | "frozen" | "cancelled";

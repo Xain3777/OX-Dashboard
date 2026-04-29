@@ -5,6 +5,7 @@
 // logs success/failure, and returns the DB row on success.
 
 import { supabaseBrowser } from "./client";
+import { getActiveSession, getLastClosedSession } from "./session";
 
 export type Currency = "syp" | "usd";
 export type DbRow = Record<string, unknown>;
@@ -26,19 +27,6 @@ function logSuccess(table: string, operation: string, data: unknown) {
 
 function logError(table: string, operation: string, error: unknown) {
   console.error("Supabase write failed:", { table, operation, error });
-}
-
-async function getOpenSessionId(userId: string): Promise<string | null> {
-  const supabase = supabaseBrowser();
-  const { data } = await supabase
-    .from("cash_sessions")
-    .select("id")
-    .eq("opened_by", userId)
-    .eq("status", "open")
-    .order("opened_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  return (data?.id as string | undefined) ?? null;
 }
 
 // ── exchange rate ─────────────────────────────────────────────
@@ -104,7 +92,7 @@ export async function pushActivity(opts: {
   try {
     assertUser(opts.user);
     const supabase = supabaseBrowser();
-    const cashSessionId = await getOpenSessionId(opts.user.id);
+    const cashSessionId = (await getActiveSession())?.id ?? null;
     const { error } = await supabase.from("activity_feed").insert({
       action: opts.action,
       description: opts.description,
@@ -147,8 +135,10 @@ export async function pushSubscription(opts: {
     if (opts.offer === undefined) opts.offer = "none";
     if (opts.offer === "none") opts.groupId = undefined;
 
+    const session = await getActiveSession();
+    if (!session) return { error: "لا توجد جلسة نقدية مفتوحة — افتح جلسة أولاً" };
     const supabase = supabaseBrowser();
-    const cashSessionId = await getOpenSessionId(opts.user.id);
+    const cashSessionId = session.id;
     const currency = opts.currency ?? "usd";
     const amountSYP =
       currency === "syp"
@@ -216,8 +206,10 @@ export async function pushSale(opts: {
     if (!opts.exchangeRate || opts.exchangeRate <= 0) return { error: "سعر الصرف غير صالح" };
     if (opts.quantity <= 0 || opts.total < 0) return { error: "كمية أو مبلغ غير صالح" };
 
+    const session = await getActiveSession();
+    if (!session) return { error: "لا توجد جلسة نقدية مفتوحة — افتح جلسة أولاً" };
     const supabase = supabaseBrowser();
-    const cashSessionId = await getOpenSessionId(opts.user.id);
+    const cashSessionId = session.id;
     const currency = opts.currency ?? "usd";
     const amountSYP =
       currency === "syp"
@@ -267,6 +259,7 @@ export async function pushSale(opts: {
 
 export async function pushInBody(opts: {
   user: CurrentUser;
+  memberId?: string;
   memberName: string;
   memberType: "gym_member" | "non_member";
   amountUSD: number;
@@ -277,13 +270,16 @@ export async function pushInBody(opts: {
     if (!opts.exchangeRate || opts.exchangeRate <= 0) return { error: "سعر الصرف غير صالح" };
     if (opts.amountUSD < 0) return { error: "مبلغ غير صالح" };
 
+    const session = await getActiveSession();
+    if (!session) return { error: "لا توجد جلسة نقدية مفتوحة — افتح جلسة أولاً" };
     const supabase = supabaseBrowser();
-    const cashSessionId = await getOpenSessionId(opts.user.id);
+    const cashSessionId = session.id;
     const amountSYP = Math.round(opts.amountUSD * opts.exchangeRate);
 
     const { data, error } = await supabase
       .from("inbody_sessions")
       .insert({
+        member_id: opts.memberId ?? null,
         member_name: opts.memberName,
         session_type: opts.memberType,
         amount: opts.amountUSD,
@@ -329,8 +325,10 @@ export async function pushExpense(opts: {
     assertUser(opts.user);
     if (opts.amount <= 0) return { error: "المبلغ يجب أن يكون أكبر من صفر" };
 
+    const session = await getActiveSession();
+    if (!session) return { error: "لا توجد جلسة نقدية مفتوحة — افتح جلسة أولاً" };
     const supabase = supabaseBrowser();
-    const cashSessionId = await getOpenSessionId(opts.user.id);
+    const cashSessionId = session.id;
 
     const payload = {
       description: opts.description,
@@ -474,16 +472,10 @@ export async function fetchHandoffOpening(): Promise<{
   previousSessionId: string | null;
 }> {
   try {
-    const supabase = supabaseBrowser();
-    const { data, error } = await supabase.rpc("last_closed_session_for_today");
-    if (error) { logError("cash_sessions", "rpc-handoff", error); return { openingUSD: 0, previousSessionId: null }; }
-    const row =
-      Array.isArray(data) && data.length > 0
-        ? (data[0] as { id: string; actual_cash: number })
-        : null;
+    const last = await getLastClosedSession();
     return {
-      openingUSD: row ? Number(row.actual_cash ?? 0) : 0,
-      previousSessionId: row?.id ?? null,
+      openingUSD: last ? last.actualCash : 0,
+      previousSessionId: last?.id ?? null,
     };
   } catch (e) {
     logError("cash_sessions", "rpc-handoff", e);
@@ -497,17 +489,10 @@ export async function openCashSession(
 ): Promise<{ data?: DbRow; error?: string }> {
   try {
     assertUser(user);
+    const existing = await getActiveSession();
+    if (existing) return { error: "هناك جلسة نقدية مفتوحة بالفعل. أغلقها أولاً." };
+
     const supabase = supabaseBrowser();
-
-    const { data: existing } = await supabase
-      .from("cash_sessions")
-      .select("id")
-      .eq("opened_by", user.id)
-      .eq("status", "open");
-    if (existing && existing.length > 0) {
-      return { error: "لديك جلسة مفتوحة بالفعل. أغلقها أولاً." };
-    }
-
     const handoff = await fetchHandoffOpening();
     const openingCash = openingCashUSDOverride ?? handoff.openingUSD;
     const opening_locked = handoff.previousSessionId !== null;
@@ -516,7 +501,6 @@ export async function openCashSession(
       .from("cash_sessions")
       .insert({
         opened_by: user.id,
-        employee_name: user.displayName,
         opening_cash: openingCash,
         previous_session_id: handoff.previousSessionId,
         opening_locked,
@@ -553,12 +537,58 @@ export async function closeCashSession(
     assertUser(user);
     const supabase = supabaseBrowser();
 
+    // Fetch opening_cash from DB — do not trust frontend value.
+    const { data: sessionRow } = await supabase
+      .from("cash_sessions")
+      .select("opening_cash")
+      .eq("id", sessionId)
+      .maybeSingle();
+    const openingCash = Number((sessionRow as Record<string, unknown> | null)?.opening_cash ?? 0);
+
+    // Aggregate all income and expenses from DB for this session.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sumCol = async (table: string, col: string, filter?: { col: string; val: string }): Promise<number> => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let q: any = supabase.from(table).select(col).eq("cash_session_id", sessionId).is("cancelled_at", null);
+      if (filter) q = q.eq(filter.col, filter.val);
+      const { data } = await q;
+      return (data ?? []).reduce(
+        (a: number, r: unknown) => a + Number((r as Record<string, unknown>)[col] ?? 0),
+        0
+      );
+    };
+
+    const sumExpenses = async (): Promise<number> => {
+      const { data } = await supabase
+        .from("expenses")
+        .select("amount")
+        .eq("cash_session_id", sessionId);
+      return (data ?? []).reduce(
+        (a: number, r: unknown) => a + Number((r as Record<string, unknown>).amount ?? 0),
+        0
+      );
+    };
+
+    const [subsTotal, storeTotal, mealsTotal, inbodyTotal, expensesTotal] = await Promise.all([
+      sumCol("subscriptions",   "paid_amount"),
+      sumCol("sales",           "total", { col: "source", val: "store" }),
+      sumCol("sales",           "total", { col: "source", val: "kitchen" }),
+      sumCol("inbody_sessions", "amount"),
+      sumExpenses(),
+    ]);
+
+    const totalIncome  = subsTotal + storeTotal + mealsTotal + inbodyTotal;
+    const expectedCash = Number((openingCash + totalIncome - expensesTotal).toFixed(4));
+    const difference   = Number((actualCashUSD - expectedCash).toFixed(4));
+
     const { data, error } = await supabase
       .from("cash_sessions")
       .update({
         closed_by: user.id,
         closed_at: new Date().toISOString(),
         actual_cash: actualCashUSD,
+        expected_cash: expectedCash,
+        difference,
         status: "closed",
       })
       .eq("id", sessionId)
@@ -608,8 +638,10 @@ export async function pushPrivateSession(opts: {
     const totalPrice = BASE_TRAINER_FEE + groupPrice;
     const amountSYP = Math.round(totalPrice * opts.exchangeRate);
 
+    const session = await getActiveSession();
+    if (!session) return { error: "لا توجد جلسة نقدية مفتوحة — افتح جلسة أولاً" };
     const supabase = supabaseBrowser();
-    const cashSessionId = await getOpenSessionId(opts.user.id);
+    const cashSessionId = session.id;
 
     const { data, error } = await supabase
       .from("private_sessions")
@@ -667,7 +699,7 @@ export async function pushGroupOffer(opts: {
   try {
     assertUser(opts.user);
     const supabase = supabaseBrowser();
-    const cashSessionId = await getOpenSessionId(opts.user.id);
+    const cashSessionId = (await getActiveSession())?.id ?? null;
 
     const { data, error } = await supabase
       .from("group_offers")

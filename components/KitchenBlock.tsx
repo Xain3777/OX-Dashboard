@@ -7,15 +7,18 @@ import { useStore } from "@/lib/store-context";
 import { useCurrency } from "@/lib/currency-context";
 import { pushSale, cancelTransaction } from "@/lib/supabase/intake";
 import type { Sale } from "@/lib/types";
+import { formatTime } from "@/lib/utils/time";
+import { CHICKEN_MEAL_COST, CHICKEN_MEAL_PRICES } from "@/lib/meal-config";
 
 interface QtyMap { [id: string]: number }
 
 export default function KitchenBlock() {
-  const { user } = useAuth();
+  const { user, isManager } = useAuth();
   const { foodItems, addSale, cancelSale, sales } = useStore();
   const { exchangeRate } = useCurrency();
 
   const [qty,     setQty]     = useState<QtyMap>({});
+  const [mealQty, setMealQty] = useState({ small: 0, large: 0 });
   const [busy,    setBusy]    = useState(false);
   const [error,   setError]   = useState("");
   const [success, setSuccess] = useState("");
@@ -31,13 +34,18 @@ export default function KitchenBlock() {
     [sales, today]
   );
 
-  const totalUSD = useMemo(
+  const itemsTotalUSD = useMemo(
     () => activeItems.reduce((sum, it) => sum + (qty[it.id] ?? 0) * Number(it.price_usd), 0),
     [activeItems, qty]
   );
+  const mealsTotalUSD = useMemo(
+    () => (CHICKEN_MEAL_PRICES.small * mealQty.small + CHICKEN_MEAL_PRICES.large * mealQty.large) / exchangeRate,
+    [mealQty, exchangeRate]
+  );
+  const totalUSD = itemsTotalUSD + mealsTotalUSD;
   const orderedCount = useMemo(
-    () => Object.values(qty).reduce((a, n) => a + (n > 0 ? 1 : 0), 0),
-    [qty]
+    () => Object.values(qty).reduce((a, n) => a + (n > 0 ? 1 : 0), 0) + (mealQty.small > 0 ? 1 : 0) + (mealQty.large > 0 ? 1 : 0),
+    [qty, mealQty]
   );
 
   const inc = (id: string) => setQty((q) => ({ ...q, [id]: (q[id] ?? 0) + 1 }));
@@ -51,6 +59,7 @@ export default function KitchenBlock() {
 
     setBusy(true);
     const currentUser = { id: user.id, displayName: user.displayName };
+    const capturedTotal = totalUSD;
     for (const { it, q } of lines) {
       const unitPrice = Number(it.price_usd);
       const total = Number((q * unitPrice).toFixed(4));
@@ -83,9 +92,44 @@ export default function KitchenBlock() {
       };
       addSale(sale);
     }
+    for (const size of ["small", "large"] as const) {
+      const q = mealQty[size];
+      if (q === 0) continue;
+      const unitPrice = Number((CHICKEN_MEAL_PRICES[size] / exchangeRate).toFixed(4));
+      const total = Number((q * unitPrice).toFixed(4));
+      const productName = `وجبة دجاج — ${size === "small" ? "صغيرة" : "كبيرة"}`;
+      const r = await pushSale({
+        user: currentUser,
+        productName,
+        quantity: q,
+        unitPrice,
+        total,
+        currency: "usd",
+        exchangeRate,
+        source: "kitchen",
+        paymentMethod: "cash",
+      });
+      if (r.error) { setError(r.error); setBusy(false); return; }
+      const row = r.data!;
+      addSale({
+        id: String(row.id),
+        productId: "",
+        productName,
+        quantity: q,
+        unitPrice,
+        total,
+        paymentMethod: "cash",
+        currency: "usd",
+        source: "kitchen",
+        createdAt: String(row.created_at ?? new Date().toISOString()),
+        createdBy: user.id,
+        isReversal: false,
+      });
+    }
     setBusy(false);
-    setSuccess(`تم تسجيل الطلب — $${totalUSD.toFixed(2)}`);
+    setSuccess(`تم تسجيل الطلب — $${capturedTotal.toFixed(2)}`);
     setQty({});
+    setMealQty({ small: 0, large: 0 });
     setTimeout(() => setSuccess(""), 2500);
   }
 
@@ -152,6 +196,93 @@ export default function KitchenBlock() {
         )}
       </div>
 
+      {/* Chicken Meal Section */}
+      <div className="px-5 pb-4 border-t border-[#252525] pt-4">
+        <div className="flex items-center justify-between mb-3">
+          <p className="font-mono text-[10px] uppercase tracking-widest text-[#AAAAAA]">وجبة الدجاج</p>
+          {isManager && (
+            <span className="px-2 py-0.5 bg-[#252525] border border-[#555555]/40 rounded text-[10px] font-mono text-[#F5C100]">
+              بيانات التكلفة — مدير
+            </span>
+          )}
+        </div>
+
+        {isManager && (
+          <div className="mb-4 p-3 bg-[#111111] border border-[#252525] rounded-sm font-mono text-[10px]">
+            <p className="text-[#555555] uppercase tracking-wider mb-2">تفصيل التكلفة</p>
+            <div className="space-y-1">
+              {([
+                ["دجاج ١٠٠غ",     CHICKEN_MEAL_COST.chicken_100g],
+                ["أرز خام ١٠٠غ",  CHICKEN_MEAL_COST.rice_100g_raw],
+                ["سلطة",           CHICKEN_MEAL_COST.salad],
+                ["تغليف",          CHICKEN_MEAL_COST.packaging],
+              ] as [string, number][]).map(([label, val]) => (
+                <div key={label} className="flex justify-between text-[#AAAAAA]">
+                  <span>{label}</span>
+                  <span>{val.toLocaleString()} ل.س</span>
+                </div>
+              ))}
+              <div className="flex justify-between text-[#555555] border-t border-[#252525] pt-1 mt-1">
+                <span>تكلفة القاعدة</span>
+                <span>{CHICKEN_MEAL_COST.base_cost_total.toLocaleString()} ل.س</span>
+              </div>
+              <div className="flex justify-between text-[#F5C100] font-semibold">
+                <span>التكلفة النهائية</span>
+                <span>{CHICKEN_MEAL_COST.final_cost.toLocaleString()} ل.س</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
+          {(["small", "large"] as const).map((size) => {
+            const syp    = CHICKEN_MEAL_PRICES[size];
+            const usd    = syp / exchangeRate;
+            const profit = syp - CHICKEN_MEAL_COST.final_cost;
+            const q      = mealQty[size];
+            return (
+              <div
+                key={size}
+                className={`p-3 border rounded-sm transition-colors ${q > 0 ? "border-[#F5C100]/50 bg-[#F5C100]/5" : "border-[#252525] bg-[#111111]"}`}
+              >
+                <p className="font-body text-xs text-[#F0EDE6] mb-1">
+                  وجبة دجاج — {size === "small" ? "صغيرة" : "كبيرة"}
+                </p>
+                <p className="font-display text-base text-[#F5C100] tracking-wider">
+                  ${usd.toFixed(2)}
+                </p>
+                {isManager && (
+                  <p className={`font-mono text-[9px] mt-0.5 ${profit >= 0 ? "text-[#5CC45C]" : "text-[#FF3333]"}`}>
+                    ربح: {profit >= 0 ? "+" : ""}{profit.toLocaleString()} ل.س
+                  </p>
+                )}
+                <div className="mt-2.5 flex items-center gap-1.5">
+                  <button
+                    onClick={() => setMealQty((m) => ({ ...m, [size]: Math.max(0, m[size] - 1) }))}
+                    disabled={q === 0}
+                    className="w-6 h-6 rounded-sm border border-[#252525] bg-[#111111] hover:border-[#555555] disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center text-[#AAAAAA]"
+                  >
+                    <Minus size={11} />
+                  </button>
+                  <span className="font-mono tabular-nums text-xs text-[#F0EDE6] w-6 text-center">{q}</span>
+                  <button
+                    onClick={() => setMealQty((m) => ({ ...m, [size]: m[size] + 1 }))}
+                    className="w-6 h-6 rounded-sm border border-[#F5C100]/40 bg-[#F5C100]/10 hover:bg-[#F5C100]/20 flex items-center justify-center text-[#F5C100]"
+                  >
+                    <Plus size={11} />
+                  </button>
+                  {q > 0 && (
+                    <span className="font-mono tabular-nums text-[10px] text-[#5CC45C] mr-auto">
+                      ${(q * usd).toFixed(2)}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Total + submit */}
       <div className="border-t border-[#252525] px-5 py-3.5 flex flex-wrap items-center justify-between gap-3 bg-[#111111]/60">
         <div className="flex items-center gap-3">
@@ -189,7 +320,7 @@ export default function KitchenBlock() {
                     {s.quantity}× {s.productName}
                   </p>
                   <p className="font-mono text-[9px] text-[#555555]">
-                    {new Date(s.createdAt).toLocaleTimeString("ar-SY", { hour: "2-digit", minute: "2-digit" })}
+                    {formatTime(s.createdAt)}
                   </p>
                 </div>
                 <span className={`font-mono tabular-nums text-xs ${s.cancelled ? "text-[#777777] line-through" : "text-[#F5C100]"}`}>

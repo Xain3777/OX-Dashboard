@@ -649,7 +649,7 @@ export default function StoreBlock() {
           </div>
           <div className="space-y-1">
             {saleFeed.map((entry) => {
-              const time = new Date(entry.timestamp).toLocaleTimeString("ar-SY", { hour: "2-digit", minute: "2-digit" });
+              const time = formatTime(entry.timestamp);
               return (
                 <div key={entry.id} className="flex items-center justify-between py-1 border-b border-[#252525]/40 last:border-0">
                   <div className="flex items-center gap-2">

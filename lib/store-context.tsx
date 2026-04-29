@@ -8,7 +8,6 @@ import {
   useEffect,
   useRef,
   ReactNode,
-  useMemo,
 } from "react";
 import {
   Product, Sale, Expense, PaymentMethod, Subscription, FoodItem,
@@ -18,6 +17,7 @@ import { PRODUCTS, FOOD_ITEMS } from "./mock-data";
 import { generateId, calculateRemainingDays } from "./business-logic";
 import { useAuth } from "./auth-context";
 import { supabaseBrowser } from "./supabase/client";
+import { fetchSessionIncome, SessionIncome, getActiveSession, getLastClosedSession } from "./supabase/session";
 
 // ─── InBody ───────────────────────────────────────────────────────────────────
 
@@ -74,6 +74,7 @@ export interface LocalSession {
   id: string;
   openingCash: number;
   openedAt: string;
+  openedByName?: string;
   actualCash?: number;
   closedAt?: string;
   status: "open" | "closed";
@@ -101,6 +102,7 @@ export interface StoreState {
   localSession: LocalSession | null;
   sessionHistory: LocalSession[];
   lastClosingCash: number;
+  lastClosedByName: string;
 }
 
 // ─── Context type ─────────────────────────────────────────────────────────────
@@ -129,13 +131,14 @@ export interface StoreContextType extends StoreState {
   pushActivity: (entry: Omit<ActivityEntry, "id" | "timestamp">) => void;
   setLocalSession: (session: LocalSession | null) => void;
   openLocalSession: (openingCash?: number) => void;
-  closeLocalSession: (actualCash: number, discrepancyNote?: string) => void;
+  closeLocalSession: (actualCash: number, incomeSnapshot: SessionIncome, discrepancyNote?: string) => void;
   storeIncome: number;
   mealsIncome: number;
   subsIncome: number;
   inbodyIncome: number;
   totalIncome: number;
   runningCash: number;
+  lastClosedByName: string;
 }
 
 // ─── Initial state ────────────────────────────────────────────────────────────
@@ -154,16 +157,17 @@ const INITIAL_STATE: StoreState = {
   localSession: null,
   sessionHistory: [],
   lastClosingCash: 0,
+  lastClosedByName: "",
 };
 
 // ─── Supabase hydration ───────────────────────────────────────────────────────
 
-async function hydrateFromSupabase(userId: string): Promise<Partial<StoreState>> {
+async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
   try {
     const supabase = supabaseBrowser();
     const today = new Date().toISOString().slice(0, 10);
 
-    const [subsRes, salesRes, inbodyRes, sessRes, foodRes, rateRes] = await Promise.all([
+    const [subsRes, salesRes, inbodyRes, foodRes, rateRes, activeSession, lastClosed] = await Promise.all([
       supabase
         .from("subscriptions")
         .select("*")
@@ -178,20 +182,14 @@ async function hydrateFromSupabase(userId: string): Promise<Partial<StoreState>>
         .from("inbody_sessions")
         .select("*")
         .gte("created_at", today + "T00:00:00"),
-      supabase
-        .from("cash_sessions")
-        .select("*")
-        .eq("opened_by", userId)
-        .eq("status", "open")
-        .order("opened_at", { ascending: false })
-        .limit(1)
-        .maybeSingle(),
       supabase.from("food_items").select("*"),
       supabase
         .from("app_settings")
         .select("value")
         .eq("key", "exchange_rate_usd_syp")
         .maybeSingle(),
+      getActiveSession(),
+      getLastClosedSession(),
     ]);
 
     type Row = Record<string, unknown>;
@@ -247,15 +245,18 @@ async function hydrateFromSupabase(userId: string): Promise<Partial<StoreState>>
     }));
 
     let localSession: LocalSession | null = null;
-    if (sessRes.data) {
-      const s = sessRes.data as Row;
+    if (activeSession) {
       localSession = {
-        id: String(s.id),
-        openingCash: Number(s.opening_cash ?? 0),
-        openedAt: String(s.opened_at ?? ""),
+        id: activeSession.id,
+        openingCash: activeSession.openingCash,
+        openedAt: activeSession.openedAt,
+        openedByName: activeSession.employeeName,
         status: "open",
       };
     }
+
+    const lastClosingCash = lastClosed?.actualCash ?? 0;
+    const lastClosedByName = lastClosed?.openedByName ?? "";
 
     const foodRows = (foodRes.data ?? []) as Row[];
     const foodItems: FoodItem[] =
@@ -282,15 +283,11 @@ async function hydrateFromSupabase(userId: string): Promise<Partial<StoreState>>
       exchangeRate,
     });
 
-    return { subscriptions, sales, inBodySessions, localSession, foodItems, exchangeRate };
+    return { subscriptions, sales, inBodySessions, localSession, foodItems, exchangeRate, lastClosingCash, lastClosedByName };
   } catch (e) {
     console.error("Supabase hydration failed:", e);
     return {};
   }
-}
-
-function todayPrefix() {
-  return new Date().toISOString().slice(0, 10);
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -320,13 +317,14 @@ const StoreContext = createContext<StoreContextType>({
   pushActivity: () => {},
   setLocalSession: () => {},
   openLocalSession: () => {},
-  closeLocalSession: (_a: number, _n?: string) => {},
+  closeLocalSession: (_a: number, _s: SessionIncome, _n?: string) => {},
   storeIncome: 0,
   mealsIncome: 0,
   subsIncome: 0,
   inbodyIncome: 0,
   totalIncome: 0,
   runningCash: 0,
+  lastClosedByName: "",
 });
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -349,7 +347,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setStateRaw(INITIAL_STATE);
       return;
     }
-    hydrateFromSupabase(user.id).then((partial) => {
+    hydrateFromSupabase().then((partial) => {
       setStateRaw((prev) => ({ ...prev, ...partial }));
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -575,6 +573,34 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }));
   }, [setState]);
 
+  // ── DB-backed income ───────────────────────────────────────────────────────
+
+  const [incomeData, setIncomeData] = useState<SessionIncome>({
+    subsIncome: 0, storeIncome: 0, mealsIncome: 0, inbodyIncome: 0, totalIncome: 0,
+  });
+
+  const refreshIncome = useCallback(async (sessionId: string) => {
+    const data = await fetchSessionIncome(sessionId);
+    setIncomeData(data);
+  }, []);
+
+  useEffect(() => {
+    const sid = state.localSession?.id;
+    if (!sid || state.localSession?.status !== "open") {
+      setIncomeData({ subsIncome: 0, storeIncome: 0, mealsIncome: 0, inbodyIncome: 0, totalIncome: 0 });
+      return;
+    }
+    void refreshIncome(sid);
+    const supabase = supabaseBrowser();
+    const channel = supabase
+      .channel(`store-income-${sid}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "sales",           filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
+      .on("postgres_changes", { event: "*", schema: "public", table: "subscriptions",   filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
+      .on("postgres_changes", { event: "*", schema: "public", table: "inbody_sessions", filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [state.localSession?.id, state.localSession?.status, refreshIncome]);
+
   // ── Local session ──────────────────────────────────────────────────────────
 
   const setLocalSession = useCallback((session: LocalSession | null) => {
@@ -602,73 +628,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     });
   }, [setState]);
 
-  const closeLocalSession = useCallback((actualCash: number, discrepancyNote?: string) => {
+  const closeLocalSession = useCallback((actualCash: number, incomeSnapshot: SessionIncome, discrepancyNote?: string) => {
     setState((prev) => {
       if (!prev.localSession || prev.localSession.status !== "open") return prev;
-      const sessionStart = prev.localSession.openedAt;
-      const todayStr = new Date().toISOString().slice(0, 10);
-      const inSess = (t: string) =>
-        t.startsWith(todayStr) && (!sessionStart || t >= sessionStart);
-
-      const subsIncome = prev.subscriptions
-        .filter((s) => s.status !== "cancelled" && inSess(s.createdAt))
-        .reduce((sum, s) => sum + s.paidAmount, 0);
-      const storeIncome = prev.sales
-        .filter((s) => !s.isReversal && !s.cancelled && s.source !== "kitchen" && inSess(s.createdAt))
-        .reduce((sum, s) => sum + s.total, 0);
-      const mealsIncome = prev.sales
-        .filter((s) => !s.isReversal && !s.cancelled && s.source === "kitchen" && inSess(s.createdAt))
-        .reduce((sum, s) => sum + s.total, 0);
-      const inbodyIncome = prev.inBodySessions
-        .filter((s) => !s.cancelled && inSess(s.createdAt))
-        .reduce((sum, s) => sum + s.priceUSD, 0);
-
       const closedSession: LocalSession = {
         ...prev.localSession,
         actualCash,
         closedAt: new Date().toISOString(),
         status: "closed",
-        subsIncome,
-        storeIncome,
-        mealsIncome,
-        inbodyIncome,
-        totalIncome: subsIncome + storeIncome + mealsIncome + inbodyIncome,
+        subsIncome: incomeSnapshot.subsIncome,
+        storeIncome: incomeSnapshot.storeIncome,
+        mealsIncome: incomeSnapshot.mealsIncome,
+        inbodyIncome: incomeSnapshot.inbodyIncome,
+        totalIncome: incomeSnapshot.totalIncome,
         discrepancyNote,
       };
       return { ...prev, localSession: closedSession, lastClosingCash: actualCash };
     });
   }, [setState]);
-
-  // ── Computed income values ─────────────────────────────────────────────────
-
-  const today = todayPrefix();
-  const sessionStart = state.localSession?.openedAt;
-
-  const computedValues = useMemo(() => {
-    const isInSession = (createdAt: string) =>
-      createdAt.startsWith(today) && (!sessionStart || createdAt >= sessionStart);
-
-    const storeIncome = state.sales
-      .filter((s) => !s.isReversal && !s.cancelled && s.source !== "kitchen" && isInSession(s.createdAt))
-      .reduce((sum, s) => sum + s.total, 0);
-
-    const mealsIncome = state.sales
-      .filter((s) => !s.isReversal && !s.cancelled && s.source === "kitchen" && isInSession(s.createdAt))
-      .reduce((sum, s) => sum + s.total, 0);
-
-    const subsIncome = state.subscriptions
-      .filter((s) => s.status !== "cancelled" && isInSession(s.createdAt))
-      .reduce((sum, s) => sum + s.paidAmount, 0);
-
-    const inbodyIncome = state.inBodySessions
-      .filter((s) => !s.cancelled && isInSession(s.createdAt))
-      .reduce((sum, s) => sum + s.priceUSD, 0);
-
-    const totalIncome = storeIncome + mealsIncome + subsIncome + inbodyIncome;
-    const runningCash = (state.localSession?.openingCash ?? 0) + totalIncome;
-
-    return { storeIncome, mealsIncome, subsIncome, inbodyIncome, totalIncome, runningCash };
-  }, [state.sales, state.subscriptions, state.inBodySessions, state.localSession, today, sessionStart]);
 
   // ── Provide ────────────────────────────────────────────────────────────────
 
@@ -698,7 +675,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setLocalSession,
     openLocalSession,
     closeLocalSession,
-    ...computedValues,
+    ...incomeData,
+    runningCash: (state.localSession?.openingCash ?? 0) + incomeData.totalIncome,
   };
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
