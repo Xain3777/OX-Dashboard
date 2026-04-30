@@ -86,10 +86,16 @@ export async function getLastClosedSession(): Promise<{ id: string; actualCash: 
 export async function fetchSessionIncome(sessionId: string): Promise<SessionIncome> {
   const supabase = supabaseBrowser();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const sumCol = async (table: string, col: string, extra?: { col: string; val: string }): Promise<number> => {
+  const sumCol = async (
+    table: string,
+    col: string,
+    extra?: { col: string; val: string },
+    excludeTestMembers?: boolean,
+  ): Promise<number> => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let q: any = supabase.from(table).select(col).eq("cash_session_id", sessionId).is("cancelled_at", null);
     if (extra) q = q.eq(extra.col, extra.val);
+    if (excludeTestMembers) q = q.not("member_name", "ilike", "%test%");
     const { data } = await q;
     return (data ?? []).reduce(
       (a: number, r: unknown) => a + Number((r as Record<string, unknown>)[col] ?? 0),
@@ -97,10 +103,10 @@ export async function fetchSessionIncome(sessionId: string): Promise<SessionInco
     );
   };
   const [sub, store, meals, inbody] = await Promise.all([
-    sumCol("gym_subscriptions", "paid_amount"),
-    sumCol("sales",           "total", { col: "source", val: "store" }),
-    sumCol("sales",           "total", { col: "source", val: "kitchen" }),
-    sumCol("inbody_sessions", "amount"),
+    sumCol("gym_subscriptions", "paid_amount", undefined, true),
+    sumCol("sales",             "total", { col: "source", val: "store" }),
+    sumCol("sales",             "total", { col: "source", val: "kitchen" }),
+    sumCol("inbody_sessions",   "amount", undefined, true),
   ]);
   return {
     subsIncome:   Number(sub.toFixed(2)),

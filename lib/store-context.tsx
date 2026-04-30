@@ -172,6 +172,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
         .from("gym_subscriptions")
         .select("*")
         .is("cancelled_at", null)
+        .not("member_name", "ilike", "%test%")
         .order("created_at", { ascending: false }),
       supabase
         .from("sales")
@@ -181,7 +182,8 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       supabase
         .from("inbody_sessions")
         .select("*")
-        .gte("created_at", today + "T00:00:00"),
+        .gte("created_at", today + "T00:00:00")
+        .not("member_name", "ilike", "%test%"),
       supabase.from("food_items").select("*"),
       supabase.from("products").select("*"),
       supabase

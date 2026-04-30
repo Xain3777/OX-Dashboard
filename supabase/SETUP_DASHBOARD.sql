@@ -152,38 +152,48 @@ create policy "products write" on public.products for all    to authenticated
 drop policy if exists "cs read"   on public.cash_sessions;
 drop policy if exists "cs insert" on public.cash_sessions;
 drop policy if exists "cs update" on public.cash_sessions;
+-- Any staff member can READ cash sessions (so a receptionist who didn't open
+-- the session can still see the active one and record transactions against
+-- it). The DB-level `one_open_session` unique index still prevents two
+-- receptionists from opening parallel sessions; the update policy still
+-- restricts close to the opener or a manager.
 create policy "cs read"   on public.cash_sessions for select to authenticated
-  using (public.current_role() = 'manager' or opened_by = auth.uid());
+  using (public.current_user_role() in ('manager', 'reception'));
 create policy "cs insert" on public.cash_sessions for insert to authenticated
   with check (opened_by = auth.uid());
 create policy "cs update" on public.cash_sessions for update to authenticated
-  using (opened_by = auth.uid() or public.current_role() = 'manager');
+  using (opened_by = auth.uid() or public.current_user_role() = 'manager');
 
+-- Reads on intake tables are open to any staff so multi-receptionist
+-- session totals reflect every transaction in the active session, not
+-- just rows the calling user created. Writes/updates remain restricted
+-- to the row's creator (or a manager) — see the matching update policies
+-- in the 0002 section.
 drop policy if exists "subs read"   on public.gym_subscriptions;
 drop policy if exists "subs insert" on public.gym_subscriptions;
 create policy "subs read"   on public.gym_subscriptions for select to authenticated
-  using (public.current_role() = 'manager' or created_by = auth.uid());
+  using (public.current_user_role() in ('manager', 'reception'));
 create policy "subs insert" on public.gym_subscriptions for insert to authenticated
   with check (created_by = auth.uid());
 
 drop policy if exists "sales read"   on public.sales;
 drop policy if exists "sales insert" on public.sales;
 create policy "sales read"   on public.sales for select to authenticated
-  using (public.current_role() = 'manager' or created_by = auth.uid());
+  using (public.current_user_role() in ('manager', 'reception'));
 create policy "sales insert" on public.sales for insert to authenticated
   with check (created_by = auth.uid());
 
 drop policy if exists "inbody read"   on public.inbody_sessions;
 drop policy if exists "inbody insert" on public.inbody_sessions;
 create policy "inbody read"   on public.inbody_sessions for select to authenticated
-  using (public.current_role() = 'manager' or created_by = auth.uid());
+  using (public.current_user_role() in ('manager', 'reception'));
 create policy "inbody insert" on public.inbody_sessions for insert to authenticated
   with check (created_by = auth.uid());
 
 drop policy if exists "activity read"   on public.activity_feed;
 drop policy if exists "activity insert" on public.activity_feed;
 create policy "activity read"   on public.activity_feed for select to authenticated
-  using (public.current_role() = 'manager' or created_by = auth.uid());
+  using (public.current_user_role() in ('manager', 'reception'));
 create policy "activity insert" on public.activity_feed for insert to authenticated
   with check (created_by = auth.uid() or created_by is null);
 
@@ -296,7 +306,7 @@ drop policy if exists "expenses read"   on public.expenses;
 drop policy if exists "expenses insert" on public.expenses;
 drop policy if exists "expenses update" on public.expenses;
 create policy "expenses read"   on public.expenses for select to authenticated
-  using (public.current_role() = 'manager' or created_by = auth.uid());
+  using (public.current_user_role() in ('manager', 'reception'));
 create policy "expenses insert" on public.expenses for insert to authenticated
   with check (created_by = auth.uid());
 create policy "expenses update" on public.expenses for update to authenticated

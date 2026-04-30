@@ -155,16 +155,19 @@ create policy "products read"  on public.products for select to authenticated us
 create policy "products write" on public.products for all    to authenticated
   using (public.current_role() = 'manager') with check (public.current_role() = 'manager');
 
--- cash_sessions: reception sees own; manager sees all
+-- cash_sessions: any staff can READ all sessions (so a receptionist who
+-- didn't open the session can see the active one and record transactions
+-- against it). The DB-level `one_open_session` unique index still prevents
+-- parallel opens; close stays restricted to opener or manager.
 drop policy if exists "cs read"   on public.cash_sessions;
 drop policy if exists "cs insert" on public.cash_sessions;
 drop policy if exists "cs update" on public.cash_sessions;
 create policy "cs read"   on public.cash_sessions for select to authenticated
-  using (public.current_role() = 'manager' or opened_by = auth.uid());
+  using (public.current_user_role() in ('manager', 'reception'));
 create policy "cs insert" on public.cash_sessions for insert to authenticated
   with check (opened_by = auth.uid());
 create policy "cs update" on public.cash_sessions for update to authenticated
-  using (opened_by = auth.uid() or public.current_role() = 'manager');
+  using (opened_by = auth.uid() or public.current_user_role() = 'manager');
 
 -- intake tables
 drop policy if exists "subs read"   on public.gym_subscriptions;

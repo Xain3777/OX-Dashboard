@@ -39,6 +39,11 @@ function inSevenDaysISO() {
 }
 function todayISO() { return new Date().toISOString().slice(0, 10); }
 
+// Tables with a `member_name` column whose rows we want to exclude when
+// the name contains "test" (case-insensitive). Sales/expenses don't have
+// member_name, so the filter is skipped automatically.
+const MEMBER_NAMED_TABLES = new Set<string>(["gym_subscriptions", "inbody_sessions"]);
+
 async function sumUSD(
   table: string,
   col: string,
@@ -53,6 +58,7 @@ async function sumUSD(
     .gte("created_at", since)
     .is("cancelled_at", null);
   if (source) q = q.eq("source", source);
+  if (MEMBER_NAMED_TABLES.has(table)) q = q.not("member_name", "ilike", "%test%");
   const { data } = await q;
   return (data ?? []).reduce(
     (a: number, r: unknown) => a + Number((r as Record<string, unknown>)[col] ?? 0),
@@ -92,14 +98,16 @@ export async function fetchLiveKPI(): Promise<LiveKPI> {
       .from("gym_subscriptions")
       .select("member_name", { count: "exact", head: true })
       .eq("status", "active")
-      .is("cancelled_at", null),
+      .is("cancelled_at", null)
+      .not("member_name", "ilike", "%test%"),
     supabase
       .from("gym_subscriptions")
       .select("id", { count: "exact", head: true })
       .eq("status", "active")
       .is("cancelled_at", null)
       .gte("end_date", todayISO())
-      .lte("end_date", inSevenDaysISO()),
+      .lte("end_date", inSevenDaysISO())
+      .not("member_name", "ilike", "%test%"),
     // "Ended" = expired explicitly OR an active row whose end_date is in
     // the past. Cancelled rows are excluded. We can't combine `.or()` with
     // a chained `.is()` (it AND-merges in a way that breaks the OR group),
@@ -110,7 +118,8 @@ export async function fetchLiveKPI(): Promise<LiveKPI> {
       .or(
         `and(status.eq.expired,cancelled_at.is.null),` +
         `and(status.eq.active,end_date.lt.${todayISO()},cancelled_at.is.null)`
-      ),
+      )
+      .not("member_name", "ilike", "%test%"),
     supabase
       .from("cash_sessions")
       .select("opening_cash")
@@ -193,7 +202,8 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
       .from("gym_subscriptions")
       .select("created_at, member_name, paid_amount, created_by")
       .in("cash_session_id", sessionIds)
-      .is("cancelled_at", null);
+      .is("cancelled_at", null)
+      .not("member_name", "ilike", "%test%");
     for (const s of subs ?? []) {
       const r = s as Record<string, unknown>;
       rows.push({
@@ -250,7 +260,8 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
       .from("inbody_sessions")
       .select("created_at, member_name, amount, created_by_name")
       .in("cash_session_id", sessionIds)
-      .is("cancelled_at", null);
+      .is("cancelled_at", null)
+      .not("member_name", "ilike", "%test%");
     for (const s of inbody ?? []) {
       const r = s as Record<string, unknown>;
       rows.push({

@@ -443,6 +443,7 @@ export async function computeSessionIncome(sessionId: string): Promise<{
 }> {
   const supabase = supabaseBrowser();
 
+  const memberNamedTables = new Set(["gym_subscriptions", "inbody_sessions"]);
   const sumUSD = async (
     table: string,
     col: string,
@@ -451,6 +452,7 @@ export async function computeSessionIncome(sessionId: string): Promise<{
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let q: any = supabase.from(table).select(col).eq("cash_session_id", sessionId).is("cancelled_at", null);
     if (filter) q = q.eq(filter.col, filter.val);
+    if (memberNamedTables.has(table)) q = q.not("member_name", "ilike", "%test%");
     const { data } = await q;
     return (data ?? []).reduce(
       (a: number, r: unknown) => a + Number((r as Record<string, unknown>)[col] ?? 0),
@@ -564,12 +566,19 @@ export async function closeCashSession(
       .maybeSingle();
     const openingCash = Number((sessionRow as Record<string, unknown> | null)?.opening_cash ?? 0);
 
-    // Aggregate all income and expenses from DB for this session.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const sumCol = async (table: string, col: string, filter?: { col: string; val: string }): Promise<number> => {
+    // Aggregate all income and expenses from DB for this session. Tables
+    // with a member_name column also drop rows whose member name contains
+    // "test" so test entries don't pollute the close-out totals.
+    const memberNamedTables = new Set(["gym_subscriptions", "inbody_sessions"]);
+    const sumCol = async (
+      table: string,
+      col: string,
+      filter?: { col: string; val: string },
+    ): Promise<number> => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let q: any = supabase.from(table).select(col).eq("cash_session_id", sessionId).is("cancelled_at", null);
       if (filter) q = q.eq(filter.col, filter.val);
+      if (memberNamedTables.has(table)) q = q.not("member_name", "ilike", "%test%");
       const { data } = await q;
       return (data ?? []).reduce(
         (a: number, r: unknown) => a + Number((r as Record<string, unknown>)[col] ?? 0),

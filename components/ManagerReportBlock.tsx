@@ -100,11 +100,15 @@ export default function ManagerReportBlock() {
     });
 
     // 3. intake totals
+    const memberNamedTables = new Set(["gym_subscriptions", "inbody_sessions"]);
     const sumByUser = async (table: string, amountCol: string) => {
-      const { data } = await supabase
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let q: any = supabase
         .from(table)
         .select(`created_by, ${amountCol}, currency`)
         .gte("created_at", since);
+      if (memberNamedTables.has(table)) q = q.not("member_name", "ilike", "%test%");
+      const { data } = await q;
       const map: Record<string, { syp: number; usd: number }> = {};
       ((data ?? []) as unknown as Array<Record<string, unknown>>).forEach((row) => {
         const uid = row.created_by as string;

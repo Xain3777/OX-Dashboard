@@ -26,7 +26,8 @@ export default function LiveAlertsBlock() {
     const [subsRes, prodsRes, sessRes, discRes] = await Promise.all([
       supabase.from("gym_subscriptions")
         .select("id, member_id, member_name, plan_type, offer, start_date, end_date, amount, paid_amount, payment_status, payment_method, currency, status")
-        .is("cancelled_at", null),
+        .is("cancelled_at", null)
+        .not("member_name", "ilike", "%test%"),
       supabase.from("products")
         .select("id, name, category, cost, price, stock, low_stock_threshold, created_at"),
       supabase.from("cash_sessions")

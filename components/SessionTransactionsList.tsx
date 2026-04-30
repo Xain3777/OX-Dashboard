@@ -51,12 +51,15 @@ export default function SessionTransactionsList() {
       setSessionId(sid);
       if (!sid) { setRows([]); return; }
 
-      const fetchTable = async <T,>(table: string, select: string) => {
-        const { data } = await supabase
+      const fetchTable = async <T,>(table: string, select: string, excludeTestMembers?: boolean) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let q: any = supabase
           .from(table)
           .select(select)
           .eq("cash_session_id", sid)
           .order("created_at", { ascending: false });
+        if (excludeTestMembers) q = q.not("member_name", "ilike", "%test%");
+        const { data } = await q;
         return (data ?? []) as T[];
       };
 
@@ -66,8 +69,8 @@ export default function SessionTransactionsList() {
 
       const [sales, subs, inbody] = await Promise.all([
         fetchTable<SaleRow>("sales",            "id, product_name, quantity, total, created_at, cancelled_at, cancelled_reason"),
-        fetchTable<SubRow>("gym_subscriptions", "id, member_name, plan_type, paid_amount, created_at, cancelled_at, cancelled_reason"),
-        fetchTable<InBodyRow>("inbody_sessions","id, member_name, session_type, amount, created_at, cancelled_at, cancelled_reason"),
+        fetchTable<SubRow>("gym_subscriptions", "id, member_name, plan_type, paid_amount, created_at, cancelled_at, cancelled_reason", true),
+        fetchTable<InBodyRow>("inbody_sessions","id, member_name, session_type, amount, created_at, cancelled_at, cancelled_reason", true),
       ]);
 
       const all: Row[] = [
