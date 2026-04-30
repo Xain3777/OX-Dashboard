@@ -145,26 +145,29 @@ export async function pushSubscription(opts: {
         ? Math.round(opts.paidAmount)
         : Math.round(opts.paidAmount * opts.exchangeRate);
 
+    const subPayload = {
+      member_name: opts.memberName,
+      plan_type: opts.planType,
+      offer: opts.offer ?? "none",
+      start_date: opts.startDate,
+      end_date: opts.endDate,
+      amount: opts.amount,
+      paid_amount: opts.paidAmount,
+      payment_status: opts.paymentStatus,
+      payment_method: opts.paymentMethod ?? "cash",
+      currency,
+      exchange_rate: opts.exchangeRate,
+      amount_syp: amountSYP,
+      status: "active",
+      ...(opts.groupId ? { group_id: opts.groupId } : {}),
+      cash_session_id: cashSessionId,
+      created_by: opts.user.id,
+    };
+    console.log("Supabase insert payload:", { table: "subscriptions", payload: subPayload });
+
     const { data, error } = await supabase
       .from("subscriptions")
-      .insert({
-        member_name: opts.memberName,
-        plan_type: opts.planType,
-        offer: opts.offer ?? "none",
-        start_date: opts.startDate,
-        end_date: opts.endDate,
-        amount: opts.amount,
-        paid_amount: opts.paidAmount,
-        payment_status: opts.paymentStatus,
-        payment_method: opts.paymentMethod ?? "cash",
-        currency,
-        exchange_rate: opts.exchangeRate,
-        amount_syp: amountSYP,
-        status: "active",
-        group_id: opts.groupId ?? null,
-        cash_session_id: cashSessionId,
-        created_by: opts.user.id,
-      })
+      .insert(subPayload)
       .select()
       .single();
 
@@ -216,23 +219,26 @@ export async function pushSale(opts: {
         ? Math.round(opts.total)
         : Math.round(opts.total * opts.exchangeRate);
 
+    const salePayload = {
+      product_id: opts.productId ?? null,
+      product_name: opts.productName,
+      quantity: opts.quantity,
+      unit_price: opts.unitPrice,
+      total: opts.total,
+      currency,
+      exchange_rate: opts.exchangeRate,
+      amount_syp: amountSYP,
+      source: opts.source ?? "store",
+      payment_method: opts.paymentMethod ?? "cash",
+      cash_session_id: cashSessionId,
+      created_by: opts.user.id,
+      created_by_name: opts.user.displayName,
+    };
+    console.log("Supabase insert payload:", { table: "sales", payload: salePayload });
+
     const { data, error } = await supabase
       .from("sales")
-      .insert({
-        product_id: opts.productId ?? null,
-        product_name: opts.productName,
-        quantity: opts.quantity,
-        unit_price: opts.unitPrice,
-        total: opts.total,
-        currency,
-        exchange_rate: opts.exchangeRate,
-        amount_syp: amountSYP,
-        source: opts.source ?? "store",
-        payment_method: opts.paymentMethod ?? "cash",
-        cash_session_id: cashSessionId,
-        created_by: opts.user.id,
-        created_by_name: opts.user.displayName,
-      })
+      .insert(salePayload)
       .select()
       .single();
 
@@ -276,20 +282,23 @@ export async function pushInBody(opts: {
     const cashSessionId = session.id;
     const amountSYP = Math.round(opts.amountUSD * opts.exchangeRate);
 
+    const inbodyPayload = {
+      member_id: opts.memberId ?? null,
+      member_name: opts.memberName,
+      session_type: opts.memberType,
+      amount: opts.amountUSD,
+      currency: "usd",
+      exchange_rate: opts.exchangeRate,
+      amount_syp: amountSYP,
+      cash_session_id: cashSessionId,
+      created_by: opts.user.id,
+      created_by_name: opts.user.displayName,
+    };
+    console.log("Supabase insert payload:", { table: "inbody_sessions", payload: inbodyPayload });
+
     const { data, error } = await supabase
       .from("inbody_sessions")
-      .insert({
-        member_id: opts.memberId ?? null,
-        member_name: opts.memberName,
-        session_type: opts.memberType,
-        amount: opts.amountUSD,
-        currency: "usd",
-        exchange_rate: opts.exchangeRate,
-        amount_syp: amountSYP,
-        cash_session_id: cashSessionId,
-        created_by: opts.user.id,
-        created_by_name: opts.user.displayName,
-      })
+      .insert(inbodyPayload)
       .select()
       .single();
 
