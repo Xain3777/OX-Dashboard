@@ -25,12 +25,12 @@ export default function LiveAlertsBlock() {
 
     const [subsRes, prodsRes, sessRes, discRes] = await Promise.all([
       supabase.from("subscriptions")
-        .select("id, member_id, member_name, plan_type, offer, start_date, end_date, amount, paid_amount, payment_status, currency, status")
+        .select("id, member_id, member_name, plan_type, offer, start_date, end_date, amount, paid_amount, payment_status, payment_method, currency, status")
         .is("cancelled_at", null),
       supabase.from("products")
         .select("id, name, category, cost, price, stock, low_stock_threshold, created_at"),
       supabase.from("cash_sessions")
-        .select("id, opening_cash_syp, opened_at, opened_by")
+        .select("id, opening_cash, opened_at, opened_by")
         .eq("status", "open").order("opened_at", { ascending: false }).limit(1).maybeSingle(),
       supabase.from("discrepancy_logs").select("id", { count: "exact", head: true }).eq("resolved", false),
     ]);
@@ -50,7 +50,7 @@ export default function LiveAlertsBlock() {
         amount: Number(r.amount ?? 0),
         paidAmount: Number(r.paid_amount ?? 0),
         paymentStatus: String(r.payment_status ?? "paid") as Subscription["paymentStatus"],
-        paymentMethod: "cash",
+        paymentMethod: String(r.payment_method ?? "cash") as Subscription["paymentMethod"],
         currency: String(r.currency ?? "syp") as Subscription["currency"],
         status: String(r.status ?? "active") as Subscription["status"],
         createdAt: "",
@@ -73,7 +73,7 @@ export default function LiveAlertsBlock() {
       setOpenSession({
         id: String(sessRes.data.id),
         date: new Date(String(sessRes.data.opened_at)).toISOString().slice(0, 10),
-        openingCash: Number(sessRes.data.opening_cash_syp ?? 0),
+        openingCash: Number(sessRes.data.opening_cash ?? 0),
         lockedOpening: true,
         totalCashSales: 0,
         totalCashExpenses: 0,

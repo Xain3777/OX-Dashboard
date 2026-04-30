@@ -1,48 +1,44 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import Image from "next/image";
 import { Shield, LogIn } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
-import { supabaseBrowser } from "@/lib/supabase/client";
-
-const ACCOUNTS = [
-  { displayName: "كوتش أدهم",    email: "adham@ox.local"       },
-  { displayName: "حيدر",          email: "haider@ox.local"      },
-  { displayName: "نوار",          email: "reception1@ox.local"  },
-  { displayName: "موظف 2",        email: "reception2@ox.local"  },
-  { displayName: "موظف 3",        email: "reception3@ox.local"  },
-  { displayName: "موظف 4",        email: "reception4@ox.local"  },
-  { displayName: "موظف 5",        email: "reception5@ox.local"  },
-  { displayName: "موظف 6",        email: "reception6@ox.local"  },
-  { displayName: "موظف 7",        email: "reception7@ox.local"  },
-];
+import { STAFF_ACCOUNTS, findStaffById } from "@/lib/staff-accounts";
 
 export default function LoginScreen() {
   const { signIn } = useAuth();
-  const [email, setEmail] = useState("");
+  const [accountId, setAccountId] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // Clear any stale session when the login screen appears.
-  useEffect(() => {
-    void supabaseBrowser().auth.signOut();
-  }, []);
-
   async function handleLogin(e?: React.FormEvent) {
     e?.preventDefault();
-    if (!email || !password) return;
+    if (!accountId || !password) return;
+    const account = findStaffById(accountId);
+    if (!account) {
+      setError("الحساب غير معروف");
+      return;
+    }
+
     setError("");
     setBusy(true);
-    const { error } = await signIn(email.trim(), password);
-    setBusy(false);
-    if (error)
+    const { error } = await signIn(account.email, password);
+    if (error) {
+      setBusy(false);
       setError(
         error.includes("Invalid login") || error.includes("credentials")
-          ? "البريد الإلكتروني أو كلمة المرور غير صحيحة."
+          ? "كلمة المرور غير صحيحة."
           : error
       );
+      return;
+    }
+
+    // Hard nav so the proxy re-runs with the freshly-set cookie. Don't fall
+    // through to React state — that races the cookie write and the next
+    // page load may still see the anonymous session.
+    window.location.href = "/";
   }
 
   return (
@@ -69,39 +65,27 @@ export default function LoginScreen() {
           className="bg-charcoal border border-gunmetal p-6 clip-corner space-y-5"
         >
           <div className="space-y-1">
-            <label className="block font-mono text-[10px] text-secondary tracking-widest text-left">
+            <label className="block font-mono text-[10px] text-secondary tracking-widest text-right">
               الموظف
             </label>
             <select
-              value={email}
-              onChange={(e) => { setEmail(e.target.value); setError(""); }}
+              value={accountId}
+              onChange={(e) => { setAccountId(e.target.value); setError(""); }}
               className="ox-input w-full font-body text-base text-offwhite"
               dir="rtl"
+              autoFocus
             >
               <option value="">— اختر الموظف —</option>
-              {ACCOUNTS.map((a) => (
-                <option key={a.email} value={a.email}>{a.displayName}</option>
+              {STAFF_ACCOUNTS.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.displayName}
+                </option>
               ))}
             </select>
           </div>
 
           <div className="space-y-1">
-            <label className="block font-mono text-[10px] text-secondary tracking-widest text-left">
-              البريد الإلكتروني
-            </label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => { setEmail(e.target.value); setError(""); }}
-              placeholder="example@ox.local"
-              className="ox-input w-full font-body text-base text-offwhite"
-              dir="ltr"
-              autoComplete="username"
-            />
-          </div>
-
-          <div className="space-y-1">
-            <label className="block font-mono text-[10px] text-secondary tracking-widest text-left">
+            <label className="block font-mono text-[10px] text-secondary tracking-widest text-right">
               كلمة المرور
             </label>
             <input
@@ -124,7 +108,7 @@ export default function LoginScreen() {
 
           <button
             type="submit"
-            disabled={busy || !email || !password}
+            disabled={busy || !accountId || !password}
             className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gold hover:bg-gold-bright active:bg-gold-deep text-void font-display text-lg tracking-widest uppercase transition-colors clip-corner-sm cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <LogIn size={18} />

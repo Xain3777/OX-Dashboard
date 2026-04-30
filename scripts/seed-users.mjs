@@ -1,12 +1,16 @@
-// Seed 1 manager + 5 reception users.
-// Run once after applying supabase/migrations/0001_init.sql:
+// Seed dashboard staff (managers + reception) into auth.users + public.profiles.
+// The roster is sourced from data/staff-accounts.json — the SAME file that
+// drives the login dropdown — so this script and the UI never drift.
+//
+// Run after applying supabase/migrations/0001_init.sql (and the rest):
 //   node scripts/seed-users.mjs
 //
 // Reads NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY from .env.local.
 
 import { createClient } from "@supabase/supabase-js";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ── load .env.local manually (no dotenv dep) ────────────────
 const envPath = resolve(process.cwd(), ".env.local");
@@ -27,75 +31,58 @@ const admin = createClient(url, serviceKey, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
 
-// ── default password (CHANGE BEFORE PROD!) ──────────────────
 const DEFAULT_PASSWORD = process.env.SEED_DEFAULT_PASSWORD || "123456";
 
-// ── users to create ─────────────────────────────────────────
-// Owner = كوتش أدهم. Manager = حيدر. 7 reception staff.
-// All passwords default to 123456.
-const USERS = [
-  { email: "adham@ox.local",      display_name: "كوتش أدهم",  role: "manager"   },
-  { email: "haider@ox.local",     display_name: "حيدر",       role: "manager"   },
-  { email: "reception1@ox.local", display_name: "استقبال 1",  role: "reception" },
-  { email: "reception2@ox.local", display_name: "استقبال 2",  role: "reception" },
-  { email: "reception3@ox.local", display_name: "استقبال 3",  role: "reception" },
-  { email: "reception4@ox.local", display_name: "استقبال 4",  role: "reception" },
-  { email: "reception5@ox.local", display_name: "استقبال 5",  role: "reception" },
-  { email: "reception6@ox.local", display_name: "استقبال 6",  role: "reception" },
-  { email: "reception7@ox.local", display_name: "استقبال 7",  role: "reception" },
-];
+// ── load shared roster ──────────────────────────────────────
+const __dirname  = dirname(fileURLToPath(import.meta.url));
+const rosterPath = resolve(__dirname, "..", "data", "staff-accounts.json");
+const STAFF      = JSON.parse(readFileSync(rosterPath, "utf8"));
+
+async function findUserByEmail(email) {
+  // listUsers paginates; one page of 200 covers the seed list comfortably.
+  const { data, error } = await admin.auth.admin.listUsers({ perPage: 200 });
+  if (error) throw error;
+  return data.users.find((u) => u.email === email);
+}
+
+async function ensureAuthUser(email, displayName, role) {
+  const existing = await findUserByEmail(email);
+  if (existing) {
+    console.log(`• exists  ${email}`);
+    return existing.id;
+  }
+  const { data, error } = await admin.auth.admin.createUser({
+    email,
+    password: DEFAULT_PASSWORD,
+    email_confirm: true,
+    user_metadata: { display_name: displayName, role },
+  });
+  if (error) throw new Error(`create ${email}: ${error.message}`);
+  console.log(`+ created ${email}`);
+  return data.user.id;
+}
+
+async function upsertProfile(id, displayName, role) {
+  const { error } = await admin
+    .from("profiles")
+    .upsert(
+      { id, display_name: displayName, role, active: true },
+      { onConflict: "id" }
+    );
+  if (error) throw new Error(`profile ${displayName}: ${error.message}`);
+}
 
 async function main() {
-  for (const u of USERS) {
-    // Try to create — if exists, fetch and update profile.
-    let userId;
-    const { data: created, error: createErr } = await admin.auth.admin.createUser({
-      email: u.email,
-      password: DEFAULT_PASSWORD,
-      email_confirm: true,
-      user_metadata: { display_name: u.display_name, role: u.role },
-    });
-
-    if (createErr && !/already/i.test(createErr.message)) {
-      console.error(`✗ ${u.email}:`, createErr.message);
-      continue;
-    }
-
-    if (created?.user) {
-      userId = created.user.id;
-      console.log(`✓ created ${u.email}`);
-    } else {
-      // already exists — find by listing
-      const { data: list } = await admin.auth.admin.listUsers({ perPage: 200 });
-      const existing = list?.users.find((x) => x.email === u.email);
-      if (!existing) {
-        console.error(`✗ ${u.email}: created==null and not found in listUsers`);
-        continue;
-      }
-      userId = existing.id;
-      console.log(`• exists  ${u.email}`);
-    }
-
-    // Upsert profile
-    const { error: profErr } = await admin
-      .from("profiles")
-      .upsert(
-        { id: userId, display_name: u.display_name, role: u.role, active: true },
-        { onConflict: "id" }
-      );
-
-    if (profErr) {
-      console.error(`✗ profile ${u.email}:`, profErr.message);
-    } else {
-      console.log(`  → profile ok (${u.role}, ${u.display_name})`);
-    }
+  console.log(`Seeding ${STAFF.length} staff accounts (default password: ${DEFAULT_PASSWORD})\n`);
+  for (const s of STAFF) {
+    const id = await ensureAuthUser(s.email, s.displayName, s.role);
+    await upsertProfile(id, s.displayName, s.role);
+    console.log(`  → profile ${s.role.padEnd(10)} ${s.displayName}`);
   }
-
-  console.log(`\nDone. Default password for all users: ${DEFAULT_PASSWORD}`);
-  console.log("Tell each reception person to change their password after first login.");
+  console.log("\nDone. Tell each user to change their password after first login.");
 }
 
 main().catch((e) => {
-  console.error(e);
+  console.error("\n✗", e.message);
   process.exit(1);
 });

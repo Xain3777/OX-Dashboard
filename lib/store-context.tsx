@@ -167,7 +167,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
     const supabase = supabaseBrowser();
     const today = new Date().toISOString().slice(0, 10);
 
-    const [subsRes, salesRes, inbodyRes, foodRes, rateRes, activeSession, lastClosed] = await Promise.all([
+    const [subsRes, salesRes, inbodyRes, foodRes, productsRes, rateRes, activeSession, lastClosed] = await Promise.all([
       supabase
         .from("subscriptions")
         .select("*")
@@ -183,6 +183,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
         .select("*")
         .gte("created_at", today + "T00:00:00"),
       supabase.from("food_items").select("*"),
+      supabase.from("products").select("*"),
       supabase
         .from("app_settings")
         .select("value")
@@ -230,19 +231,28 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       isReversal: false,
     }));
 
-    const inBodySessions: InBodySession[] = (inbodyRes.data ?? []).map((row: Row) => ({
-      id: String(row.id),
-      memberType: String(row.session_type ?? "gym_member") as InBodyMemberType,
-      memberName: String(row.member_name ?? ""),
-      priceUSD: Number(row.amount ?? 0),
-      priceSYP: Number(row.amount_syp ?? 0),
-      currency: "usd" as const,
-      paymentMethod: "cash" as PaymentMethod,
-      cancelled: !!row.cancelled_at,
-      createdAt: String(row.created_at ?? ""),
-      createdBy: String(row.created_by ?? ""),
-      createdByName: String(row.created_by_name ?? ""),
-    }));
+    const inBodySessions: InBodySession[] = (inbodyRes.data ?? []).map((row: Row) => {
+      // session_type historically held both "category" labels (single, package_5,
+      // package_10) and "audience" labels (gym_member, non_member). Only the
+      // audience values map to InBodyMemberType — anything else is legacy data
+      // and defaults to gym_member.
+      const sessionType = String(row.session_type ?? "");
+      const memberType: InBodyMemberType =
+        sessionType === "non_member" ? "non_member" : "gym_member";
+      return {
+        id: String(row.id),
+        memberType,
+        memberName: String(row.member_name ?? ""),
+        priceUSD: Number(row.amount ?? 0),
+        priceSYP: Number(row.amount_syp ?? 0),
+        currency: "usd" as const,
+        paymentMethod: "cash" as PaymentMethod,
+        cancelled: !!row.cancelled_at,
+        createdAt: String(row.created_at ?? ""),
+        createdBy: String(row.created_by ?? ""),
+        createdByName: String(row.created_by_name ?? ""),
+      };
+    });
 
     let localSession: LocalSession | null = null;
     if (activeSession) {
@@ -270,6 +280,21 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
           }))
         : FOOD_ITEMS;
 
+    const productRows = (productsRes.data ?? []) as Row[];
+    const products: Product[] =
+      productRows.length > 0
+        ? productRows.map((row) => ({
+            id: String(row.id),
+            name: String(row.name ?? ""),
+            category: String(row.category ?? "other") as Product["category"],
+            cost: Number(row.cost ?? 0),
+            price: Number(row.price ?? 0),
+            stock: Number(row.stock ?? 0),
+            lowStockThreshold: Number(row.low_stock_threshold ?? 5),
+            createdAt: String(row.created_at ?? ""),
+          }))
+        : PRODUCTS;
+
     const rateVal = rateRes.data?.value;
     const rateNum = typeof rateVal === "number" ? rateVal : Number(rateVal);
     const exchangeRate = Number.isFinite(rateNum) && rateNum > 0 ? rateNum : 13200;
@@ -280,10 +305,11 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       inBodySessions: inBodySessions.length,
       hasOpenSession: !!localSession,
       foodItems: foodItems.length,
+      products: products.length,
       exchangeRate,
     });
 
-    return { subscriptions, sales, inBodySessions, localSession, foodItems, exchangeRate, lastClosingCash, lastClosedByName };
+    return { subscriptions, sales, inBodySessions, localSession, foodItems, products, exchangeRate, lastClosingCash, lastClosedByName };
   } catch (e) {
     console.error("Supabase hydration failed:", e);
     return {};

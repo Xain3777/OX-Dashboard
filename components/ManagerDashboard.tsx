@@ -19,6 +19,7 @@ import { pushExpense } from "@/lib/supabase/intake";
 import { fetchDailyReport } from "@/lib/supabase/dashboard";
 import { formatTime, formatDate } from "@/lib/utils/time";
 import KPIStrip from "@/components/KPIStrip";
+import { findStaffByEmail } from "@/lib/staff-accounts";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -44,21 +45,17 @@ const FREQ_LABELS: Record<ExpenseFrequency, string> = {
   monthly: "شهري", weekly: "أسبوعي", daily: "يومي", one_time: "مرة واحدة",
 };
 
-// Maps local auth email IDs to display names
-const EMPLOYEE_MAP: Record<string, string> = {
-  "adham@ox.local":      "كوتش أدهم",
-  "haider@ox.local":     "حيدر",
-  "reception1@ox.local": "نوار",
-  "reception2@ox.local": "ساميلا راعي",
-  "reception3@ox.local": "آيه ابراهيم",
-  "reception4@ox.local": "سالي رجب",
-  "reception5@ox.local": "رند اسماعيل",
-  "reception6@ox.local": "ناديا ابراهيم",
-  "reception7@ox.local": "استقبال ٧",
-};
-
-function fmtEmployee(id: string): string {
-  return EMPLOYEE_MAP[id] ?? id.replace(/@.*$/, "");
+// In modern data, `createdBy` is the auth.users UUID (not an email). We try
+// the email path first (legacy rows), fall back to the rich row-level
+// `created_by_name` if it was passed in, otherwise show a short UUID prefix.
+// Phase 4 fix will add `created_by_name` to subscription writes too.
+function fmtEmployee(idOrEmail: string, fallbackName?: string): string {
+  const staff = findStaffByEmail(idOrEmail);
+  if (staff) return staff.displayName;
+  if (fallbackName) return fallbackName;
+  if (idOrEmail.includes("@")) return idOrEmail.replace(/@.*$/, "");
+  // UUID — show first 8 chars rather than the full thing
+  return idOrEmail.slice(0, 8);
 }
 
 // ─── Session label helper ─────────────────────────────────────────────────────

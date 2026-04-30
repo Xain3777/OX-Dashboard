@@ -518,7 +518,17 @@ export async function openCashSession(
       .select()
       .single();
 
-    if (error) { logError("cash_sessions", "insert", error); return { error: error.message }; }
+    if (error) {
+      logError("cash_sessions", "insert", error);
+      // 23505 = unique_violation. The 0013 partial unique index enforces
+      // "at most one open session" at the DB level — surface the same
+      // localized message the pre-check gives.
+      const code = (error as { code?: string }).code;
+      if (code === "23505") {
+        return { error: "هناك جلسة نقدية مفتوحة بالفعل. أغلقها أولاً." };
+      }
+      return { error: error.message };
+    }
     if (!data) { logError("cash_sessions", "insert", "no row returned"); return { error: "لم يتم فتح الجلسة — تحقق من RLS" }; }
     logSuccess("cash_sessions", "insert", data);
 
@@ -567,15 +577,26 @@ export async function closeCashSession(
       );
     };
 
+    // Expenses must (1) exclude soft-deleted rows and (2) convert SYP to USD
+    // using the per-row exchange_rate snapshot. Without (1), cancelled
+    // expenses silently subtract from expectedCash. Without (2), an SYP
+    // expense's raw value is treated as USD and the close looks short by
+    // thousands of dollars.
     const sumExpenses = async (): Promise<number> => {
       const { data } = await supabase
         .from("expenses")
-        .select("amount")
-        .eq("cash_session_id", sessionId);
-      return (data ?? []).reduce(
-        (a: number, r: unknown) => a + Number((r as Record<string, unknown>).amount ?? 0),
-        0
-      );
+        .select("amount, currency, exchange_rate")
+        .eq("cash_session_id", sessionId)
+        .is("cancelled_at", null);
+      return (data ?? []).reduce((a: number, r: unknown) => {
+        const row = r as Record<string, unknown>;
+        const amount = Number(row.amount ?? 0);
+        const rate = Number(row.exchange_rate ?? 0);
+        const usd = String(row.currency ?? "usd") === "syp" && rate > 0
+          ? amount / rate
+          : amount;
+        return a + usd;
+      }, 0);
     };
 
     const [subsTotal, storeTotal, mealsTotal, inbodyTotal, expensesTotal] = await Promise.all([
@@ -590,6 +611,9 @@ export async function closeCashSession(
     const expectedCash = Number((openingCash + totalIncome - expensesTotal).toFixed(4));
     const difference   = Number((actualCashUSD - expectedCash).toFixed(4));
 
+    // The status='open' filter prevents accidental double-close — without it,
+    // a stale tab calling close on an already-closed session silently
+    // overwrites its actual_cash / difference, corrupting the audit trail.
     const { data, error } = await supabase
       .from("cash_sessions")
       .update({
@@ -601,12 +625,13 @@ export async function closeCashSession(
         status: "closed",
       })
       .eq("id", sessionId)
+      .eq("status", "open")
       .select();
 
     if (error) { logError("cash_sessions", "update-close", error); return { error: error.message }; }
     if (!data || (data as unknown[]).length === 0) {
       logError("cash_sessions", "update-close", "no rows updated");
-      return { error: "لم يتم إغلاق الجلسة — تحقق من RLS" };
+      return { error: "الجلسة مغلقة بالفعل أو لا تملك صلاحية الإغلاق" };
     }
     logSuccess("cash_sessions", "update-close", data);
 

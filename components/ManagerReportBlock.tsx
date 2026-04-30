@@ -19,7 +19,7 @@ interface UserRow {
   subscriptionsUSD: number;
   salesUSD: number;
   inbodyUSD: number;
-  totalDiscrepancySYP: number;
+  totalDiscrepancyUSD: number;
   hadDiscrepancy: boolean;
 }
 
@@ -78,24 +78,25 @@ export default function ManagerReportBlock() {
         subscriptionsUSD: 0,
         salesUSD: 0,
         inbodyUSD: 0,
-        totalDiscrepancySYP: 0,
+        totalDiscrepancyUSD: 0,
         hadDiscrepancy: false,
       };
     });
 
-    // 2. cash sessions in range
+    // 2. cash sessions in range. `difference` (USD) is the canonical
+    // discrepancy column from 0014; the legacy syp variant is gone.
     const { data: sessions } = await supabase
       .from("cash_sessions")
-      .select("opened_by, status, discrepancy_syp, opened_at")
+      .select("opened_by, status, difference, opened_at")
       .gte("opened_at", since);
     (sessions ?? []).forEach((s: Record<string, unknown>) => {
       const r = initRows[s.opened_by as string];
       if (!r) return;
       r.shifts += 1;
       if (s.status === "open") r.openShifts += 1;
-      const disc = Number(s.discrepancy_syp ?? 0);
+      const disc = Number(s.difference ?? 0);
       if (disc !== 0) r.hadDiscrepancy = true;
-      r.totalDiscrepancySYP += disc;
+      r.totalDiscrepancyUSD += disc;
     });
 
     // 3. intake totals
@@ -237,14 +238,14 @@ export default function ManagerReportBlock() {
                     <td className="px-3 py-2.5 text-right">
                       {r.shifts === 0 ? (
                         <span className="font-mono text-[10px] text-[#555555]">—</span>
-                      ) : r.totalDiscrepancySYP === 0 ? (
+                      ) : r.totalDiscrepancyUSD === 0 ? (
                         <span className="inline-flex items-center gap-1 font-mono text-xs text-[#5CC45C]">
                           <CheckCircle2 size={12} /> مطابق
                         </span>
                       ) : (
-                        <span className={`inline-flex items-center gap-1 font-mono text-xs ${r.totalDiscrepancySYP < 0 ? "text-[#FF3333]" : "text-[#F5C100]"}`}>
+                        <span className={`inline-flex items-center gap-1 font-mono text-xs ${r.totalDiscrepancyUSD < 0 ? "text-[#FF3333]" : "text-[#F5C100]"}`}>
                           <AlertTriangle size={12} />
-                          {fmtSYP(r.totalDiscrepancySYP)}
+                          {fmtUSD(r.totalDiscrepancyUSD)}
                         </span>
                       )}
                     </td>

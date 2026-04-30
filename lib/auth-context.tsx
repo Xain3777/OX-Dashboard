@@ -9,6 +9,7 @@ import {
   ReactNode,
 } from "react";
 import { supabaseBrowser } from "./supabase/client";
+import { findStaffByEmail } from "./staff-accounts";
 
 export type AppRole = "manager" | "reception";
 
@@ -42,20 +43,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const loadProfile = useCallback(
     async (authUserId: string, email: string): Promise<AuthUser | null> => {
-      const { data, error } = await supabase
+      // STAFF_ACCOUNTS is canonical for displayName + role. Editing
+      // lib/staff-accounts.ts updates the UI without touching the DB.
+      const staff = findStaffByEmail(email);
+      if (staff) {
+        return {
+          id: authUserId,
+          email,
+          displayName: staff.displayName,
+          role: staff.role,
+        };
+      }
+
+      // Fallback: someone authenticated against auth.users but isn't in the
+      // hardcoded roster. Read profiles so we don't hard-block them; treat
+      // any profile that's not 'manager' as 'reception'.
+      const { data } = await supabase
         .from("profiles")
         .select("id, display_name, role")
         .eq("id", authUserId)
         .maybeSingle();
-      if (error || !data) {
-        console.error("loadProfile failed:", error);
-        return null;
-      }
+      if (!data) return null;
       return {
         id: data.id as string,
         email,
-        displayName: data.display_name as string,
-        role: data.role as AppRole,
+        displayName: (data.display_name as string) ?? email,
+        role: ((data.role as string) === "manager" ? "manager" : "reception"),
       };
     },
     [supabase]
@@ -64,11 +77,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let alive = true;
 
-    // Load initial session without a timeout — middleware keeps cookies fresh.
+    // getUser() validates against the auth server (the proxy keeps the cookie
+    // fresh, so this hits the local cache after refresh). Don't use
+    // getSession() here — it returns the cached session even if the JWT is
+    // already revoked, which is how stale-cookie auto-login slips in.
     (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user && alive) {
-        const profile = await loadProfile(session.user.id, session.user.email ?? "");
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (authUser && alive) {
+        const profile = await loadProfile(authUser.id, authUser.email ?? "");
         if (alive) setUser(profile);
       }
       if (alive) setLoading(false);

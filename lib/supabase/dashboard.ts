@@ -100,11 +100,17 @@ export async function fetchLiveKPI(): Promise<LiveKPI> {
       .is("cancelled_at", null)
       .gte("end_date", todayISO())
       .lte("end_date", inSevenDaysISO()),
+    // "Ended" = expired explicitly OR an active row whose end_date is in
+    // the past. Cancelled rows are excluded. We can't combine `.or()` with
+    // a chained `.is()` (it AND-merges in a way that breaks the OR group),
+    // so encode the cancellation guard inside the OR filter itself.
     supabase
       .from("subscriptions")
       .select("id", { count: "exact", head: true })
-      .or(`status.eq.expired,end_date.lt.${todayISO()}`)
-      .is("cancelled_at", null),
+      .or(
+        `and(status.eq.expired,cancelled_at.is.null),` +
+        `and(status.eq.active,end_date.lt.${todayISO()},cancelled_at.is.null)`
+      ),
     supabase
       .from("cash_sessions")
       .select("opening_cash")
@@ -202,16 +208,18 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
     // Store sales
     const { data: storeSales } = await supabase
       .from("sales")
-      .select("created_at, notes, total, created_by_name")
+      .select("created_at, product_name, quantity, total, created_by_name")
       .in("cash_session_id", sessionIds)
       .eq("source", "store")
       .is("cancelled_at", null);
     for (const s of storeSales ?? []) {
       const r = s as Record<string, unknown>;
+      const qty = Number(r.quantity ?? 1);
+      const name = String(r.product_name ?? "");
       rows.push({
         time: String(r.created_at ?? ""),
         type: "sale_store",
-        description: `متجر — ${String(r.notes ?? "")}`,
+        description: `متجر — ${qty}× ${name}`,
         by: String(r.created_by_name ?? ""),
         amount: Number(r.total ?? 0),
       });
@@ -220,16 +228,18 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
     // Kitchen sales
     const { data: kitchenSales } = await supabase
       .from("sales")
-      .select("created_at, notes, total, created_by_name")
+      .select("created_at, product_name, quantity, total, created_by_name")
       .in("cash_session_id", sessionIds)
       .eq("source", "kitchen")
       .is("cancelled_at", null);
     for (const s of kitchenSales ?? []) {
       const r = s as Record<string, unknown>;
+      const qty = Number(r.quantity ?? 1);
+      const name = String(r.product_name ?? "");
       rows.push({
         time: String(r.created_at ?? ""),
         type: "sale_kitchen",
-        description: `مطبخ — ${String(r.notes ?? "")}`,
+        description: `مطبخ — ${qty}× ${name}`,
         by: String(r.created_by_name ?? ""),
         amount: Number(r.total ?? 0),
       });
@@ -252,20 +262,26 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
       });
     }
 
-    // Expenses
+    // Expenses — `expenses` stores the raw amount + currency + an SYP snapshot.
+    // Convert SYP rows to USD using the snapshot ratio so the daily total is
+    // single-currency.
     const { data: expenses } = await supabase
       .from("expenses")
-      .select("created_at, description, amount_usd, created_by")
+      .select("created_at, description, amount, amount_syp, currency, exchange_rate, created_by")
       .in("cash_session_id", sessionIds)
       .is("cancelled_at", null);
     for (const s of expenses ?? []) {
       const r = s as Record<string, unknown>;
+      const currency = String(r.currency ?? "usd");
+      const amount = Number(r.amount ?? 0);
+      const rate = Number(r.exchange_rate ?? 0);
+      const usdAmount = currency === "syp" && rate > 0 ? amount / rate : amount;
       rows.push({
         time: String(r.created_at ?? ""),
         type: "expense",
         description: `مصروف — ${String(r.description ?? "")}`,
         by: nameMap[String(r.created_by ?? "")] ?? String(r.created_by ?? ""),
-        amount: -Number(r.amount_usd ?? 0),
+        amount: -Number(usdAmount.toFixed(2)),
       });
     }
   }

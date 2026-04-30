@@ -44,12 +44,9 @@ export default function CashSessionBlock() {
   const [discrepancyNote, setDiscrepancyNote] = useState("");
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
-  if (!user) return null;
-
-  const isOpen   = localSession?.status === "open";
-  const isClosed = localSession?.status === "closed";
-
-  // Live discrepancy calculation
+  // Hooks MUST run unconditionally; the early return below has to come after
+  // every hook in this component. Otherwise a sign-out flips the hook count
+  // mid-render and React throws "rendered fewer hooks than expected".
   const closingValue = useMemo(() => {
     const v = parseFloat(closingInput);
     return isNaN(v) ? null : v;
@@ -59,6 +56,11 @@ export default function CashSessionBlock() {
     () => closingValue !== null ? closingValue - runningCash : null,
     [closingValue, runningCash]
   );
+
+  if (!user) return null;
+
+  const isOpen   = localSession?.status === "open";
+  const isClosed = localSession?.status === "closed";
 
   const hasDiscrepancy = diff !== null && Math.abs(diff) >= 0.01;
 

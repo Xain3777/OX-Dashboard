@@ -91,11 +91,21 @@ export default function InBodyBlock() {
 
   useEffect(() => {
     const supabase = supabaseBrowser();
+    // The shared DB uses sister-app's `members` shape (auth_id, full_name,
+    // role, ...) since its RESET_AND_SEED replaced the older dashboard
+    // schema. Players have role='player'; staff are excluded.
     supabase
       .from("members")
-      .select("id, name")
-      .order("name")
-      .then(({ data }) => { if (data) setMembers(data as DbMember[]); });
+      .select("id, full_name, role")
+      .eq("role", "player")
+      .order("full_name")
+      .then(({ data }) => {
+        if (!data) return;
+        const rows = (data as Array<{ id: string; full_name: string }>).map(
+          (m) => ({ id: m.id, name: m.full_name })
+        );
+        setMembers(rows);
+      });
   }, []);
 
   const priceUSD = memberType === "gym_member" ? MEMBER_PRICE_USD : NON_MEMBER_PRICE_USD;
