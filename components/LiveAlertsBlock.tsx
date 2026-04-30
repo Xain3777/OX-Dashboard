@@ -24,7 +24,7 @@ export default function LiveAlertsBlock() {
     const today = new Date(); today.setHours(0, 0, 0, 0);
 
     const [subsRes, prodsRes, sessRes, discRes] = await Promise.all([
-      supabase.from("subscriptions")
+      supabase.from("gym_subscriptions")
         .select("id, member_id, member_name, plan_type, offer, start_date, end_date, amount, paid_amount, payment_status, payment_method, currency, status")
         .is("cancelled_at", null),
       supabase.from("products")
@@ -92,7 +92,7 @@ export default function LiveAlertsBlock() {
   useEffect(() => {
     void refresh();
     const channel = supabase.channel("live-alerts");
-    for (const t of ["subscriptions", "products", "cash_sessions", "discrepancy_logs"] as const) {
+    for (const t of ["gym_subscriptions", "products", "cash_sessions", "discrepancy_logs"] as const) {
       channel.on("postgres_changes", { event: "*", schema: "public", table: t }, () => void refresh());
     }
     channel.subscribe();

@@ -97,7 +97,7 @@ export async function fetchSessionIncome(sessionId: string): Promise<SessionInco
     );
   };
   const [sub, store, meals, inbody] = await Promise.all([
-    sumCol("subscriptions",   "paid_amount"),
+    sumCol("gym_subscriptions", "paid_amount"),
     sumCol("sales",           "total", { col: "source", val: "store" }),
     sumCol("sales",           "total", { col: "source", val: "kitchen" }),
     sumCol("inbody_sessions", "amount"),

@@ -48,7 +48,16 @@ async function findUserByEmail(email) {
 async function ensureAuthUser(email, displayName, role) {
   const existing = await findUserByEmail(email);
   if (existing) {
-    console.log(`• exists  ${email}`);
+    // Reset the password every run — the seed is the canonical authority.
+    // Without this, an account that drifted out of sync (manual change,
+    // sister-app reseed, etc.) stays broken even after the dashboard seed.
+    const { error } = await admin.auth.admin.updateUserById(existing.id, {
+      password: DEFAULT_PASSWORD,
+      email_confirm: true,
+      user_metadata: { display_name: displayName, role },
+    });
+    if (error) throw new Error(`update ${email}: ${error.message}`);
+    console.log(`• reset    ${email}`);
     return existing.id;
   }
   const { data, error } = await admin.auth.admin.createUser({
@@ -58,7 +67,7 @@ async function ensureAuthUser(email, displayName, role) {
     user_metadata: { display_name: displayName, role },
   });
   if (error) throw new Error(`create ${email}: ${error.message}`);
-  console.log(`+ created ${email}`);
+  console.log(`+ created  ${email}`);
   return data.user.id;
 }
 

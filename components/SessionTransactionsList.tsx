@@ -66,7 +66,7 @@ export default function SessionTransactionsList() {
 
       const [sales, subs, inbody] = await Promise.all([
         fetchTable<SaleRow>("sales",            "id, product_name, quantity, total, created_at, cancelled_at, cancelled_reason"),
-        fetchTable<SubRow>("subscriptions",     "id, member_name, plan_type, paid_amount, created_at, cancelled_at, cancelled_reason"),
+        fetchTable<SubRow>("gym_subscriptions", "id, member_name, plan_type, paid_amount, created_at, cancelled_at, cancelled_reason"),
         fetchTable<InBodyRow>("inbody_sessions","id, member_name, session_type, amount, created_at, cancelled_at, cancelled_reason"),
       ]);
 
@@ -78,7 +78,7 @@ export default function SessionTransactionsList() {
           createdAt: s.created_at, cancelledAt: s.cancelled_at, cancelledReason: s.cancelled_reason,
         })),
         ...subs.map((s): Row => ({
-          id: s.id, kind: "subscription", table: "subscriptions",
+          id: s.id, kind: "subscription", table: "gym_subscriptions",
           label: `${s.member_name} (${s.plan_type})`,
           amount: Number(s.paid_amount),
           createdAt: s.created_at, cancelledAt: s.cancelled_at, cancelledReason: s.cancelled_reason,
@@ -104,7 +104,7 @@ export default function SessionTransactionsList() {
     const channel = supabase
       .channel(`session-txns-${sessionId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "sales",           filter: `cash_session_id=eq.${sessionId}` }, () => void load())
-      .on("postgres_changes", { event: "*", schema: "public", table: "subscriptions",   filter: `cash_session_id=eq.${sessionId}` }, () => void load())
+      .on("postgres_changes", { event: "*", schema: "public", table: "gym_subscriptions", filter: `cash_session_id=eq.${sessionId}` }, () => void load())
       .on("postgres_changes", { event: "*", schema: "public", table: "inbody_sessions", filter: `cash_session_id=eq.${sessionId}` }, () => void load())
       .subscribe();
     return () => { void supabase.removeChannel(channel); };

@@ -51,12 +51,13 @@ AS $$
 $$;
 GRANT EXECUTE ON FUNCTION public.current_role() TO anon, authenticated;
 
--- ── 3. member_subscriptions view ────────────────────────────────────────────
--- Lets the player portal read this dashboard's subscriptions in the shape
--- sister-app expects. Plan_type collapses 1/3/{6,9,12} to monthly/quarterly/
--- annual since sister's enum has only those three. cancelled rows and rows
--- without a member_id are excluded — sister-app's portal only cares about
--- subscriptions that link a real player.
+-- ── 3. member_subscriptions view (optional sister-app bridge) ───────────────
+-- Sister-app keeps its own `subscriptions` table untouched (player portal
+-- still reads from it). This view is a separate bridge that exposes dashboard
+-- gym subscriptions to sister-app in the same enum shape, in case the player
+-- portal ever wants to surface gym membership info too. Plan types collapse
+-- 1/3/{6,9,12} to monthly/quarterly/annual since sister's enum has only
+-- those three. cancelled rows and rows without a member_id are excluded.
 DROP VIEW IF EXISTS public.member_subscriptions;
 CREATE VIEW public.member_subscriptions AS
 SELECT
@@ -76,7 +77,7 @@ SELECT
   END                              AS status,
   s.amount                         AS price,
   NULL::text                       AS notes
-FROM public.subscriptions s
+FROM public.gym_subscriptions s
 WHERE s.cancelled_at IS NULL
   AND s.member_id IS NOT NULL;
 

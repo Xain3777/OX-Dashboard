@@ -1,5 +1,5 @@
 -- Group linkage for subscriptions (couple / referral)
-alter table public.subscriptions
+alter table public.gym_subscriptions
   add column if not exists group_id uuid;
 
 -- ── Private training sessions ─────────────────────────────────────────────────

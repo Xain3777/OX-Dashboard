@@ -25,7 +25,7 @@ UPDATE public.food_items
  WHERE price_usd = 0 AND price_syp > 0;
 
 -- ── 3. payment_method on subscriptions ───────────────────────
-ALTER TABLE public.subscriptions
+ALTER TABLE public.gym_subscriptions
   ADD COLUMN IF NOT EXISTS payment_method text
   CHECK (payment_method IN ('cash','card','transfer','other'));
 

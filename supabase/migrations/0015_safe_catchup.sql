@@ -6,7 +6,7 @@
 -- ============================================================
 
 -- ── From 0011: payment_method on subscriptions ────────────────
-ALTER TABLE public.subscriptions
+ALTER TABLE public.gym_subscriptions
   ADD COLUMN IF NOT EXISTS payment_method text
   CHECK (payment_method IN ('cash','card','transfer','other'));
 
@@ -24,7 +24,7 @@ ALTER TABLE public.sales
   ADD COLUMN IF NOT EXISTS created_by_name text;
 
 -- ── From 0012: group_id on subscriptions ─────────────────────
-ALTER TABLE public.subscriptions
+ALTER TABLE public.gym_subscriptions
   ADD COLUMN IF NOT EXISTS group_id uuid;
 
 -- ── From 0012: private_sessions ──────────────────────────────

@@ -80,21 +80,21 @@ export async function fetchLiveKPI(): Promise<LiveKPI> {
     openSessions,
     lowStock,
   ] = await Promise.all([
-    sumUSD("subscriptions",   "paid_amount", today),
+    sumUSD("gym_subscriptions", "paid_amount", today),
     sumUSD("sales",           "total",       today, "store"),
     sumUSD("sales",           "total",       today, "kitchen"),
     sumUSD("inbody_sessions", "amount",      today),
-    sumUSD("subscriptions",   "paid_amount", month),
+    sumUSD("gym_subscriptions", "paid_amount", month),
     sumUSD("sales",           "total",       month, "store"),
     sumUSD("sales",           "total",       month, "kitchen"),
     sumUSD("inbody_sessions", "amount",      month),
     supabase
-      .from("subscriptions")
+      .from("gym_subscriptions")
       .select("member_name", { count: "exact", head: true })
       .eq("status", "active")
       .is("cancelled_at", null),
     supabase
-      .from("subscriptions")
+      .from("gym_subscriptions")
       .select("id", { count: "exact", head: true })
       .eq("status", "active")
       .is("cancelled_at", null)
@@ -105,7 +105,7 @@ export async function fetchLiveKPI(): Promise<LiveKPI> {
     // a chained `.is()` (it AND-merges in a way that breaks the OR group),
     // so encode the cancellation guard inside the OR filter itself.
     supabase
-      .from("subscriptions")
+      .from("gym_subscriptions")
       .select("id", { count: "exact", head: true })
       .or(
         `and(status.eq.expired,cancelled_at.is.null),` +
@@ -190,7 +190,7 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
   if (sessionIds.length > 0) {
     // Subscriptions
     const { data: subs } = await supabase
-      .from("subscriptions")
+      .from("gym_subscriptions")
       .select("created_at, member_name, paid_amount, created_by")
       .in("cash_session_id", sessionIds)
       .is("cancelled_at", null);
@@ -302,7 +302,7 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
 }
 
 const REALTIME_TABLES = [
-  "subscriptions",
+  "gym_subscriptions",
   "sales",
   "inbody_sessions",
   "cash_sessions",

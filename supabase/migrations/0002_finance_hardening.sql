@@ -38,7 +38,7 @@ on conflict (key) do nothing;
 --   for usd txns: amount * exchange_rate (frozen at insert)
 -- exchange_rate = USD→SYP rate used at txn time
 
-alter table public.subscriptions
+alter table public.gym_subscriptions
   add column if not exists exchange_rate numeric(14,4),
   add column if not exists amount_syp    numeric(14,2);
 
@@ -55,7 +55,7 @@ alter table public.expenses
   add column if not exists amount_syp    numeric(14,2);
 
 -- ── CANCELLATION (soft-delete) COLUMNS ──────────────────────
-alter table public.subscriptions
+alter table public.gym_subscriptions
   add column if not exists cancelled_at     timestamptz,
   add column if not exists cancelled_by     uuid references public.profiles(id),
   add column if not exists cancelled_reason text;
@@ -77,7 +77,7 @@ alter table public.expenses
 
 -- ── BACKFILL amount_syp for any existing rows ───────────────
 -- (no-op on a fresh DB; safe if rows exist)
-update public.subscriptions
+update public.gym_subscriptions
    set amount_syp = case when currency = 'syp' then paid_amount
                          else paid_amount * coalesce(exchange_rate, 13200) end
  where amount_syp is null;
@@ -94,7 +94,7 @@ update public.inbody_sessions
 
 -- ── INDEXES for cancellation filtering ──────────────────────
 create index if not exists idx_subs_active_session
-  on public.subscriptions(cash_session_id) where cancelled_at is null;
+  on public.gym_subscriptions(cash_session_id) where cancelled_at is null;
 create index if not exists idx_sales_active_session
   on public.sales(cash_session_id) where cancelled_at is null;
 create index if not exists idx_inbody_active_session
@@ -122,10 +122,10 @@ create policy "expenses update" on public.expenses for update to authenticated
   with check (created_by = auth.uid() or public.current_role() = 'manager');
 
 -- allow creator OR manager to cancel a txn (update cancelled_* columns)
-drop policy if exists "subs update"   on public.subscriptions;
+drop policy if exists "subs update"   on public.gym_subscriptions;
 drop policy if exists "sales update"  on public.sales;
 drop policy if exists "inbody update" on public.inbody_sessions;
-create policy "subs update"   on public.subscriptions   for update to authenticated
+create policy "subs update"   on public.gym_subscriptions   for update to authenticated
   using (created_by = auth.uid() or public.current_role() = 'manager')
   with check (created_by = auth.uid() or public.current_role() = 'manager');
 create policy "sales update"  on public.sales           for update to authenticated

@@ -930,7 +930,7 @@ export default function SubscriptionsBlock() {
                               if (!user) return;
                               const r = await cancelTransaction({
                                 user: { id: user.id, displayName: user.displayName },
-                                table: "subscriptions",
+                                table: "gym_subscriptions",
                                 id: sub.id,
                               });
                               if (!r.error) cancelSubscriptionLocal(sub.id);

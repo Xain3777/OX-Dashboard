@@ -117,7 +117,7 @@ export default function ManagerReportBlock() {
       return map;
     };
 
-    const subsMap   = await sumByUser("subscriptions",   "paid_amount");
+    const subsMap   = await sumByUser("gym_subscriptions", "paid_amount");
     const salesMap  = await sumByUser("sales",           "total");
     const inbodyMap = await sumByUser("inbody_sessions", "amount");
 

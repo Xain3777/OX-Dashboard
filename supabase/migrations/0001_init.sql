@@ -12,17 +12,13 @@ create table if not exists public.profiles (
   created_at timestamptz not null default now()
 );
 
--- ── MEMBERS (gym members, not staff) ────────────────────────
-create table if not exists public.members (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  phone text,
-  email text,
-  join_date date not null default current_date,
-  notes text,
-  created_at timestamptz not null default now(),
-  created_by uuid references public.profiles(id)
-);
+-- ── MEMBERS (skipped — sister-app's `members` is canonical) ─────────
+-- The shared Supabase project already has a `members` table from sister-app
+-- with shape (auth_id, full_name, role, username, phone, ...). The dashboard
+-- only reads from it (InBodyBlock dropdown, FK targets) and never writes,
+-- so we don't recreate it here. RLS policies for `members` are owned by
+-- sister-app's RESET_AND_SEED — do NOT add policies that would overwrite
+-- them.
 
 -- ── PRODUCTS ────────────────────────────────────────────────
 create table if not exists public.products (
@@ -52,7 +48,7 @@ create table if not exists public.cash_sessions (
 );
 
 -- ── SUBSCRIPTIONS ───────────────────────────────────────────
-create table if not exists public.subscriptions (
+create table if not exists public.gym_subscriptions (
   id uuid primary key default gen_random_uuid(),
   member_id uuid references public.members(id),
   member_name text not null,
@@ -118,21 +114,21 @@ create table if not exists public.activity_feed (
 );
 
 -- ── INDEXES ─────────────────────────────────────────────────
-create index if not exists idx_subs_user_time     on public.subscriptions(created_by, created_at desc);
+create index if not exists idx_subs_user_time     on public.gym_subscriptions(created_by, created_at desc);
 create index if not exists idx_sales_user_time    on public.sales(created_by, created_at desc);
 create index if not exists idx_inbody_user_time   on public.inbody_sessions(created_by, created_at desc);
 create index if not exists idx_activity_time      on public.activity_feed(created_at desc);
 create index if not exists idx_cash_user_time     on public.cash_sessions(opened_by, opened_at desc);
-create index if not exists idx_subs_session       on public.subscriptions(cash_session_id);
+create index if not exists idx_subs_session       on public.gym_subscriptions(cash_session_id);
 create index if not exists idx_sales_session      on public.sales(cash_session_id);
 create index if not exists idx_inbody_session     on public.inbody_sessions(cash_session_id);
 
 -- ── RLS ─────────────────────────────────────────────────────
 alter table public.profiles        enable row level security;
-alter table public.members         enable row level security;
+-- members RLS is owned by sister-app — do not toggle here.
 alter table public.products        enable row level security;
 alter table public.cash_sessions   enable row level security;
-alter table public.subscriptions   enable row level security;
+alter table public.gym_subscriptions   enable row level security;
 alter table public.sales           enable row level security;
 alter table public.inbody_sessions enable row level security;
 alter table public.activity_feed   enable row level security;
@@ -149,11 +145,8 @@ create policy "profiles read"  on public.profiles for select to authenticated us
 create policy "profiles write" on public.profiles for all    to authenticated
   using (public.current_role() = 'manager') with check (public.current_role() = 'manager');
 
--- members (anyone signed in can read/write — reception needs to add walk-ins)
-drop policy if exists "members read"  on public.members;
-drop policy if exists "members write" on public.members;
-create policy "members read"  on public.members for select to authenticated using (true);
-create policy "members write" on public.members for all    to authenticated using (true) with check (true);
+-- members policies are owned by sister-app's RESET_AND_SEED.sql; leaving them
+-- untouched here prevents accidental over-permissioning.
 
 -- products (read by all, mutate by manager only)
 drop policy if exists "products read"  on public.products;
@@ -174,11 +167,11 @@ create policy "cs update" on public.cash_sessions for update to authenticated
   using (opened_by = auth.uid() or public.current_role() = 'manager');
 
 -- intake tables
-drop policy if exists "subs read"   on public.subscriptions;
-drop policy if exists "subs insert" on public.subscriptions;
-create policy "subs read"   on public.subscriptions for select to authenticated
+drop policy if exists "subs read"   on public.gym_subscriptions;
+drop policy if exists "subs insert" on public.gym_subscriptions;
+create policy "subs read"   on public.gym_subscriptions for select to authenticated
   using (public.current_role() = 'manager' or created_by = auth.uid());
-create policy "subs insert" on public.subscriptions for insert to authenticated
+create policy "subs insert" on public.gym_subscriptions for insert to authenticated
   with check (created_by = auth.uid());
 
 drop policy if exists "sales read"   on public.sales;
@@ -205,8 +198,8 @@ create policy "activity insert" on public.activity_feed for insert to authentica
 -- realtime publications
 do $$
 begin
-  if not exists (select 1 from pg_publication_tables where pubname='supabase_realtime' and tablename='subscriptions') then
-    alter publication supabase_realtime add table public.subscriptions;
+  if not exists (select 1 from pg_publication_tables where pubname='supabase_realtime' and tablename='gym_subscriptions') then
+    alter publication supabase_realtime add table public.gym_subscriptions;
   end if;
   if not exists (select 1 from pg_publication_tables where pubname='supabase_realtime' and tablename='sales') then
     alter publication supabase_realtime add table public.sales;

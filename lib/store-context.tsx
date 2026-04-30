@@ -169,7 +169,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
 
     const [subsRes, salesRes, inbodyRes, foodRes, productsRes, rateRes, activeSession, lastClosed] = await Promise.all([
       supabase
-        .from("subscriptions")
+        .from("gym_subscriptions")
         .select("*")
         .is("cancelled_at", null)
         .order("created_at", { ascending: false }),
@@ -621,7 +621,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const channel = supabase
       .channel(`store-income-${sid}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "sales",           filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
-      .on("postgres_changes", { event: "*", schema: "public", table: "subscriptions",   filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
+      .on("postgres_changes", { event: "*", schema: "public", table: "gym_subscriptions", filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
       .on("postgres_changes", { event: "*", schema: "public", table: "inbody_sessions", filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
       .subscribe();
     return () => { void supabase.removeChannel(channel); };

@@ -163,17 +163,17 @@ export async function pushSubscription(opts: {
       cash_session_id: cashSessionId,
       created_by: opts.user.id,
     };
-    console.log("Supabase insert payload:", { table: "subscriptions", payload: subPayload });
+    console.log("Supabase insert payload:", { table: "gym_subscriptions", payload: subPayload });
 
     const { data, error } = await supabase
-      .from("subscriptions")
+      .from("gym_subscriptions")
       .insert(subPayload)
       .select()
       .single();
 
-    if (error) { logError("subscriptions", "insert", error); return { error: error.message }; }
-    if (!data) { logError("subscriptions", "insert", "no row returned"); return { error: "لم يتم حفظ الاشتراك — تحقق من RLS" }; }
-    logSuccess("subscriptions", "insert", data);
+    if (error) { logError("gym_subscriptions", "insert", error); return { error: error.message }; }
+    if (!data) { logError("gym_subscriptions", "insert", "no row returned"); return { error: "لم يتم حفظ الاشتراك — تحقق من RLS" }; }
+    logSuccess("gym_subscriptions", "insert", data);
 
     await pushActivity({
       user: opts.user,
@@ -185,7 +185,7 @@ export async function pushSubscription(opts: {
     });
     return { data: data as DbRow };
   } catch (e) {
-    logError("subscriptions", "insert", e);
+    logError("gym_subscriptions", "insert", e);
     return { error: String(e) };
   }
 }
@@ -376,7 +376,7 @@ export async function pushExpense(opts: {
 
 // ── Cancellation (soft-delete) ────────────────────────────────
 
-export type CancellableTable = "sales" | "subscriptions" | "inbody_sessions";
+export type CancellableTable = "sales" | "gym_subscriptions" | "inbody_sessions";
 
 export async function cancelTransaction(opts: {
   user: CurrentUser;
@@ -459,7 +459,7 @@ export async function computeSessionIncome(sessionId: string): Promise<{
   };
 
   const [subsTotal, inbodyTotal, storeTotal, mealsTotal] = await Promise.all([
-    sumUSD("subscriptions", "paid_amount"),
+    sumUSD("gym_subscriptions", "paid_amount"),
     sumUSD("inbody_sessions", "amount"),
     sumUSD("sales", "total", { col: "source", val: "store" }),
     sumUSD("sales", "total", { col: "source", val: "kitchen" }),
@@ -600,7 +600,7 @@ export async function closeCashSession(
     };
 
     const [subsTotal, storeTotal, mealsTotal, inbodyTotal, expensesTotal] = await Promise.all([
-      sumCol("subscriptions",   "paid_amount"),
+      sumCol("gym_subscriptions", "paid_amount"),
       sumCol("sales",           "total", { col: "source", val: "store" }),
       sumCol("sales",           "total", { col: "source", val: "kitchen" }),
       sumCol("inbody_sessions", "amount"),
