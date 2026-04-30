@@ -1,6 +1,5 @@
 [
   { "id": "adham",      "email": "adham@ox.local",      "displayName": "كوتش أدهم",      "role": "manager"   },
-  { "id": "haider",     "email": "haider@ox.local",     "displayName": "حيدر",           "role": "manager"   },
   { "id": "reception1", "email": "reception1@ox.local", "displayName": "نوار",           "role": "reception" },
   { "id": "reception2", "email": "reception2@ox.local", "displayName": "ساميلا راعي",    "role": "reception" },
   { "id": "reception3", "email": "reception3@ox.local", "displayName": "آيه ابراهيم",    "role": "reception" },
