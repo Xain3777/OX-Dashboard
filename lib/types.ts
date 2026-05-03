@@ -16,6 +16,8 @@ export interface Member {
 
 // --- SUBSCRIPTIONS ---
 export type PlanType =
+  | "daily"
+  | "15_days"
   | "1_month"
   | "3_months"
   | "6_months"
@@ -24,11 +26,14 @@ export type PlanType =
 
 export type OfferType =
   | "none"
-  | "referral_4"   // bring 4 friends → 1 month free
-  | "referral_9"   // bring 9 friends → 2 months free
+  | "referral_4"   // bring 4+ friends → 1 month free
+  | "referral_9"   // bring 9+ friends → 2 months free
   | "couple"       // 2 people on 1-month → $60 flat
   | "corporate"    // 15% discount on any plan
-  | "college";     // 20% discount for university students
+  | "college"      // 20% discount for university students
+  | "owner_family" // owner family — $20 × months
+  | "group_5"      // legacy — 5 people pay for 4 (kept for backward compat with old DB rows)
+  | "group_9";     // legacy — 9 people pay for 7 (kept for backward compat with old DB rows)
 
 export type PaymentStatus = "paid" | "partial" | "unpaid";
 export type SubStatus = "active" | "expired" | "frozen" | "cancelled";
@@ -37,6 +42,7 @@ export interface Subscription {
   id: string;
   memberId: string;
   memberName: string;
+  phone?: string | null;
   planType: PlanType;
   offer: OfferType;
   startDate: string;
@@ -61,7 +67,7 @@ export interface FoodItem {
   name: string;
   category: FoodItemCategory;
   cost?: number;
-  price_usd: number;
+  price_syp: number;
   is_active: boolean;
 }
 

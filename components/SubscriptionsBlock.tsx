@@ -16,6 +16,7 @@ import {
   calculateEndDate,
   calculateRemainingDays,
   calculateDiscountedPrice,
+  calcGroupPerMember,
 } from "@/lib/business-logic";
 import PriceTag from "@/components/PriceTag";
 import { useStore } from "@/lib/store-context";
@@ -26,33 +27,70 @@ import {
   cancelTransaction,
   pushPrivateSession,
   pushGroupOffer,
+  findOrCreateMember,
+  updateSubscription,
 } from "@/lib/supabase/intake";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const PLAN_BASE_PRICES: Record<PlanType, number> = {
-  "1_month":  35,
-  "3_months": 90,
-  "6_months": 170,
-  "9_months": 235,
+  daily:       5,
+  "15_days":   20,
+  "1_month":   35,
+  "3_months":  90,
+  "6_months":  170,
+  "9_months":  235,
   "12_months": 300,
 };
 
+// Owner-family offer pricing: $20 × months. Sub-month plans aren't eligible
+// for the owner_family discount, so we map them to 0 (the form can be locked
+// to monthly+ if you want to enforce that — for now, picking daily/15_days
+// here yields a $0 total which makes the absurdity obvious to the cashier).
+const OWNER_FAMILY_MONTHS: Record<PlanType, number> = {
+  daily:       0,
+  "15_days":   0,
+  "1_month":   1,
+  "3_months":  3,
+  "6_months":  6,
+  "9_months":  9,
+  "12_months": 12,
+};
+
 const PLAN_DISCOUNTS: Record<PlanType, number> = {
-  "1_month":  0,
-  "3_months": 15,
-  "6_months": 20,
-  "9_months": 25,
+  daily:       0,
+  "15_days":   0,
+  "1_month":   0,
+  "3_months":  15,
+  "6_months":  20,
+  "9_months":  25,
   "12_months": 30,
 };
 
-const PLAN_TYPES: PlanType[] = [
+// All plans, in display order. Used by the normal subscription form and the
+// edit-subscription modal — both must accept any plan a member could buy.
+const ALL_PLAN_TYPES: PlanType[] = [
+  "daily",
+  "15_days",
   "1_month",
   "3_months",
   "6_months",
   "9_months",
   "12_months",
 ];
+
+// Monthly+ plans only. Discount-style offers (referral, corporate, college,
+// owner_family) and group offers don't apply to sub-month plans, so their
+// dropdowns expose just these.
+const MONTHLY_PLAN_TYPES: PlanType[] = [
+  "1_month",
+  "3_months",
+  "6_months",
+  "9_months",
+  "12_months",
+];
+
+const OWNER_FAMILY_PLAN_TYPES = MONTHLY_PLAN_TYPES;
 
 
 function ptCalc(n: number) {
@@ -64,7 +102,7 @@ function ptCalc(n: number) {
 
 type MainTab  = "subscriptions" | "offers";
 type SubType  = "normal" | "private";
-type OfferTab = "couple" | "referral" | "corporate" | "college";
+type OfferTab = "couple" | "referral" | "corporate" | "college" | "owner_family";
 type SortMode = "alpha" | "date";
 type FilterTab = "all" | "active" | "expiring" | "unpaid" | "expired";
 // ─── Form state ───────────────────────────────────────────────────────────────
@@ -89,6 +127,8 @@ const DEFAULT_FORM: FormState = {
 
 function PlanBadge({ plan }: { plan: PlanType }) {
   const colorMap: Record<PlanType, string> = {
+    daily:      "bg-gunmetal/60 text-secondary border-gunmetal",
+    "15_days":  "bg-gunmetal text-ghost border-gunmetal",
     "1_month":  "bg-gunmetal text-offwhite border-gunmetal",
     "3_months": "bg-gold-dim/20 text-gold border-gold-dim/40",
     "6_months": "bg-gold-dim/30 text-gold-bright border-gold-dim/50",
@@ -209,7 +249,7 @@ function Toast({ message, onDone }: { message: string; onDone: () => void }) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function SubscriptionsBlock() {
-  const { subscriptions, addSubscription, cancelSubscriptionLocal } = useStore();
+  const { subscriptions, addSubscription, replaceSubscription, cancelSubscriptionLocal } = useStore();
   const { user } = useAuth();
   const { exchangeRate } = useCurrency();
 
@@ -236,22 +276,35 @@ export default function SubscriptionsBlock() {
 
   // Couple offer
   const [coupleNames,      setCoupleNames]      = useState(["", ""]);
+  const [couplePhones,     setCouplePhones]     = useState(["", ""]);
   const [coupleStart,      setCoupleStart]      = useState(new Date().toISOString().split("T")[0]);
   const [couplePayStatus,  setCouplePayStatus]  = useState<PaymentStatus>("paid");
   const [coupleBusy,       setCoupleBusy]       = useState(false);
   const [coupleError,      setCoupleError]      = useState<string | null>(null);
 
   // Referral offer
-  const [refMain,       setRefMain]       = useState("");
-  const [refFriends,    setRefFriends]    = useState<string[]>(["", "", "", "", ""]);
-  const [refPlan,       setRefPlan]       = useState<PlanType>("1_month");
-  const [refStart,      setRefStart]      = useState(new Date().toISOString().split("T")[0]);
-  const [refPayStatus,  setRefPayStatus]  = useState<PaymentStatus>("paid");
-  const [refBusy,       setRefBusy]       = useState(false);
-  const [refError,      setRefError]      = useState<string | null>(null);
+  const [refMain,         setRefMain]         = useState("");
+  const [refMainPhone,    setRefMainPhone]    = useState("");
+  const [refFriends,      setRefFriends]      = useState<string[]>(["", "", "", "", ""]);
+  const [refFriendPhones, setRefFriendPhones] = useState<string[]>(["", "", "", "", ""]);
+  const [refPlan,         setRefPlan]         = useState<PlanType>("1_month");
+  const [refStart,        setRefStart]        = useState(new Date().toISOString().split("T")[0]);
+  const [refPayStatus,    setRefPayStatus]    = useState<PaymentStatus>("paid");
+  const [refBusy,         setRefBusy]         = useState(false);
+  const [refError,        setRefError]        = useState<string | null>(null);
+
+  // Owner family offer ($20 × months)
+  const [ofName,        setOfName]        = useState("");
+  const [ofPhone,       setOfPhone]       = useState("");
+  const [ofPlan,        setOfPlan]        = useState<PlanType>("1_month");
+  const [ofStart,       setOfStart]       = useState(new Date().toISOString().split("T")[0]);
+  const [ofPayStatus,   setOfPayStatus]   = useState<PaymentStatus>("paid");
+  const [ofBusy,        setOfBusy]        = useState(false);
+  const [ofError,       setOfError]       = useState<string | null>(null);
 
   // Corporate offer
   const [corpName,      setCorpName]      = useState("");
+  const [corpPhone,     setCorpPhone]     = useState("");
   const [corpOrg,       setCorpOrg]       = useState<"company" | "bank">("company");
   const [corpPlan,      setCorpPlan]      = useState<PlanType>("1_month");
   const [corpStart,     setCorpStart]     = useState(new Date().toISOString().split("T")[0]);
@@ -261,6 +314,7 @@ export default function SubscriptionsBlock() {
 
   // College offer
   const [collegeName,      setCollegeName]      = useState("");
+  const [collegePhone,     setCollegePhone]     = useState("");
   const [collegePlan,      setCollegePlan]      = useState<PlanType>("1_month");
   const [collegeStart,     setCollegeStart]     = useState(new Date().toISOString().split("T")[0]);
   const [collegePayStatus, setCollegePayStatus] = useState<PaymentStatus>("paid");
@@ -269,6 +323,34 @@ export default function SubscriptionsBlock() {
 
   // ── Toast ──────────────────────────────────────────────────────────────────
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // ── Edit modal state ───────────────────────────────────────────────────────
+  const [editSub,        setEditSub]        = useState<Subscription | null>(null);
+  const [editForm,       setEditForm]       = useState<{ memberName: string; phone: string; planType: PlanType; offer: OfferType; startDate: string; endDate: string; amount: string; paidAmount: string; paymentStatus: PaymentStatus } | null>(null);
+  const [editBusy,       setEditBusy]       = useState(false);
+  const [editError,      setEditError]      = useState<string | null>(null);
+
+  const openEditModal = useCallback((sub: Subscription) => {
+    setEditSub(sub);
+    setEditForm({
+      memberName: sub.memberName,
+      phone: sub.phone ?? "",
+      planType: sub.planType,
+      offer: sub.offer,
+      startDate: sub.startDate,
+      endDate: sub.endDate,
+      amount: String(sub.amount),
+      paidAmount: String(sub.paidAmount),
+      paymentStatus: sub.paymentStatus,
+    });
+    setEditError(null);
+  }, []);
+
+  const closeEditModal = useCallback(() => {
+    setEditSub(null);
+    setEditForm(null);
+    setEditError(null);
+  }, []);
 
   // ── Derived: auto-calculate amount when plan/offer changes ────────────────
   const computedEndDate = calculateEndDate(form.startDate, form.planType, "none");
@@ -313,10 +395,16 @@ export default function SubscriptionsBlock() {
     const endDate   = computedEndDate;
     const remaining = calculateRemainingDays(endDate);
     const amount    = Number(form.amount) || 0;
+    console.log("Normal subscription submit:", { memberName: form.memberName, phone: form.phone, planType: form.planType });
+
+    const m = await findOrCreateMember({ user: { id: user.id, displayName: user.displayName }, name: form.memberName, phone: form.phone });
+    if (m.error) { setSubmitError(m.error); return; }
 
     const r = await pushSubscription({
       user: { id: user.id, displayName: user.displayName },
       memberName: form.memberName.trim(),
+      memberId: m.data?.id,
+      phone: form.phone,
       planType: form.planType,
       offer: "none",
       startDate: form.startDate,
@@ -387,10 +475,18 @@ export default function SubscriptionsBlock() {
     const groupId = crypto.randomUUID();
     const endDate = calculateEndDate(coupleStart, "1_month", "couple");
     const paidAmt = couplePayStatus === "paid" ? 30 : 0;
+    console.log("Couple submit:", { groupId, coupleNames, couplePhones, endDate, couplePayStatus });
+
+    const m1 = await findOrCreateMember({ user: { id: user.id, displayName: user.displayName }, name: coupleNames[0], phone: couplePhones[0] });
+    if (m1.error) { setCoupleError(m1.error); setCoupleBusy(false); return; }
+    const m2 = await findOrCreateMember({ user: { id: user.id, displayName: user.displayName }, name: coupleNames[1], phone: couplePhones[1] });
+    if (m2.error) { setCoupleError(m2.error); setCoupleBusy(false); return; }
 
     const r1 = await pushSubscription({
       user: { id: user.id, displayName: user.displayName },
       memberName: coupleNames[0].trim(),
+      memberId: m1.data?.id,
+      phone: couplePhones[0],
       planType: "1_month", offer: "couple",
       startDate: coupleStart, endDate,
       amount: 30, paidAmount: paidAmt,
@@ -402,6 +498,8 @@ export default function SubscriptionsBlock() {
     const r2 = await pushSubscription({
       user: { id: user.id, displayName: user.displayName },
       memberName: coupleNames[1].trim(),
+      memberId: m2.data?.id,
+      phone: couplePhones[1],
       planType: "1_month", offer: "couple",
       startDate: coupleStart, endDate,
       amount: 30, paidAmount: paidAmt,
@@ -437,6 +535,7 @@ export default function SubscriptionsBlock() {
 
     setCoupleBusy(false);
     setCoupleNames(["", ""]);
+    setCouplePhones(["", ""]);
     setCoupleStart(new Date().toISOString().split("T")[0]);
     setToastMessage("تم تسجيل عرض الزوجين — شخصان مرتبطان بنفس المجموعة");
   };
@@ -446,7 +545,9 @@ export default function SubscriptionsBlock() {
     e.preventDefault();
     if (!user) return;
     setRefError(null);
-    const validFriends = refFriends.filter((n) => n.trim());
+    const validFriends = refFriends
+      .map((n, i) => ({ name: n.trim(), phone: (refFriendPhones[i] ?? "").trim() }))
+      .filter((f) => f.name);
     const count = validFriends.length;
     if (count < 5) { setRefError("يجب إدخال 5 أسماء على الأقل للتأهل للعرض"); return; }
     setRefBusy(true);
@@ -456,10 +557,22 @@ export default function SubscriptionsBlock() {
     const endDate  = calculateEndDate(refStart, refPlan, offerType);
     const amount   = PLAN_BASE_PRICES[refPlan];
     const paidAmt  = refPayStatus === "paid" ? amount : 0;
+    console.log("Referral submit:", { groupId, refMain, refMainPhone, friendsCount: count, offerType });
+
+    const m = await findOrCreateMember({ user: { id: user.id, displayName: user.displayName }, name: refMain, phone: refMainPhone });
+    if (m.error) { setRefError(m.error); setRefBusy(false); return; }
+
+    // Create member rows for each friend so they exist in the members table.
+    for (const f of validFriends) {
+      const fr = await findOrCreateMember({ user: { id: user.id, displayName: user.displayName }, name: f.name, phone: f.phone });
+      if (fr.error) { setRefError(fr.error); setRefBusy(false); return; }
+    }
 
     const r = await pushSubscription({
       user: { id: user.id, displayName: user.displayName },
       memberName: refMain.trim(),
+      memberId: m.data?.id,
+      phone: refMainPhone,
       planType: refPlan, offer: offerType,
       startDate: refStart, endDate,
       amount, paidAmount: paidAmt,
@@ -471,7 +584,7 @@ export default function SubscriptionsBlock() {
     await pushGroupOffer({
       user: { id: user.id, displayName: user.displayName },
       groupId, offerType: "referral",
-      members: [{ name: refMain.trim() }, ...validFriends.map((n) => ({ name: n.trim() }))],
+      members: [{ name: refMain.trim() }, ...validFriends.map((f) => ({ name: f.name }))],
       referralCount: count,
       rewardType: "free_months",
       rewardValue: count >= 9 ? 2 : 1,
@@ -494,9 +607,64 @@ export default function SubscriptionsBlock() {
     });
 
     setRefBusy(false);
-    setRefMain(""); setRefFriends(["", "", "", "", ""]); setRefPlan("1_month");
+    setRefMain(""); setRefMainPhone("");
+    setRefFriends(["", "", "", "", ""]); setRefFriendPhones(["", "", "", "", ""]);
+    setRefPlan("1_month");
     setRefStart(new Date().toISOString().split("T")[0]);
     setToastMessage(count >= 9 ? "إحالة مسجّلة — شهران مجاناً" : "إحالة مسجّلة — شهر مجاناً");
+  };
+
+  // ── Owner family offer submit ($20 × months) ───────────────────────────────
+  const handleOwnerFamilySubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    setOfError(null);
+    if (!ofName.trim()) { setOfError("أدخل اسم العضو"); return; }
+    setOfBusy(true);
+
+    const months   = OWNER_FAMILY_MONTHS[ofPlan];
+    const amount   = 20 * months;
+    const endDate  = calculateEndDate(ofStart, ofPlan, "owner_family");
+    const paidAmt  = ofPayStatus === "paid" ? amount : 0;
+    const groupId  = crypto.randomUUID();
+    console.log("Owner family submit:", { ofName, ofPhone, ofPlan, months, amount, endDate, ofPayStatus });
+
+    const m = await findOrCreateMember({ user: { id: user.id, displayName: user.displayName }, name: ofName, phone: ofPhone });
+    if (m.error) { setOfError(m.error); setOfBusy(false); return; }
+
+    const r = await pushSubscription({
+      user: { id: user.id, displayName: user.displayName },
+      memberName: ofName.trim(),
+      memberId: m.data?.id,
+      phone: ofPhone,
+      planType: ofPlan, offer: "owner_family",
+      startDate: ofStart, endDate,
+      amount, paidAmount: paidAmt,
+      paymentStatus: ofPayStatus,
+      currency: "usd", exchangeRate, groupId,
+    });
+    if (r.error) { setOfError(r.error); setOfBusy(false); return; }
+
+    const rem = calculateRemainingDays(endDate);
+    addSubscription({
+      id: String(r.data!.id),
+      memberId: String(r.data!.created_by ?? user.id),
+      memberName: ofName.trim(),
+      planType: ofPlan, offer: "owner_family",
+      startDate: ofStart, endDate,
+      remainingDays: rem, amount, paidAmount: paidAmt,
+      paymentStatus: ofPayStatus, paymentMethod: "cash",
+      currency: "usd",
+      status: rem > 0 ? "active" : "expired",
+      createdAt: String(r.data!.created_at ?? new Date().toISOString()),
+      createdBy: user.id,
+      lockedAt: String(r.data!.created_at ?? new Date().toISOString()),
+    });
+
+    setOfBusy(false);
+    setOfName(""); setOfPhone(""); setOfPlan("1_month");
+    setOfStart(new Date().toISOString().split("T")[0]);
+    setToastMessage(`تم تسجيل اشتراك عائلة المالك — $${amount}`);
   };
 
   // ── Corporate offer submit ─────────────────────────────────────────────────
@@ -510,10 +678,16 @@ export default function SubscriptionsBlock() {
     const endDate        = calculateEndDate(corpStart, corpPlan, "corporate");
     const paidAmt        = corpPayStatus === "paid" ? discountedPrice : 0;
     const groupId        = crypto.randomUUID();
+    console.log("Corporate submit:", { corpName, corpPhone, corpOrg, corpPlan, corpPayStatus });
+
+    const m = await findOrCreateMember({ user: { id: user.id, displayName: user.displayName }, name: corpName, phone: corpPhone });
+    if (m.error) { setCorpError(m.error); setCorpBusy(false); return; }
 
     const r = await pushSubscription({
       user: { id: user.id, displayName: user.displayName },
       memberName: corpName.trim(),
+      memberId: m.data?.id,
+      phone: corpPhone,
       planType: corpPlan, offer: "corporate",
       startDate: corpStart, endDate,
       amount: discountedPrice, paidAmount: paidAmt,
@@ -548,7 +722,7 @@ export default function SubscriptionsBlock() {
     });
 
     setCorpBusy(false);
-    setCorpName(""); setCorpPlan("1_month");
+    setCorpName(""); setCorpPhone(""); setCorpPlan("1_month");
     setCorpStart(new Date().toISOString().split("T")[0]);
     setToastMessage(`تم تسجيل اشتراك شركة بخصم ١٥٪ — $${discountedPrice}`);
   };
@@ -563,10 +737,16 @@ export default function SubscriptionsBlock() {
     const discountedPrice = calculateDiscountedPrice(basePrice, "college");
     const endDate         = calculateEndDate(collegeStart, collegePlan, "college");
     const paidAmt         = collegePayStatus === "paid" ? discountedPrice : 0;
+    console.log("College submit:", { collegeName, collegePhone, collegePlan, collegePayStatus });
+
+    const m = await findOrCreateMember({ user: { id: user.id, displayName: user.displayName }, name: collegeName, phone: collegePhone });
+    if (m.error) { setCollegeError(m.error); setCollegeBusy(false); return; }
 
     const r = await pushSubscription({
       user: { id: user.id, displayName: user.displayName },
       memberName: collegeName.trim(),
+      memberId: m.data?.id,
+      phone: collegePhone,
       planType: collegePlan, offer: "college",
       startDate: collegeStart, endDate,
       amount: discountedPrice, paidAmount: paidAmt,
@@ -592,7 +772,7 @@ export default function SubscriptionsBlock() {
     });
 
     setCollegeBusy(false);
-    setCollegeName(""); setCollegePlan("1_month");
+    setCollegeName(""); setCollegePhone(""); setCollegePlan("1_month");
     setCollegeStart(new Date().toISOString().split("T")[0]);
     setToastMessage(`تم تسجيل اشتراك طالب جامعي بخصم ٢٠٪ — $${discountedPrice}`);
   };
@@ -722,7 +902,7 @@ export default function SubscriptionsBlock() {
                         <div className="relative">
                           <select className={selectCls} value={form.planType}
                             onChange={(e) => handlePlanChange(e.target.value as PlanType)}>
-                            {PLAN_TYPES.map((p) => (
+                            {ALL_PLAN_TYPES.map((p) => (
                               <option key={p} value={p}>
                                 {getPlanLabel(p)} — {PLAN_BASE_PRICES[p]} $
                               </option>
@@ -890,7 +1070,7 @@ export default function SubscriptionsBlock() {
               <table className="w-full min-w-[860px] border-collapse">
                 <thead>
                   <tr className="bg-charcoal">
-                    {["اسم العضو","الخطة","العرض","تاريخ البدء","تاريخ الانتهاء","الأيام المتبقية","المبلغ","الحالة",""].map((col, i) => (
+                    {["اسم العضو","الهاتف","الخطة","العرض","تاريخ البدء","تاريخ الانتهاء","الأيام المتبقية","المبلغ","الحالة",""].map((col, i) => (
                       <th key={i} className="px-3.5 py-2.5 text-right font-mono text-[10px] text-secondary uppercase tracking-wider whitespace-nowrap">
                         {col}
                       </th>
@@ -900,7 +1080,7 @@ export default function SubscriptionsBlock() {
                 <tbody>
                   {filtered.length === 0 && (
                     <tr>
-                      <td colSpan={9} className="px-4 py-10 text-center font-mono text-xs text-slate uppercase tracking-wider">
+                      <td colSpan={10} className="px-4 py-10 text-center font-mono text-xs text-slate uppercase tracking-wider">
                         {subscriptions.length === 0 ? "لا توجد اشتراكات" : "لا توجد اشتراكات تطابق هذا الفلتر"}
                       </td>
                     </tr>
@@ -909,6 +1089,9 @@ export default function SubscriptionsBlock() {
                     <tr key={sub.id}
                       className={`ox-table-row bg-iron/50 border-b border-gunmetal last:border-b-0 transition-colors duration-100 hover:bg-gunmetal/60 ${sub.status === "expired" ? "opacity-60" : ""} ${rowAccent(sub)}`}>
                       <td className="px-3.5 py-3 font-body font-medium text-sm text-offwhite whitespace-nowrap">{sub.memberName}</td>
+                      <td className="px-3.5 py-3 font-mono text-xs text-ghost tabular-nums whitespace-nowrap" dir="ltr">
+                        {sub.phone ? sub.phone : <span className="text-slate">—</span>}
+                      </td>
                       <td className="px-3.5 py-3"><PlanBadge plan={sub.planType} /></td>
                       <td className="px-3.5 py-3">
                         {sub.offer !== "none" ? <OfferTag offer={sub.offer} /> : <span className="text-slate font-mono text-xs">—</span>}
@@ -924,25 +1107,38 @@ export default function SubscriptionsBlock() {
                       </td>
                       <td className="px-3.5 py-3"><SubStatusChip status={sub.status} /></td>
                       <td className="px-3.5 py-3 text-center">
-                        {sub.status !== "expired" && sub.status !== "cancelled" ? (
-                          <button
-                            onClick={async () => {
-                              if (!user) return;
-                              const r = await cancelTransaction({
-                                user: { id: user.id, displayName: user.displayName },
-                                table: "gym_subscriptions",
-                                id: sub.id,
-                              });
-                              if (!r.error) cancelSubscriptionLocal(sub.id);
-                            }}
-                            className="p-1 text-secondary hover:text-red transition-colors cursor-pointer"
-                            title="إلغاء الاشتراك"
-                          >
-                            <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-                              <path d="M2 11L6.5 6.5M11 2L6.5 6.5M6.5 6.5L2 2M6.5 6.5L11 11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-                            </svg>
-                          </button>
-                        ) : null}
+                        <div className="flex items-center justify-center gap-1.5">
+                          {sub.status !== "cancelled" ? (
+                            <button
+                              onClick={() => openEditModal(sub)}
+                              className="p-1 text-secondary hover:text-gold transition-colors cursor-pointer"
+                              title="تعديل الاشتراك"
+                            >
+                              <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                                <path d="M9 1.5L11.5 4M2 11l1-3.5L9 1.5l2.5 2.5L5.5 10 2 11z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                              </svg>
+                            </button>
+                          ) : null}
+                          {sub.status !== "expired" && sub.status !== "cancelled" ? (
+                            <button
+                              onClick={async () => {
+                                if (!user) return;
+                                const r = await cancelTransaction({
+                                  user: { id: user.id, displayName: user.displayName },
+                                  table: "gym_subscriptions",
+                                  id: sub.id,
+                                });
+                                if (!r.error) cancelSubscriptionLocal(sub.id);
+                              }}
+                              className="p-1 text-secondary hover:text-red transition-colors cursor-pointer"
+                              title="إلغاء الاشتراك"
+                            >
+                              <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                                <path d="M2 11L6.5 6.5M11 2L6.5 6.5M6.5 6.5L2 2M6.5 6.5L11 11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                              </svg>
+                            </button>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -972,13 +1168,17 @@ export default function SubscriptionsBlock() {
           <div className="space-y-5">
 
             {/* Offer sub-tabs */}
-            <div className="flex items-center gap-1 border-b border-gunmetal pb-0 -mb-px">
-              {(["couple", "referral", "corporate", "college"] as const).map((tab) => (
+            <div className="flex items-center gap-1 border-b border-gunmetal pb-0 -mb-px overflow-x-auto">
+              {(["couple", "referral", "corporate", "college", "owner_family"] as const).map((tab) => (
                 <button key={tab} onClick={() => setOfferTab(tab)}
-                  className={`px-3.5 py-2 font-mono text-[11px] uppercase tracking-wider border-b-2 -mb-px transition-colors ${
+                  className={`px-3.5 py-2 font-mono text-[11px] uppercase tracking-wider border-b-2 -mb-px transition-colors whitespace-nowrap ${
                     offerTab === tab ? "border-gold text-gold" : "border-transparent text-secondary hover:text-ghost"
                   }`}>
-                  {tab === "couple" ? "عرض الزوجين" : tab === "referral" ? "الإحالة" : tab === "corporate" ? "شركات / بنوك" : "طلاب جامعات"}
+                  {tab === "couple" ? "عرض الزوجين"
+                    : tab === "referral" ? "الإحالة"
+                    : tab === "corporate" ? "شركات / بنوك"
+                    : tab === "college" ? "طلاب جامعات"
+                    : "عائلة المالك"}
                 </button>
               ))}
             </div>
@@ -992,17 +1192,33 @@ export default function SubscriptionsBlock() {
                 </div>
                 <form onSubmit={handleCoupleSubmit} className="space-y-4">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className={labelCls}>الشخص الأول</label>
-                      <input required type="text" className={inputCls} placeholder="الاسم الكامل"
-                        value={coupleNames[0]}
-                        onChange={(e) => setCoupleNames([e.target.value, coupleNames[1]])} />
+                    <div className="space-y-2">
+                      <div>
+                        <label className={labelCls}>الشخص الأول</label>
+                        <input required type="text" className={inputCls} placeholder="الاسم الكامل"
+                          value={coupleNames[0]}
+                          onChange={(e) => setCoupleNames([e.target.value, coupleNames[1]])} />
+                      </div>
+                      <div>
+                        <label className={labelCls}>هاتف الشخص الأول</label>
+                        <input type="tel" className={inputCls} placeholder="+963 9x xxx xxxx"
+                          value={couplePhones[0]}
+                          onChange={(e) => setCouplePhones([e.target.value, couplePhones[1]])} />
+                      </div>
                     </div>
-                    <div>
-                      <label className={labelCls}>الشخص الثاني</label>
-                      <input required type="text" className={inputCls} placeholder="الاسم الكامل"
-                        value={coupleNames[1]}
-                        onChange={(e) => setCoupleNames([coupleNames[0], e.target.value])} />
+                    <div className="space-y-2">
+                      <div>
+                        <label className={labelCls}>الشخص الثاني</label>
+                        <input required type="text" className={inputCls} placeholder="الاسم الكامل"
+                          value={coupleNames[1]}
+                          onChange={(e) => setCoupleNames([coupleNames[0], e.target.value])} />
+                      </div>
+                      <div>
+                        <label className={labelCls}>هاتف الشخص الثاني</label>
+                        <input type="tel" className={inputCls} placeholder="+963 9x xxx xxxx"
+                          value={couplePhones[1]}
+                          onChange={(e) => setCouplePhones([couplePhones[0], e.target.value])} />
+                      </div>
                     </div>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1048,10 +1264,17 @@ export default function SubscriptionsBlock() {
                   <p className="font-mono text-[9px] text-slate mt-0.5">٥ إحالات → شهر مجاناً · ٩ إحالات → شهرين مجاناً</p>
                 </div>
                 <form onSubmit={handleReferralSubmit} className="space-y-4">
-                  <div>
-                    <label className={labelCls}>اسم العضو (المُحيل)</label>
-                    <input required type="text" className={inputCls} placeholder="الاسم الكامل"
-                      value={refMain} onChange={(e) => setRefMain(e.target.value)} />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className={labelCls}>اسم العضو (المُحيل)</label>
+                      <input required type="text" className={inputCls} placeholder="الاسم الكامل"
+                        value={refMain} onChange={(e) => setRefMain(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className={labelCls}>هاتف العضو</label>
+                      <input type="tel" className={inputCls} placeholder="+963 9x xxx xxxx"
+                        value={refMainPhone} onChange={(e) => setRefMainPhone(e.target.value)} />
+                    </div>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
@@ -1059,7 +1282,7 @@ export default function SubscriptionsBlock() {
                       <div className="relative">
                         <select className={selectCls} value={refPlan}
                           onChange={(e) => setRefPlan(e.target.value as PlanType)}>
-                          {PLAN_TYPES.map((p) => {
+                          {MONTHLY_PLAN_TYPES.map((p) => {
                             const disc = PLAN_DISCOUNTS[p];
                             return (
                               <option key={p} value={p}>
@@ -1088,23 +1311,31 @@ export default function SubscriptionsBlock() {
                     </div>
                     <div className="space-y-2">
                       {refFriends.map((name, i) => (
-                        <div key={i} className="flex items-center gap-2">
+                        <div key={i} className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-center">
                           <input type="text" className={inputCls} placeholder={`صديق ${i + 1}`}
                             value={name}
                             onChange={(e) => { const next = [...refFriends]; next[i] = e.target.value; setRefFriends(next); }} />
-                          {i >= 5 && (
-                            <button type="button"
-                              onClick={() => setRefFriends(refFriends.filter((_, j) => j !== i))}
-                              className="p-1 text-secondary hover:text-red transition-colors shrink-0">
-                              <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-                                <path d="M2 11L6.5 6.5M11 2L6.5 6.5M6.5 6.5L2 2M6.5 6.5L11 11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-                              </svg>
-                            </button>
-                          )}
+                          <div className="flex items-center gap-2">
+                            <input type="tel" className={inputCls} placeholder={`هاتف صديق ${i + 1}`}
+                              value={refFriendPhones[i] ?? ""}
+                              onChange={(e) => { const next = [...refFriendPhones]; next[i] = e.target.value; setRefFriendPhones(next); }} />
+                            {i >= 5 && (
+                              <button type="button"
+                                onClick={() => {
+                                  setRefFriends(refFriends.filter((_, j) => j !== i));
+                                  setRefFriendPhones(refFriendPhones.filter((_, j) => j !== i));
+                                }}
+                                className="p-1 text-secondary hover:text-red transition-colors shrink-0">
+                                <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                                  <path d="M2 11L6.5 6.5M11 2L6.5 6.5M6.5 6.5L2 2M6.5 6.5L11 11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                                </svg>
+                              </button>
+                            )}
+                          </div>
                         </div>
                       ))}
                       <button type="button"
-                        onClick={() => setRefFriends([...refFriends, ""])}
+                        onClick={() => { setRefFriends([...refFriends, ""]); setRefFriendPhones([...refFriendPhones, ""]); }}
                         className="w-full py-1.5 border border-dashed border-gunmetal text-secondary hover:text-ghost font-mono text-[10px] uppercase tracking-wider transition-colors rounded">
                         + إضافة صديق
                       </button>
@@ -1139,11 +1370,16 @@ export default function SubscriptionsBlock() {
                   <p className="font-mono text-[9px] text-slate mt-0.5">خصم ١٥٪ على أي خطة — للشركات والبنوك</p>
                 </div>
                 <form onSubmit={handleCorporateSubmit} className="space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div>
                       <label className={labelCls}>اسم العضو</label>
                       <input required type="text" className={inputCls} placeholder="الاسم الكامل"
                         value={corpName} onChange={(e) => setCorpName(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className={labelCls}>الهاتف</label>
+                      <input type="tel" className={inputCls} placeholder="+963 9x xxx xxxx"
+                        value={corpPhone} onChange={(e) => setCorpPhone(e.target.value)} />
                     </div>
                     <div>
                       <label className={labelCls}>نوع المنظمة</label>
@@ -1163,7 +1399,7 @@ export default function SubscriptionsBlock() {
                       <div className="relative">
                         <select className={selectCls} value={corpPlan}
                           onChange={(e) => setCorpPlan(e.target.value as PlanType)}>
-                          {PLAN_TYPES.map((p) => {
+                          {MONTHLY_PLAN_TYPES.map((p) => {
                             const disc = PLAN_DISCOUNTS[p];
                             return (
                               <option key={p} value={p}>
@@ -1217,18 +1453,23 @@ export default function SubscriptionsBlock() {
                   <p className="font-mono text-[9px] text-slate mt-0.5">خصم ٢٠٪ على أي خطة — لطلاب الجامعات</p>
                 </div>
                 <form onSubmit={handleCollegeSubmit} className="space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div>
                       <label className={labelCls}>اسم العضو</label>
                       <input required type="text" className={inputCls} placeholder="الاسم الكامل"
                         value={collegeName} onChange={(e) => setCollegeName(e.target.value)} />
                     </div>
                     <div>
+                      <label className={labelCls}>الهاتف</label>
+                      <input type="tel" className={inputCls} placeholder="+963 9x xxx xxxx"
+                        value={collegePhone} onChange={(e) => setCollegePhone(e.target.value)} />
+                    </div>
+                    <div>
                       <label className={labelCls}>نوع الخطة</label>
                       <div className="relative">
                         <select className={selectCls} value={collegePlan}
                           onChange={(e) => setCollegePlan(e.target.value as PlanType)}>
-                          {PLAN_TYPES.map((p) => (
+                          {MONTHLY_PLAN_TYPES.map((p) => (
                             <option key={p} value={p}>
                               {getPlanLabel(p)} — {PLAN_BASE_PRICES[p]} $
                             </option>
@@ -1272,6 +1513,218 @@ export default function SubscriptionsBlock() {
                 </form>
               </div>
             )}
+
+            {/* ── Owner family form ($20 × months) ───────────────────────── */}
+            {offerTab === "owner_family" && (
+              <div className="border border-gunmetal bg-charcoal rounded clip-corner p-5">
+                <div className="mb-4">
+                  <p className="font-mono text-[10px] text-secondary uppercase tracking-widest">عائلة المالك</p>
+                  <p className="font-mono text-[9px] text-slate mt-0.5">السعر $20 لكل شهر</p>
+                </div>
+                <form onSubmit={handleOwnerFamilySubmit} className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className={labelCls}>اسم العضو</label>
+                      <input required type="text" className={inputCls} placeholder="الاسم الكامل"
+                        value={ofName} onChange={(e) => setOfName(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className={labelCls}>الهاتف</label>
+                      <input type="tel" className={inputCls} placeholder="+963 9x xxx xxxx"
+                        value={ofPhone} onChange={(e) => setOfPhone(e.target.value)} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className={labelCls}>نوع الخطة</label>
+                      <div className="relative">
+                        <select className={selectCls} value={ofPlan}
+                          onChange={(e) => setOfPlan(e.target.value as PlanType)}>
+                          {OWNER_FAMILY_PLAN_TYPES.map((p) => (
+                            <option key={p} value={p}>
+                              {getPlanLabel(p)} — ${20 * OWNER_FAMILY_MONTHS[p]}
+                            </option>
+                          ))}
+                        </select>
+                        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-secondary"><ChevronIcon open={false} /></span>
+                      </div>
+                    </div>
+                    <div>
+                      <label className={labelCls}>تاريخ البدء</label>
+                      <input required type="date" className={inputCls} value={ofStart}
+                        onChange={(e) => setOfStart(e.target.value)} />
+                    </div>
+                  </div>
+                  <div>
+                    <label className={labelCls}>حالة الدفع</label>
+                    <div className="relative">
+                      <select className={selectCls} value={ofPayStatus}
+                        onChange={(e) => setOfPayStatus(e.target.value as PaymentStatus)}>
+                        <option value="paid">مدفوع</option>
+                        <option value="partial">جزئي</option>
+                        <option value="unpaid">غير مدفوع</option>
+                      </select>
+                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-secondary"><ChevronIcon open={false} /></span>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between p-3 bg-void border border-gunmetal rounded">
+                    <div>
+                      <p className="font-mono text-[9px] text-slate uppercase tracking-wider">الإجمالي ($20 × {OWNER_FAMILY_MONTHS[ofPlan]} شهر)</p>
+                    </div>
+                    <span className="font-display text-2xl text-gold-bright">${20 * OWNER_FAMILY_MONTHS[ofPlan]}</span>
+                  </div>
+                  {ofError && <div className="p-2.5 bg-red/10 border border-red/30 rounded font-mono text-xs text-red">{ofError}</div>}
+                  <button type="submit" disabled={ofBusy}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 bg-gold hover:bg-gold-bright text-void font-display text-sm tracking-widest uppercase clip-corner-sm transition-colors disabled:opacity-40">
+                    <LockIcon size={13} />{ofBusy ? "جاري الحفظ…" : "تسجيل اشتراك عائلة المالك"}
+                  </button>
+                </form>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Edit subscription modal ───────────────────────────────────── */}
+        {editSub && editForm && (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center bg-void/80 backdrop-blur-sm" dir="rtl">
+            <div className="bg-charcoal border border-gunmetal rounded clip-corner p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto" style={{ borderTop: "3px solid #F5C100" }}>
+              <div className="flex items-center justify-between mb-5">
+                <h3 className="font-display text-lg tracking-widest text-offwhite">تعديل اشتراك</h3>
+                <button onClick={closeEditModal} className="text-secondary hover:text-offwhite cursor-pointer transition-colors">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 13L8 8M13 3L8 8M8 8L3 3M8 8L13 13" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+                </button>
+              </div>
+              <form onSubmit={async (e) => {
+                e.preventDefault();
+                if (!user || !editSub || !editForm) return;
+                setEditError(null);
+                setEditBusy(true);
+                const r = await updateSubscription(editSub.id, {
+                  memberName: editForm.memberName.trim(),
+                  phone: editForm.phone.trim() || null,
+                  planType: editForm.planType,
+                  offer: editForm.offer,
+                  startDate: editForm.startDate,
+                  endDate: editForm.endDate,
+                  amount: Number(editForm.amount),
+                  paidAmount: Number(editForm.paidAmount),
+                  paymentStatus: editForm.paymentStatus,
+                }, { id: user.id, displayName: user.displayName });
+                setEditBusy(false);
+                if (r.error) { setEditError(r.error); return; }
+                const row = r.data!;
+                const updatedSub: Subscription = {
+                  ...editSub,
+                  memberName: String(row.member_name ?? editForm.memberName),
+                  phone: row.phone == null ? null : String(row.phone),
+                  planType: String(row.plan_type ?? editForm.planType) as PlanType,
+                  offer: String(row.offer ?? editForm.offer) as OfferType,
+                  startDate: String(row.start_date ?? editForm.startDate),
+                  endDate: String(row.end_date ?? editForm.endDate),
+                  remainingDays: calculateRemainingDays(String(row.end_date ?? editForm.endDate)),
+                  amount: Number(row.amount ?? Number(editForm.amount)),
+                  paidAmount: Number(row.paid_amount ?? Number(editForm.paidAmount)),
+                  paymentStatus: String(row.payment_status ?? editForm.paymentStatus) as PaymentStatus,
+                };
+                replaceSubscription(editSub.id, updatedSub);
+                closeEditModal();
+                setToastMessage("تم تحديث الاشتراك");
+              }} className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className={labelCls}>اسم العضو</label>
+                    <input required type="text" className={inputCls}
+                      value={editForm.memberName}
+                      onChange={(e) => setEditForm({ ...editForm, memberName: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className={labelCls}>الهاتف</label>
+                    <input type="tel" className={inputCls} placeholder="+963 9x xxx xxxx"
+                      value={editForm.phone}
+                      onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className={labelCls}>نوع الخطة</label>
+                    <div className="relative">
+                      <select className={selectCls} value={editForm.planType}
+                        onChange={(e) => setEditForm({ ...editForm, planType: e.target.value as PlanType })}>
+                        {ALL_PLAN_TYPES.map((p) => (<option key={p} value={p}>{getPlanLabel(p)}</option>))}
+                      </select>
+                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-secondary"><ChevronIcon open={false} /></span>
+                    </div>
+                  </div>
+                  <div>
+                    <label className={labelCls}>العرض</label>
+                    <div className="relative">
+                      <select className={selectCls} value={editForm.offer}
+                        onChange={(e) => setEditForm({ ...editForm, offer: e.target.value as OfferType })}>
+                        <option value="none">بدون</option>
+                        <option value="couple">زوجين</option>
+                        <option value="referral_4">إحالة ٤</option>
+                        <option value="referral_9">إحالة ٩</option>
+                        <option value="corporate">شركات</option>
+                        <option value="college">طلاب</option>
+                        <option value="owner_family">عائلة المالك</option>
+                      </select>
+                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-secondary"><ChevronIcon open={false} /></span>
+                    </div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className={labelCls}>تاريخ البدء</label>
+                    <input required type="date" className={inputCls}
+                      value={editForm.startDate}
+                      onChange={(e) => setEditForm({ ...editForm, startDate: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className={labelCls}>تاريخ الانتهاء</label>
+                    <input required type="date" className={inputCls}
+                      value={editForm.endDate}
+                      onChange={(e) => setEditForm({ ...editForm, endDate: e.target.value })} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>
+                    <label className={labelCls}>المبلغ</label>
+                    <input required type="number" min="0" step="0.01" className={inputCls}
+                      value={editForm.amount}
+                      onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className={labelCls}>المدفوع</label>
+                    <input required type="number" min="0" step="0.01" className={inputCls}
+                      value={editForm.paidAmount}
+                      onChange={(e) => setEditForm({ ...editForm, paidAmount: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className={labelCls}>حالة الدفع</label>
+                    <div className="relative">
+                      <select className={selectCls} value={editForm.paymentStatus}
+                        onChange={(e) => setEditForm({ ...editForm, paymentStatus: e.target.value as PaymentStatus })}>
+                        <option value="paid">مدفوع</option>
+                        <option value="partial">جزئي</option>
+                        <option value="unpaid">غير مدفوع</option>
+                      </select>
+                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-secondary"><ChevronIcon open={false} /></span>
+                    </div>
+                  </div>
+                </div>
+                {editError && <div className="p-2.5 bg-red/10 border border-red/30 rounded font-mono text-xs text-red">{editError}</div>}
+                <div className="flex gap-3 pt-2">
+                  <button type="submit" disabled={editBusy}
+                    className="flex-1 py-2.5 bg-gold hover:bg-gold-bright text-void font-display text-sm tracking-widest uppercase rounded clip-corner-sm transition-colors disabled:opacity-40">
+                    {editBusy ? "جاري الحفظ…" : "حفظ التعديلات"}
+                  </button>
+                  <button type="button" onClick={closeEditModal} disabled={editBusy}
+                    className="px-5 py-2.5 border border-gunmetal text-secondary hover:text-offwhite font-mono text-xs uppercase tracking-wider rounded transition-colors disabled:opacity-40">
+                    إلغاء
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
         )}
 

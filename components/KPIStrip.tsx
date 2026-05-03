@@ -78,31 +78,39 @@ export default function KPIStrip({ hideProfit }: KPIStripProps) {
           icon={<DollarSign size={14} />}
           accent="gold"
         />
-        <KPICard
-          label="الأعضاء النشطين"
-          value={String(kpi.activeMembers)}
-          icon={<Users size={14} />}
-        />
-        <KPICard
-          label="تنتهي هذا الأسبوع"
-          value={String(kpi.expiringThisWeek)}
-          icon={<CalendarClock size={14} />}
-          accent={kpi.expiringThisWeek > 0 ? "gold" : "default"}
-          badge={kpi.expiringThisWeek > 0 ? <GoldBadge count={kpi.expiringThisWeek} /> : undefined}
-        />
-        <KPICard
-          label="اشتراكات منتهية"
-          value={String(kpi.endedCount)}
-          icon={<CalendarX size={14} />}
-          accent={kpi.endedCount > 0 ? "red" : "default"}
-          badge={kpi.endedCount > 0 ? <RedBadge count={kpi.endedCount} /> : undefined}
-        />
-        <KPICard
-          label="النقد في الخزنة"
-          value={fmtUSD(kpi.cashOnHandUSD)}
-          icon={<Banknote size={14} />}
-          accent="gold"
-        />
+        {!hideProfit && (
+          <KPICard
+            label="الأعضاء النشطين"
+            value={String(kpi.activeMembers)}
+            icon={<Users size={14} />}
+          />
+        )}
+        {!hideProfit && (
+          <KPICard
+            label="تنتهي هذا الأسبوع"
+            value={String(kpi.expiringThisWeek)}
+            icon={<CalendarClock size={14} />}
+            accent={kpi.expiringThisWeek > 0 ? "gold" : "default"}
+            badge={kpi.expiringThisWeek > 0 ? <GoldBadge count={kpi.expiringThisWeek} /> : undefined}
+          />
+        )}
+        {!hideProfit && (
+          <KPICard
+            label="اشتراكات منتهية"
+            value={String(kpi.endedCount)}
+            icon={<CalendarX size={14} />}
+            accent={kpi.endedCount > 0 ? "red" : "default"}
+            badge={kpi.endedCount > 0 ? <RedBadge count={kpi.endedCount} /> : undefined}
+          />
+        )}
+        {!hideProfit && (
+          <KPICard
+            label="النقد في الخزنة"
+            value={fmtUSD(kpi.cashOnHandUSD)}
+            icon={<Banknote size={14} />}
+            accent="gold"
+          />
+        )}
         {!hideProfit && (
           <KPICard
             label="الإيرادات الشهرية"

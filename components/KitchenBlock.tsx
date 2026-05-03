@@ -32,14 +32,16 @@ export default function KitchenBlock() {
     [sales, today]
   );
 
-  const totalUSD = useMemo(
-    () => activeItems.reduce((sum, it) => sum + (qty[it.id] ?? 0) * Number(it.price_usd), 0),
+  const totalSYP = useMemo(
+    () => activeItems.reduce((sum, it) => sum + (qty[it.id] ?? 0) * Number(it.price_syp), 0),
     [activeItems, qty]
   );
   const orderedCount = useMemo(
     () => Object.values(qty).reduce((a, n) => a + (n > 0 ? 1 : 0), 0),
     [qty]
   );
+
+  const fmtSYP = (n: number) => `${new Intl.NumberFormat("ar-SY", { maximumFractionDigits: 0 }).format(Math.round(n))} ل.س`;
 
   const inc = (id: string) => setQty((q) => ({ ...q, [id]: (q[id] ?? 0) + 1 }));
   const dec = (id: string) => setQty((q) => ({ ...q, [id]: Math.max(0, (q[id] ?? 0) - 1) }));
@@ -52,17 +54,18 @@ export default function KitchenBlock() {
 
     setBusy(true);
     const currentUser = { id: user.id, displayName: user.displayName };
+    console.log("Kitchen order start (SYP):", { user: currentUser, lines: lines.map((l) => ({ name: l.it.name, q: l.q, price_syp: l.it.price_syp })) });
     for (const { it, q } of lines) {
-      const unitPrice = Number(it.price_usd);
-      const total = Number((q * unitPrice).toFixed(4));
+      const unitPrice = Number(it.price_syp);
+      const total = Math.round(q * unitPrice);
       const r = await pushSale({
         user: currentUser,
         productName: it.name,
         quantity: q,
         unitPrice,
         total,
-        currency: "usd",
-        exchangeRate,
+        currency: "syp",
+        exchangeRate: 1,
         source: "kitchen",
         paymentMethod: "cash",
       });
@@ -76,7 +79,7 @@ export default function KitchenBlock() {
         unitPrice,
         total,
         paymentMethod: "cash",
-        currency: "usd",
+        currency: "syp",
         source: "kitchen",
         createdAt: String(row.created_at ?? new Date().toISOString()),
         createdBy: user.id,
@@ -85,7 +88,7 @@ export default function KitchenBlock() {
       addSale(sale);
     }
     setBusy(false);
-    setSuccess(`تم تسجيل الطلب — $${totalUSD.toFixed(2)}`);
+    setSuccess(`تم تسجيل الطلب — ${fmtSYP(totalSYP)}`);
     setQty({});
     setTimeout(() => setSuccess(""), 2500);
   }
@@ -114,15 +117,15 @@ export default function KitchenBlock() {
         ) : (
           activeItems.map((it) => {
             const q         = qty[it.id] ?? 0;
-            const lineTotal = q * Number(it.price_usd);
+            const lineTotal = q * Number(it.price_syp);
             return (
               <div
                 key={it.id}
                 className={`p-3 border rounded-sm transition-colors ${q > 0 ? "border-[#F5C100]/50 bg-[#F5C100]/5" : "border-[#252525] bg-[#111111]"}`}
               >
                 <p className="font-body text-xs text-[#F0EDE6] mb-1.5">{it.name}</p>
-                <p className="font-display text-base text-[#F5C100] tracking-wider">
-                  ${Number(it.price_usd).toFixed(2)}
+                <p className="font-display text-base text-[#F5C100] tracking-wider" dir="ltr">
+                  {fmtSYP(Number(it.price_syp))}
                 </p>
                 <div className="mt-2.5 flex items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5">
@@ -142,8 +145,8 @@ export default function KitchenBlock() {
                     </button>
                   </div>
                   {q > 0 && (
-                    <span className="font-mono tabular-nums text-[10px] text-[#5CC45C]">
-                      ${lineTotal.toFixed(2)}
+                    <span className="font-mono tabular-nums text-[10px] text-[#5CC45C]" dir="ltr">
+                      {fmtSYP(lineTotal)}
                     </span>
                   )}
                 </div>
@@ -157,12 +160,12 @@ export default function KitchenBlock() {
       <div className="border-t border-[#252525] px-5 py-3.5 flex flex-wrap items-center justify-between gap-3 bg-[#111111]/60">
         <div className="flex items-center gap-3">
           <span className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">إجمالي الطلب</span>
-          <span className="font-mono tabular-nums text-sm font-medium text-[#F5C100]">${totalUSD.toFixed(2)}</span>
+          <span className="font-mono tabular-nums text-sm font-medium text-[#F5C100]" dir="ltr">{fmtSYP(totalSYP)}</span>
           <span className="font-mono text-[10px] text-[#555555]">({orderedCount} صنف)</span>
         </div>
         <button
           onClick={handleOrder}
-          disabled={busy || totalUSD === 0}
+          disabled={busy || totalSYP === 0}
           className="flex items-center gap-1.5 px-4 py-2 bg-[#F5C100] hover:bg-[#FFD740] active:bg-[#C49A00] disabled:opacity-40 disabled:cursor-not-allowed text-[#0A0A0A] font-display tracking-widest text-xs uppercase rounded-sm transition-colors clip-corner-sm cursor-pointer"
         >
           <ChefHat size={12} />
@@ -193,8 +196,8 @@ export default function KitchenBlock() {
                     {formatTime(s.createdAt)}
                   </p>
                 </div>
-                <span className={`font-mono tabular-nums text-xs ${s.cancelled ? "text-[#777777] line-through" : "text-[#F5C100]"}`}>
-                  ${s.total.toFixed(2)}
+                <span className={`font-mono tabular-nums text-xs ${s.cancelled ? "text-[#777777] line-through" : "text-[#F5C100]"}`} dir="ltr">
+                  {s.currency === "syp" ? fmtSYP(s.total) : `$${s.total.toFixed(2)}`}
                 </span>
                 {!s.cancelled ? (
                   <button

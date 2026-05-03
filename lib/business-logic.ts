@@ -5,6 +5,8 @@ import { PlanType, OfferType, ProductCategory } from "./types";
 // ============================================================
 
 const PLAN_DAYS: Record<PlanType, number> = {
+  daily: 1,
+  "15_days": 15,
   "1_month": 30,
   "3_months": 90,
   "6_months": 180,
@@ -13,6 +15,8 @@ const PLAN_DAYS: Record<PlanType, number> = {
 };
 
 export const PLAN_PRICES: Record<PlanType, number> = {
+  daily: 5,
+  "15_days": 20,
   "1_month": 35,
   "3_months": 90,
   "6_months": 170,
@@ -27,6 +31,9 @@ const OFFER_BONUS_DAYS: Record<OfferType, number> = {
   couple: 0,
   corporate: 0,
   college: 0,
+  owner_family: 0,
+  group_5: 0,
+  group_9: 0,
 };
 
 const OFFER_DISCOUNT_PERCENT: Record<OfferType, number> = {
@@ -36,6 +43,9 @@ const OFFER_DISCOUNT_PERCENT: Record<OfferType, number> = {
   couple: 0,
   corporate: 15,
   college: 20,
+  owner_family: 0,  // owner family priced separately ($20 × months)
+  group_5: 0,  // legacy
+  group_9: 0,  // legacy
 };
 
 export function calculateEndDate(
@@ -64,12 +74,25 @@ export function calculateDiscountedPrice(
   plan?: PlanType
 ): number {
   if (offer === "couple" && plan === "1_month") return 60;
+  if (offer === "owner_family" && plan) {
+    return Math.round(20 * (PLAN_DAYS[plan] / 30));
+  }
+  if (offer === "group_5") return Math.round(basePrice * 4 / 5);
+  if (offer === "group_9") return Math.round(basePrice * 7 / 9);
   const discount = OFFER_DISCOUNT_PERCENT[offer];
   return Math.round(basePrice * (1 - discount / 100));
 }
 
+export function calcGroupPerMember(basePrice: number, groupSize: 5 | 9): number {
+  return groupSize === 5
+    ? Math.round(basePrice * 4 / 5)
+    : Math.round(basePrice * 7 / 9);
+}
+
 export function getPlanLabel(plan: PlanType): string {
   const labels: Record<PlanType, string> = {
+    daily: "يومي",
+    "15_days": "١٥ يوم",
     "1_month": "شهر واحد",
     "3_months": "٣ أشهر",
     "6_months": "٦ أشهر",
@@ -87,6 +110,9 @@ export function getOfferLabel(offer: OfferType): string {
     couple: "عرض الزوجين ($60 لاثنين — شهر فقط)",
     corporate: "شركات / بنك (خصم ١٥٪)",
     college: "خصم طلاب ٢٠٪",
+    owner_family: "عائلة المالك",
+    group_5: "مجموعة ٥ (٥ يدفعون ثمن ٤)",
+    group_9: "مجموعة ٩ (٩ يدفعون ثمن ٧)",
   };
   return labels[offer];
 }

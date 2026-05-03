@@ -10,6 +10,7 @@ import type { ActivityEntry, ActivityType } from "@/lib/store-context";
 import type { AuditEntry, AuditAction } from "@/lib/types";
 import ExchangeRateModal from "@/components/ExchangeRateModal";
 import KPIStrip from "@/components/KPIStrip";
+import DailyExportButton from "@/components/DailyExportButton";
 import LiveAlertsBlock from "@/components/LiveAlertsBlock";
 import SubscriptionsBlock from "@/components/SubscriptionsBlock";
 import StoreBlock from "@/components/StoreBlock";
@@ -429,7 +430,8 @@ function DashboardContent() {
         {/* ════════════════════════════════════════════════════════════
             التذييل — Monthly Excel Export
         ════════════════════════════════════════════════════════════ */}
-        <footer className="border-t border-gunmetal pt-6 pb-8">
+        <footer className="border-t border-gunmetal pt-6 pb-8 space-y-4">
+          <DailyExportButton />
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className="flex items-center gap-2">
               <Image src="/logo-icon.png" alt="OX" width={20} height={20} className="h-5 w-auto" />

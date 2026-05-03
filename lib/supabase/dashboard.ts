@@ -152,39 +152,104 @@ export async function fetchLiveKPI(): Promise<LiveKPI> {
 }
 
 // ─── Daily Report ─────────────────────────────────────────────────────────────
+//
+// "Daily" is a Damascus-local calendar day, not a UTC day, and not a cash
+// session. Rows are filtered by `created_at` falling inside the Damascus-day
+// window, so the report is correct for overnight shifts, multi-shift days,
+// and days where the cash session was opened the previous evening.
 
-export interface DailyReportRow {
+export interface SubscriptionDailyRow {
   time: string;
-  type: "subscription" | "sale_store" | "sale_kitchen" | "inbody" | "expense";
-  description: string;
+  memberName: string;
+  phone: string;
+  planType: string;
+  offer: string;
+  startDate: string;
+  endDate: string;
+  amount: number;       // full price (USD)
+  paidAmount: number;   // actually paid (USD)
+  remaining: number;    // amount - paidAmount
+  paymentStatus: string;
+  paymentMethod: string;
   by: string;
-  amount: number; // positive = income, negative = expense
+}
+
+export interface SaleDailyRow {
+  time: string;
+  productName: string;
+  quantity: number;
+  unitPriceUSD: number;
+  totalUSD: number;
+  paymentMethod: string;
+  by: string;
+}
+
+export interface InBodyDailyRow {
+  time: string;
+  memberName: string;
+  sessionType: string;
+  amountUSD: number;
+  by: string;
+}
+
+export interface ExpenseDailyRow {
+  time: string;
+  description: string;
+  category: string;
+  amountUSD: number;
+  originalAmount: number;
+  currency: string;
+  by: string;
 }
 
 export interface DailyReport {
   date: string;
+  windowStartUTC: string;
+  windowEndUTC: string;
   sessionsCount: number;
-  totalIncome: number;
-  totalExpenses: number;
-  net: number;
-  rows: DailyReportRow[];
+  totals: {
+    subscriptionsUSD: number;
+    storeSalesUSD: number;
+    kitchenSalesUSD: number;
+    inbodyUSD: number;
+    expensesUSD: number;
+    incomeUSD: number;
+    netUSD: number;
+  };
+  counts: {
+    subscriptions: number;
+    storeSales: number;
+    kitchenSales: number;
+    inbody: number;
+    expenses: number;
+  };
+  subscriptions: SubscriptionDailyRow[];
+  storeSales: SaleDailyRow[];
+  kitchenSales: SaleDailyRow[];
+  inbody: InBodyDailyRow[];
+  expenses: ExpenseDailyRow[];
+}
+
+// Damascus has been UTC+3 year-round since 2022 (no DST). Anchoring the
+// day window via the +03:00 offset is timezone-correct without relying on
+// the runtime's local TZ.
+const DAMASCUS_OFFSET = "+03:00";
+
+function damascusDayWindowUTC(date: string): { start: string; end: string } {
+  const start = new Date(`${date}T00:00:00.000${DAMASCUS_OFFSET}`).toISOString();
+  const end   = new Date(`${date}T23:59:59.999${DAMASCUS_OFFSET}`).toISOString();
+  return { start, end };
+}
+
+function toUSD(amount: number, currency: string, rate: number): number {
+  if (currency === "syp" && rate > 0) return amount / rate;
+  return amount;
 }
 
 export async function fetchDailyReport(date: string): Promise<DailyReport> {
   const supabase = supabaseBrowser();
-  const dayStart = `${date}T00:00:00.000Z`;
-  const dayEnd   = `${date}T23:59:59.999Z`;
+  const { start: dayStart, end: dayEnd } = damascusDayWindowUTC(date);
 
-  // Fetch sessions for the day to get session IDs
-  const { data: sessions } = await supabase
-    .from("cash_sessions")
-    .select("id")
-    .gte("opened_at", dayStart)
-    .lte("opened_at", dayEnd);
-
-  const sessionIds = (sessions ?? []).map((s: Record<string, unknown>) => String(s.id));
-
-  // Fetch profiles for name resolution
   const { data: profiles } = await supabase
     .from("profiles")
     .select("id, display_name");
@@ -194,121 +259,168 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
     nameMap[String(pr.id)] = String(pr.display_name ?? "");
   }
 
-  const rows: DailyReportRow[] = [];
-
-  if (sessionIds.length > 0) {
-    // Subscriptions
-    const { data: subs } = await supabase
+  const [sessionsRes, subsRes, salesRes, inbodyRes, expensesRes] = await Promise.all([
+    supabase
+      .from("cash_sessions")
+      .select("id")
+      .gte("opened_at", dayStart)
+      .lte("opened_at", dayEnd),
+    supabase
       .from("gym_subscriptions")
-      .select("created_at, member_name, paid_amount, created_by")
-      .in("cash_session_id", sessionIds)
+      .select(
+        "created_at, member_name, phone, plan_type, offer, start_date, end_date, " +
+        "amount, paid_amount, payment_status, payment_method, currency, exchange_rate, created_by"
+      )
+      .gte("created_at", dayStart)
+      .lte("created_at", dayEnd)
       .is("cancelled_at", null)
-      .not("member_name", "ilike", "%test%");
-    for (const s of subs ?? []) {
-      const r = s as Record<string, unknown>;
-      rows.push({
-        time: String(r.created_at ?? ""),
-        type: "subscription",
-        description: `اشتراك — ${String(r.member_name ?? "")}`,
-        by: nameMap[String(r.created_by ?? "")] ?? String(r.created_by ?? ""),
-        amount: Number(r.paid_amount ?? 0),
-      });
-    }
-
-    // Store sales
-    const { data: storeSales } = await supabase
+      .not("member_name", "ilike", "%test%"),
+    supabase
       .from("sales")
-      .select("created_at, product_name, quantity, total, created_by_name")
-      .in("cash_session_id", sessionIds)
-      .eq("source", "store")
-      .is("cancelled_at", null);
-    for (const s of storeSales ?? []) {
-      const r = s as Record<string, unknown>;
-      const qty = Number(r.quantity ?? 1);
-      const name = String(r.product_name ?? "");
-      rows.push({
-        time: String(r.created_at ?? ""),
-        type: "sale_store",
-        description: `متجر — ${qty}× ${name}`,
-        by: String(r.created_by_name ?? ""),
-        amount: Number(r.total ?? 0),
-      });
-    }
-
-    // Kitchen sales
-    const { data: kitchenSales } = await supabase
-      .from("sales")
-      .select("created_at, product_name, quantity, total, created_by_name")
-      .in("cash_session_id", sessionIds)
-      .eq("source", "kitchen")
-      .is("cancelled_at", null);
-    for (const s of kitchenSales ?? []) {
-      const r = s as Record<string, unknown>;
-      const qty = Number(r.quantity ?? 1);
-      const name = String(r.product_name ?? "");
-      rows.push({
-        time: String(r.created_at ?? ""),
-        type: "sale_kitchen",
-        description: `مطبخ — ${qty}× ${name}`,
-        by: String(r.created_by_name ?? ""),
-        amount: Number(r.total ?? 0),
-      });
-    }
-
-    // InBody sessions
-    const { data: inbody } = await supabase
+      .select(
+        "created_at, source, product_name, quantity, unit_price, total, " +
+        "currency, exchange_rate, payment_method, created_by, created_by_name"
+      )
+      .gte("created_at", dayStart)
+      .lte("created_at", dayEnd)
+      .is("cancelled_at", null),
+    supabase
       .from("inbody_sessions")
-      .select("created_at, member_name, amount, created_by_name")
-      .in("cash_session_id", sessionIds)
+      .select(
+        "created_at, member_name, session_type, amount, currency, exchange_rate, " +
+        "created_by, created_by_name"
+      )
+      .gte("created_at", dayStart)
+      .lte("created_at", dayEnd)
       .is("cancelled_at", null)
-      .not("member_name", "ilike", "%test%");
-    for (const s of inbody ?? []) {
-      const r = s as Record<string, unknown>;
-      rows.push({
-        time: String(r.created_at ?? ""),
-        type: "inbody",
-        description: `InBody — ${String(r.member_name ?? "")}`,
-        by: String(r.created_by_name ?? ""),
-        amount: Number(r.amount ?? 0),
-      });
-    }
-
-    // Expenses — `expenses` stores the raw amount + currency + an SYP snapshot.
-    // Convert SYP rows to USD using the snapshot ratio so the daily total is
-    // single-currency.
-    const { data: expenses } = await supabase
+      .not("member_name", "ilike", "%test%"),
+    supabase
       .from("expenses")
-      .select("created_at, description, amount, amount_syp, currency, exchange_rate, created_by")
-      .in("cash_session_id", sessionIds)
-      .is("cancelled_at", null);
-    for (const s of expenses ?? []) {
-      const r = s as Record<string, unknown>;
-      const currency = String(r.currency ?? "usd");
-      const amount = Number(r.amount ?? 0);
-      const rate = Number(r.exchange_rate ?? 0);
-      const usdAmount = currency === "syp" && rate > 0 ? amount / rate : amount;
-      rows.push({
-        time: String(r.created_at ?? ""),
-        type: "expense",
-        description: `مصروف — ${String(r.description ?? "")}`,
-        by: nameMap[String(r.created_by ?? "")] ?? String(r.created_by ?? ""),
-        amount: -Number(usdAmount.toFixed(2)),
-      });
-    }
+      .select("created_at, description, category, amount, currency, exchange_rate, created_by")
+      .gte("created_at", dayStart)
+      .lte("created_at", dayEnd)
+      .is("cancelled_at", null),
+  ]);
+
+  const sessionsCount = (sessionsRes.data ?? []).length;
+
+  const subscriptions: SubscriptionDailyRow[] = (subsRes.data ?? []).map((s) => {
+    const r = s as unknown as Record<string, unknown>;
+    const currency = String(r.currency ?? "usd");
+    const rate = Number(r.exchange_rate ?? 0);
+    const amount     = toUSD(Number(r.amount ?? 0),      currency, rate);
+    const paidAmount = toUSD(Number(r.paid_amount ?? 0), currency, rate);
+    return {
+      time: String(r.created_at ?? ""),
+      memberName: String(r.member_name ?? ""),
+      phone: String(r.phone ?? ""),
+      planType: String(r.plan_type ?? ""),
+      offer: String(r.offer ?? "none"),
+      startDate: String(r.start_date ?? ""),
+      endDate: String(r.end_date ?? ""),
+      amount: Number(amount.toFixed(2)),
+      paidAmount: Number(paidAmount.toFixed(2)),
+      remaining: Number((amount - paidAmount).toFixed(2)),
+      paymentStatus: String(r.payment_status ?? ""),
+      paymentMethod: String(r.payment_method ?? ""),
+      by: nameMap[String(r.created_by ?? "")] ?? String(r.created_by ?? ""),
+    };
+  });
+
+  const storeSales: SaleDailyRow[] = [];
+  const kitchenSales: SaleDailyRow[] = [];
+  for (const s of salesRes.data ?? []) {
+    const r = s as unknown as Record<string, unknown>;
+    const currency = String(r.currency ?? "usd");
+    const rate = Number(r.exchange_rate ?? 0);
+    const qty = Number(r.quantity ?? 1);
+    const total = toUSD(Number(r.total ?? 0), currency, rate);
+    const unit = qty > 0 ? total / qty : toUSD(Number(r.unit_price ?? 0), currency, rate);
+    const row: SaleDailyRow = {
+      time: String(r.created_at ?? ""),
+      productName: String(r.product_name ?? ""),
+      quantity: qty,
+      unitPriceUSD: Number(unit.toFixed(2)),
+      totalUSD: Number(total.toFixed(2)),
+      paymentMethod: String(r.payment_method ?? ""),
+      by: String(r.created_by_name ?? nameMap[String(r.created_by ?? "")] ?? ""),
+    };
+    if (String(r.source ?? "store") === "kitchen") kitchenSales.push(row);
+    else storeSales.push(row);
   }
 
-  rows.sort((a, b) => a.time.localeCompare(b.time));
+  const inbody: InBodyDailyRow[] = (inbodyRes.data ?? []).map((s) => {
+    const r = s as unknown as Record<string, unknown>;
+    const currency = String(r.currency ?? "usd");
+    const rate = Number(r.exchange_rate ?? 0);
+    const usd = toUSD(Number(r.amount ?? 0), currency, rate);
+    return {
+      time: String(r.created_at ?? ""),
+      memberName: String(r.member_name ?? ""),
+      sessionType: String(r.session_type ?? ""),
+      amountUSD: Number(usd.toFixed(2)),
+      by: String(r.created_by_name ?? nameMap[String(r.created_by ?? "")] ?? ""),
+    };
+  });
 
-  const totalIncome   = rows.filter(r => r.amount > 0).reduce((a, r) => a + r.amount, 0);
-  const totalExpenses = rows.filter(r => r.amount < 0).reduce((a, r) => a + Math.abs(r.amount), 0);
+  const expenses: ExpenseDailyRow[] = (expensesRes.data ?? []).map((s) => {
+    const r = s as unknown as Record<string, unknown>;
+    const currency = String(r.currency ?? "usd");
+    const rate = Number(r.exchange_rate ?? 0);
+    const raw = Number(r.amount ?? 0);
+    const usd = toUSD(raw, currency, rate);
+    return {
+      time: String(r.created_at ?? ""),
+      description: String(r.description ?? ""),
+      category: String(r.category ?? ""),
+      amountUSD: Number(usd.toFixed(2)),
+      originalAmount: raw,
+      currency,
+      by: nameMap[String(r.created_by ?? "")] ?? String(r.created_by ?? ""),
+    };
+  });
+
+  const sortByTime = <T extends { time: string }>(rows: T[]) =>
+    rows.sort((a, b) => a.time.localeCompare(b.time));
+  sortByTime(subscriptions);
+  sortByTime(storeSales);
+  sortByTime(kitchenSales);
+  sortByTime(inbody);
+  sortByTime(expenses);
+
+  const subscriptionsUSD = subscriptions.reduce((a, r) => a + r.paidAmount, 0);
+  const storeSalesUSD    = storeSales.reduce((a, r) => a + r.totalUSD, 0);
+  const kitchenSalesUSD  = kitchenSales.reduce((a, r) => a + r.totalUSD, 0);
+  const inbodyUSD        = inbody.reduce((a, r) => a + r.amountUSD, 0);
+  const expensesUSD      = expenses.reduce((a, r) => a + r.amountUSD, 0);
+  const incomeUSD        = subscriptionsUSD + storeSalesUSD + kitchenSalesUSD + inbodyUSD;
 
   return {
     date,
-    sessionsCount: sessionIds.length,
-    totalIncome:   Number(totalIncome.toFixed(2)),
-    totalExpenses: Number(totalExpenses.toFixed(2)),
-    net:           Number((totalIncome - totalExpenses).toFixed(2)),
-    rows,
+    windowStartUTC: dayStart,
+    windowEndUTC: dayEnd,
+    sessionsCount,
+    totals: {
+      subscriptionsUSD: Number(subscriptionsUSD.toFixed(2)),
+      storeSalesUSD:    Number(storeSalesUSD.toFixed(2)),
+      kitchenSalesUSD:  Number(kitchenSalesUSD.toFixed(2)),
+      inbodyUSD:        Number(inbodyUSD.toFixed(2)),
+      expensesUSD:      Number(expensesUSD.toFixed(2)),
+      incomeUSD:        Number(incomeUSD.toFixed(2)),
+      netUSD:           Number((incomeUSD - expensesUSD).toFixed(2)),
+    },
+    counts: {
+      subscriptions: subscriptions.length,
+      storeSales:    storeSales.length,
+      kitchenSales:  kitchenSales.length,
+      inbody:        inbody.length,
+      expenses:      expenses.length,
+    },
+    subscriptions,
+    storeSales,
+    kitchenSales,
+    inbody,
+    expenses,
   };
 }
 

@@ -61,11 +61,11 @@ export const SUBSCRIPTIONS: Subscription[] = [
 ];
 
 export const FOOD_ITEMS: FoodItem[] = [
-  { id: "food-1", name: "أرز",   category: "meals",   price_usd: 3.00, is_active: true },
-  { id: "food-2", name: "دجاج",  category: "meals",   price_usd: 5.00, is_active: true },
-  { id: "food-3", name: "سلطة",  category: "salads",  price_usd: 2.50, is_active: true },
-  { id: "food-4", name: "تونة",  category: "meals",   price_usd: 4.00, is_active: true },
-  { id: "food-5", name: "شوفان", category: "meals",   price_usd: 2.00, is_active: true },
+  { id: "food-1", name: "أرز",   category: "meals",   price_syp: 40000, is_active: true },
+  { id: "food-2", name: "دجاج",  category: "meals",   price_syp: 70000, is_active: true },
+  { id: "food-3", name: "سلطة",  category: "salads",  price_syp: 30000, is_active: true },
+  { id: "food-4", name: "تونة",  category: "meals",   price_syp: 50000, is_active: true },
+  { id: "food-5", name: "شوفان", category: "meals",   price_syp: 25000, is_active: true },
 ];
 
 export const PRODUCTS: Product[] = [

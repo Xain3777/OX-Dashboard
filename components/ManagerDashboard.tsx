@@ -5,7 +5,7 @@ import Image from "next/image";
 import {
   Shield, LogOut, ChevronDown, ChevronUp, Plus, Trash2,
   Check, X, AlertTriangle, ChefHat, Package, ReceiptText,
-  Users, Dumbbell, Clock, Edit2, ShoppingBag, FileSpreadsheet,
+  Users, Dumbbell, Clock, Edit2, ShoppingBag,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
@@ -16,9 +16,9 @@ import {
   getPlanLabel, getOfferLabel, getProductCategoryLabel, getCategoryLabel,
 } from "@/lib/business-logic";
 import { pushExpense } from "@/lib/supabase/intake";
-import { fetchDailyReport } from "@/lib/supabase/dashboard";
 import { formatTime, formatDate } from "@/lib/utils/time";
 import KPIStrip from "@/components/KPIStrip";
+import DailyExportButton from "@/components/DailyExportButton";
 import { findStaffByEmail } from "@/lib/staff-accounts";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -399,14 +399,15 @@ function StoreDashboard() {
     return !isNaN(c) && !isNaN(p) ? p - c : null;
   }, [newCost, newPrice]);
 
-  function handleAdd() {
+  async function handleAdd() {
     setAddErr(""); setAddOk("");
     if (!newName.trim()) { setAddErr("أدخل اسم المنتج."); return; }
     const c = parseFloat(newCost), p = parseFloat(newPrice), s = parseInt(newStock);
     if (isNaN(c) || c < 0) { setAddErr("السعر الأصلي غير صحيح."); return; }
     if (isNaN(p) || p <= 0) { setAddErr("سعر البيع غير صحيح."); return; }
     if (isNaN(s) || s < 0) { setAddErr("الكمية غير صحيحة."); return; }
-    addProduct({ name: newName.trim(), category: newCat, cost: c, price: p, stock: s, lowStockThreshold: 3 });
+    const r = await addProduct({ name: newName.trim(), category: newCat, cost: c, price: p, stock: s, lowStockThreshold: 3 });
+    if (r.error) { setAddErr(r.error); return; }
     setNewName(""); setNewCost(""); setNewPrice(""); setNewStock("");
     setAddOk("تمت الإضافة."); setTimeout(() => setAddOk(""), 2000);
   }
@@ -420,11 +421,14 @@ function StoreDashboard() {
   function cancelEdit(id: string) {
     setEditRows((prev) => { const n = { ...prev }; delete n[id]; return n; });
   }
-  function saveEdit(p: Product) {
+  async function saveEdit(p: Product) {
     const row = editRows[p.id];
     if (!row) return;
     const c = parseFloat(row.cost), pr = parseFloat(row.price), ns = parseInt(row.stock);
-    if (!isNaN(c) && !isNaN(pr) && c >= 0 && pr > 0) updateProductPrice(p.id, c, pr);
+    if (!isNaN(c) && !isNaN(pr) && c >= 0 && pr > 0) {
+      const r = await updateProductPrice(p.id, c, pr);
+      if (r.error) console.error("updateProductPrice failed:", r.error);
+    }
     if (!isNaN(ns) && ns >= 0) adjustStock(p.id, ns - p.stock);
     cancelEdit(p.id);
   }
@@ -596,7 +600,7 @@ function KitchenDashboard() {
     if (!newName.trim()) { setAddErr("أدخل اسم الصنف."); return; }
     const p = parseFloat(newPrice);
     if (isNaN(p) || p <= 0) { setAddErr("سعر البيع غير صحيح."); return; }
-    addFoodItem({ name: newName.trim(), category: newCat, cost: newCost ? parseFloat(newCost) : undefined, price_usd: p, is_active: true });
+    addFoodItem({ name: newName.trim(), category: newCat, cost: newCost ? parseFloat(newCost) : undefined, price_syp: p, is_active: true });
     setNewName(""); setNewCost(""); setNewPrice("");
     setAddOk("تمت الإضافة."); setTimeout(() => setAddOk(""), 2000);
   }
@@ -605,7 +609,7 @@ function KitchenDashboard() {
   const [foodEdits, setFoodEdits] = useState<Record<string, FoodEdit>>({});
 
   function startFoodEdit(f: FoodItem) {
-    setFoodEdits((prev) => ({ ...prev, [f.id]: { cost: f.cost != null ? String(f.cost) : "", price: String(f.price_usd) } }));
+    setFoodEdits((prev) => ({ ...prev, [f.id]: { cost: f.cost != null ? String(f.cost) : "", price: String(f.price_syp) } }));
   }
   function cancelFoodEdit(id: string) {
     setFoodEdits((prev) => { const n = { ...prev }; delete n[id]; return n; });
@@ -615,7 +619,7 @@ function KitchenDashboard() {
     if (!row) return;
     const updates: Partial<FoodItem> = {};
     const pr = parseFloat(row.price);
-    if (!isNaN(pr) && pr > 0) updates.price_usd = pr;
+    if (!isNaN(pr) && pr > 0) updates.price_syp = pr;
     if (row.cost !== "") { const c = parseFloat(row.cost); if (!isNaN(c)) updates.cost = c; }
     if (Object.keys(updates).length) updateFoodItem(f.id, updates);
     cancelFoodEdit(f.id);
@@ -645,8 +649,8 @@ function KitchenDashboard() {
                     </td>
                     <td className="px-4 py-2 text-[#F0EDE6]">{s.productName}</td>
                     <td className="px-4 py-2 font-mono tabular-nums text-[#AAAAAA]">{s.quantity}</td>
-                    <td className="px-4 py-2 font-mono tabular-nums text-[#777777]">${s.unitPrice.toFixed(2)}</td>
-                    <td className="px-4 py-2 font-mono tabular-nums text-[#F5C100]">${s.total.toFixed(2)}</td>
+                    <td className="px-4 py-2 font-mono tabular-nums text-[#777777]" dir="ltr">{s.currency === "syp" ? `${Math.round(s.unitPrice).toLocaleString("ar-SY")} ل.س` : `$${s.unitPrice.toFixed(2)}`}</td>
+                    <td className="px-4 py-2 font-mono tabular-nums text-[#F5C100]" dir="ltr">{s.currency === "syp" ? `${Math.round(s.total).toLocaleString("ar-SY")} ل.س` : `$${s.total.toFixed(2)}`}</td>
                     <td className="px-4 py-2 font-mono text-[10px] text-[#AAAAAA] whitespace-nowrap">{fmtEmployee(s.createdBy)}</td>
                     <td className="px-4 py-2 font-mono text-[10px] text-[#777777] whitespace-nowrap">{sessionLabel(s.createdAt)}</td>
                   </tr>
@@ -666,8 +670,8 @@ function KitchenDashboard() {
             <select value={newCat} onChange={(e) => setNewCat(e.target.value as FoodItemCategory)} className={SELECT}>
               {FOOD_CATEGORIES.map((c) => <option key={c} value={c}>{FOOD_CAT_LABELS[c]}</option>)}
             </select>
-            <input value={newCost} onChange={(e) => setNewCost(e.target.value)} placeholder="السعر الأصلي $ (اختياري)" type="number" min="0" step="0.01" className={`w-40 ${INPUT}`} />
-            <input value={newPrice} onChange={(e) => setNewPrice(e.target.value)} placeholder="سعر البيع $" type="number" min="0" step="0.01" className={`w-32 ${INPUT}`} />
+            <input value={newCost} onChange={(e) => setNewCost(e.target.value)} placeholder="السعر الأصلي (ل.س) (اختياري)" type="number" min="0" step="1" className={`w-48 ${INPUT}`} />
+            <input value={newPrice} onChange={(e) => setNewPrice(e.target.value)} placeholder="السعر (ل.س)" type="number" min="0" step="1" className={`w-36 ${INPUT}`} />
             {liveProfit !== null && (
               <div className="flex items-center px-3 py-1.5 bg-[#111111] border border-[#252525] rounded-sm">
                 <span className="font-mono text-[10px] text-[#555555] ml-1.5">ربح:</span>
@@ -685,11 +689,11 @@ function KitchenDashboard() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
-              <THead cols={["الاسم", "السعر الأصلي", "سعر البيع", "الربح", "الفئة", "الحالة", ""]} />
+              <THead cols={["الاسم", "السعر الأصلي (ل.س)", "السعر (ل.س)", "الربح", "الفئة", "الحالة", ""]} />
               <tbody className="divide-y divide-[#252525]/60">
                 {foodItems.map((item) => {
                   const editing = foodEdits[item.id];
-                  const profit = item.cost != null ? item.price_usd - item.cost : null;
+                  const profit = item.cost != null ? item.price_syp - item.cost : null;
                   return (
                     <tr key={item.id} className={`hover:bg-[#252525]/20 transition-colors ${!item.is_active ? "opacity-50" : ""}`}>
                       <td className="px-4 py-2.5 text-[#F0EDE6]">{item.name}</td>
@@ -721,11 +725,11 @@ function KitchenDashboard() {
                       ) : (
                         <>
                           <td className="px-4 py-2.5 font-mono tabular-nums text-[#777777]">
-                            {item.cost != null ? `$${item.cost.toFixed(2)}` : "—"}
+                            {item.cost != null ? `${Math.round(item.cost).toLocaleString("ar-SY")} ل.س` : "—"}
                           </td>
-                          <td className="px-4 py-2.5 font-mono tabular-nums text-[#F5C100]">${item.price_usd.toFixed(2)}</td>
+                          <td className="px-4 py-2.5 font-mono tabular-nums text-[#F5C100]">{Math.round(item.price_syp).toLocaleString("ar-SY")} ل.س</td>
                           <td className={`px-4 py-2.5 font-mono tabular-nums text-[10px] ${profit != null ? (profit >= 0 ? "text-[#5CC45C]" : "text-[#FF3333]") : "text-[#555555]"}`}>
-                            {profit != null ? `$${profit.toFixed(2)}` : "—"}
+                            {profit != null ? `${Math.round(profit).toLocaleString("ar-SY")} ل.س` : "—"}
                           </td>
                           <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA]">{FOOD_CAT_LABELS[item.category]}</td>
                           <td className="px-4 py-2.5">
@@ -851,74 +855,6 @@ function ExpensesManager() {
           </div>
         </>
       )}
-    </div>
-  );
-}
-
-// ─── Daily Export ─────────────────────────────────────────────────────────────
-
-function DailyExportButton() {
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [loading, setLoading] = useState(false);
-
-  async function handleExport() {
-    setLoading(true);
-    try {
-      const XLSX = await import("xlsx");
-      const report = await fetchDailyReport(date);
-
-      const typeLabel: Record<string, string> = {
-        subscription: "اشتراك",
-        sale_store: "متجر",
-        sale_kitchen: "مطبخ",
-        inbody: "InBody",
-        expense: "مصروف",
-      };
-
-      const summaryRows = [
-        ["التقرير اليومي", date],
-        [],
-        ["عدد الجلسات", report.sessionsCount],
-        ["إجمالي الدخل ($)", report.totalIncome],
-        ["إجمالي المصاريف ($)", report.totalExpenses],
-        ["الصافي ($)", report.net],
-        [],
-        ["الوقت", "النوع", "التفاصيل", "بواسطة", "المبلغ ($)"],
-        ...report.rows.map(r => [
-          new Date(r.time).toLocaleTimeString("ar-SY", { timeZone: "Asia/Damascus", hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-          typeLabel[r.type] ?? r.type,
-          r.description,
-          r.by,
-          r.amount,
-        ]),
-      ];
-
-      const ws = XLSX.utils.aoa_to_sheet(summaryRows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, date);
-      XLSX.writeFile(wb, `OX-Report-${date}.xlsx`);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="flex items-center gap-3 flex-wrap">
-      <input
-        type="date"
-        value={date}
-        onChange={e => setDate(e.target.value)}
-        className="ox-input font-mono text-sm"
-        dir="ltr"
-      />
-      <button
-        onClick={handleExport}
-        disabled={loading}
-        className="flex items-center gap-2 px-4 py-2 bg-[#F5C100]/15 border border-[#F5C100]/30 text-[#F5C100] font-display tracking-wider clip-corner-sm hover:bg-[#F5C100]/25 transition-colors disabled:opacity-40 cursor-pointer"
-      >
-        <FileSpreadsheet size={15} />
-        {loading ? "جاري التحميل..." : "تحميل التقرير اليومي"}
-      </button>
     </div>
   );
 }

@@ -9,6 +9,7 @@ import {
   Check,
   X,
   Pencil,
+  Plus,
   Clock,
   Undo2,
 } from "lucide-react";
@@ -29,8 +30,13 @@ import { STAFF } from "@/lib/mock-data";
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
 import { useCurrency } from "@/lib/currency-context";
-import { pushSale, cancelTransaction } from "@/lib/supabase/intake";
+import { pushSale, cancelTransaction, persistProductStockAdjustment } from "@/lib/supabase/intake";
 import BarcodeScanner, { type CatalogItem } from "@/components/BarcodeScanner";
+
+const PRODUCT_CATEGORY_OPTIONS: ProductCategory[] = [
+  "protein", "mass_gainer", "creatine", "amino",
+  "pre_workout", "fat_burner", "health", "focus", "other",
+];
 
 // ── Category badge colours ────────────────────────────────────────────────────
 
@@ -193,6 +199,46 @@ function PriceEditRow({ product, onSave, onCancel }: PriceEditRowProps) {
   );
 }
 
+// ── Reception price-edit row (only sell price; no cost/markup/margin) ────────
+
+interface ReceptionPriceEditRowProps {
+  product: Product;
+  onSave: (price: number) => void;
+  onCancel: () => void;
+}
+
+function ReceptionPriceEditRow({ product, onSave, onCancel }: ReceptionPriceEditRowProps) {
+  const [priceInput, setPriceInput] = useState(String(product.price));
+
+  function handleSave() {
+    const p = parseFloat(priceInput);
+    if (!isFinite(p) || p <= 0) return;
+    onSave(p);
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 py-1">
+      <div className="flex flex-col gap-0.5">
+        <span className="font-mono text-[9px] text-[#555555]">سعر البيع ($)</span>
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={priceInput}
+          onChange={(e) => setPriceInput(e.target.value)}
+          className="w-24 bg-[#0A0A0A] border border-[#252525] rounded-sm px-2 py-1 text-xs text-[#F5C100] font-mono focus:outline-none focus:border-[#F5C100]/50"
+          dir="ltr"
+          autoFocus
+        />
+      </div>
+      <div className="flex items-center gap-1 self-end pb-0.5">
+        <button onClick={handleSave} className="p-1 text-[#5CC45C] hover:text-[#7DDE7D] cursor-pointer"><Check size={14} /></button>
+        <button onClick={onCancel} className="p-1 text-[#777777] hover:text-[#FF3333] cursor-pointer"><X size={14} /></button>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Component ─────────────────────────────────────────────────────────────
 
 export default function StoreBlock() {
@@ -205,6 +251,8 @@ export default function StoreBlock() {
     cancelSale,
     reverseSale,
     updateProductPrice,
+    adjustStock,
+    addProduct,
     activityFeed,
   } = useStore();
 
@@ -215,8 +263,24 @@ export default function StoreBlock() {
   const [saleError,     setSaleError]     = useState<string>("");
   const [saleSuccess,   setSaleSuccess]   = useState<boolean>(false);
 
-  // Manager price editing
+  // Inline price editing (manager: cost+price, reception: price only)
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
+  // Inline stock-add (all roles)
+  const [stockAddingId,    setStockAddingId]    = useState<string | null>(null);
+  const [stockAddQty,      setStockAddQty]      = useState<string>("");
+  const [stockAddBusy,     setStockAddBusy]     = useState(false);
+  const [stockAddError,    setStockAddError]    = useState<string>("");
+  const [productToast,     setProductToast]     = useState<string>("");
+
+  // Add-product form (visible to all roles; reception-friendly — no cost field)
+  const [showAddForm,       setShowAddForm]       = useState(false);
+  const [newProductName,    setNewProductName]    = useState("");
+  const [newProductCat,     setNewProductCat]     = useState<ProductCategory>("protein");
+  const [newProductPrice,   setNewProductPrice]   = useState("");
+  const [newProductCost,    setNewProductCost]    = useState("");
+  const [newProductStock,   setNewProductStock]   = useState("");
+  const [addProductError,   setAddProductError]   = useState("");
+  const [addProductBusy,    setAddProductBusy]    = useState(false);
 
   // ── Derived values ─────────────────────────────────────────────────────────
   const todaySales = useMemo(
@@ -292,6 +356,42 @@ export default function StoreBlock() {
     setSaleQty(1);
     setSaleSuccess(true);
     setTimeout(() => setSaleSuccess(false), 2500);
+  }
+
+  async function handleAddProduct() {
+    setAddProductError("");
+    const name = newProductName.trim();
+    if (!name) { setAddProductError("أدخل اسم المنتج."); return; }
+    const price = parseFloat(newProductPrice);
+    if (!isFinite(price) || price <= 0) { setAddProductError("سعر البيع غير صالح."); return; }
+    const stock = newProductStock === "" ? 0 : parseInt(newProductStock, 10);
+    if (!Number.isInteger(stock) || stock < 0) { setAddProductError("الكمية غير صالحة."); return; }
+    // Cost is manager-only. Reception's input is hidden, so the value parses to 0.
+    const cost = isManager && newProductCost !== "" ? parseFloat(newProductCost) : 0;
+    if (isManager && newProductCost !== "" && (!isFinite(cost) || cost < 0)) {
+      setAddProductError("التكلفة غير صالحة.");
+      return;
+    }
+
+    setAddProductBusy(true);
+    const r = await addProduct({
+      name,
+      category: newProductCat,
+      cost,
+      price,
+      stock,
+      lowStockThreshold: 3,
+    });
+    setAddProductBusy(false);
+    if (r.error) { setAddProductError(r.error); return; }
+
+    setNewProductName("");
+    setNewProductPrice("");
+    setNewProductCost("");
+    setNewProductStock("");
+    setShowAddForm(false);
+    setProductToast("تمت إضافة المنتج");
+    setTimeout(() => setProductToast(""), 2000);
   }
 
   // Group products by category for the sale select
@@ -422,9 +522,89 @@ export default function StoreBlock() {
       </div>
 
       {/* ════════════ A) INVENTORY TABLE ════════════ */}
-      <div className="px-5 pt-4 pb-2">
-        <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555] mb-2">المخزون</p>
+      <div className="px-5 pt-4 pb-2 flex items-center justify-between gap-3">
+        <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">المخزون</p>
+        <button
+          onClick={() => { setShowAddForm(v => !v); setAddProductError(""); }}
+          className="flex items-center gap-1.5 font-mono text-[10px] px-2.5 py-1 rounded border border-[#F5C100]/30 text-[#F5C100] hover:bg-[#F5C100]/10 transition-colors cursor-pointer"
+        >
+          {showAddForm ? <X size={11} /> : <Plus size={11} />}
+          {showAddForm ? "إلغاء" : "إضافة منتج جديد"}
+        </button>
       </div>
+
+      {showAddForm && (
+        <div className="px-5 pb-3">
+          <div className="bg-[#111111]/60 border border-[#252525] rounded-sm p-3 flex flex-wrap items-end gap-2">
+            <div className="flex flex-col gap-1 min-w-[180px] flex-1">
+              <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">اسم المنتج</label>
+              <input
+                value={newProductName}
+                onChange={e => setNewProductName(e.target.value)}
+                placeholder="مثال: واي بروتين"
+                className="bg-[#0A0A0A] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] focus:outline-none focus:border-[#F5C100]/40"
+              />
+            </div>
+            <div className="flex flex-col gap-1 w-44">
+              <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">التصنيف</label>
+              <select
+                value={newProductCat}
+                onChange={e => setNewProductCat(e.target.value as ProductCategory)}
+                className="bg-[#0A0A0A] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] focus:outline-none focus:border-[#F5C100]/40"
+              >
+                {PRODUCT_CATEGORY_OPTIONS.map(c => (
+                  <option key={c} value={c}>{getProductCategoryLabel(c)}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-col gap-1 w-28">
+              <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">سعر البيع ($)</label>
+              <input
+                type="number" min="0" step="0.01"
+                value={newProductPrice}
+                onChange={e => setNewProductPrice(e.target.value)}
+                className="bg-[#0A0A0A] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F5C100] font-mono tabular-nums focus:outline-none focus:border-[#F5C100]/40"
+                dir="ltr"
+              />
+            </div>
+            {isManager && (
+              <div className="flex flex-col gap-1 w-28">
+                <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">التكلفة ($)</label>
+                <input
+                  type="number" min="0" step="0.01"
+                  value={newProductCost}
+                  onChange={e => setNewProductCost(e.target.value)}
+                  className="bg-[#0A0A0A] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#777777] font-mono tabular-nums focus:outline-none focus:border-[#F5C100]/40"
+                  dir="ltr"
+                />
+              </div>
+            )}
+            <div className="flex flex-col gap-1 w-24">
+              <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">المخزون</label>
+              <input
+                type="number" min="0" step="1"
+                value={newProductStock}
+                onChange={e => setNewProductStock(e.target.value)}
+                className="bg-[#0A0A0A] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] font-mono tabular-nums focus:outline-none focus:border-[#F5C100]/40"
+                dir="ltr"
+              />
+            </div>
+            <button
+              onClick={handleAddProduct}
+              disabled={addProductBusy}
+              className="flex items-center gap-1.5 px-4 py-2 bg-[#F5C100] hover:bg-[#FFD740] active:bg-[#C49A00] text-[#0A0A0A] font-display tracking-widest text-xs uppercase rounded-sm transition-colors clip-corner-sm cursor-pointer disabled:opacity-50"
+            >
+              <Plus size={12} />
+              {addProductBusy ? "جاري…" : "إضافة"}
+            </button>
+          </div>
+          {addProductError && (
+            <div className="mt-2 flex items-center gap-1.5 text-[11px] font-mono text-[#FF3333]">
+              <AlertTriangle size={11} />{addProductError}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
@@ -436,7 +616,8 @@ export default function StoreBlock() {
                 ...(isManager ? ["التكلفة ($)"] : []),
                 "السعر ($)",
                 "المخزون",
-                ...(isManager ? ["هامش الربح", ""] : []),
+                ...(isManager ? ["هامش الربح"] : []),
+                "",
               ].map((h, i) => (
                 <th
                   key={i}
@@ -496,40 +677,118 @@ export default function StoreBlock() {
                         <MarginPct cost={product.cost} price={product.price} />
                       </td>
                     )}
-                    {/* Edit button — manager only */}
-                    {isManager && (
-                      <td className="px-4 py-2.5 text-center">
+                    {/* Actions: edit price + add stock — all roles */}
+                    <td className="px-4 py-2.5 text-center">
+                      <div className="flex items-center justify-center gap-2">
                         {isEditing ? (
                           <button
                             onClick={() => setEditingProductId(null)}
                             className="text-[#555555] hover:text-[#FF3333] cursor-pointer"
+                            title="إلغاء"
                           >
                             <X size={13} />
                           </button>
                         ) : (
                           <button
-                            onClick={() => setEditingProductId(product.id)}
+                            onClick={() => { setEditingProductId(product.id); setStockAddingId(null); }}
                             className="text-[#555555] hover:text-[#F5C100] transition-colors cursor-pointer"
                             title="تعديل السعر"
                           >
                             <Pencil size={13} />
                           </button>
                         )}
-                      </td>
-                    )}
+                        <button
+                          onClick={() => {
+                            setStockAddingId(stockAddingId === product.id ? null : product.id);
+                            setStockAddQty("");
+                            setStockAddError("");
+                            if (editingProductId === product.id) setEditingProductId(null);
+                          }}
+                          className="font-mono text-[10px] px-2 py-0.5 rounded border border-[#5CC45C]/30 text-[#5CC45C] hover:bg-[#5CC45C]/10 transition-colors cursor-pointer whitespace-nowrap"
+                          title="إضافة مخزون"
+                        >
+                          إضافة مخزون
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                   {/* Inline price-edit row */}
-                  {isManager && isEditing && (
+                  {isEditing && (
                     <tr key={`edit-${product.id}`} className="bg-[#111111] border-b border-[#252525]/60">
-                      <td colSpan={isManager ? 7 : 4} className="px-4 py-2">
-                        <PriceEditRow
-                          product={product}
-                          onSave={(cost, price) => {
-                            updateProductPrice(product.id, cost, price);
-                            setEditingProductId(null);
-                          }}
-                          onCancel={() => setEditingProductId(null)}
-                        />
+                      <td colSpan={isManager ? 7 : 5} className="px-4 py-2">
+                        {isManager ? (
+                          <PriceEditRow
+                            product={product}
+                            onSave={async (cost, price) => {
+                              const r = await updateProductPrice(product.id, cost, price);
+                              if (r.error) { setStockAddError(r.error); return; }
+                              setEditingProductId(null);
+                              setProductToast("تم تحديث السعر");
+                              setTimeout(() => setProductToast(""), 2000);
+                            }}
+                            onCancel={() => setEditingProductId(null)}
+                          />
+                        ) : (
+                          <ReceptionPriceEditRow
+                            product={product}
+                            onSave={async (price) => {
+                              const r = await updateProductPrice(product.id, product.cost, price);
+                              if (r.error) { setStockAddError(r.error); return; }
+                              setEditingProductId(null);
+                              setProductToast("تم تحديث السعر");
+                              setTimeout(() => setProductToast(""), 2000);
+                            }}
+                            onCancel={() => setEditingProductId(null)}
+                          />
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                  {/* Inline stock-add row */}
+                  {stockAddingId === product.id && (
+                    <tr key={`stock-${product.id}`} className="bg-[#111111] border-b border-[#252525]/60">
+                      <td colSpan={isManager ? 7 : 5} className="px-4 py-2">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">إضافة مخزون لـ {product.name}</span>
+                          <input
+                            type="number"
+                            min="1"
+                            step="1"
+                            value={stockAddQty}
+                            onChange={(e) => setStockAddQty(e.target.value)}
+                            placeholder="الكمية"
+                            className="w-24 bg-[#0A0A0A] border border-[#252525] rounded-sm px-2 py-1 text-xs text-[#F0EDE6] focus:outline-none focus:border-[#F5C100]/40"
+                          />
+                          <button
+                            onClick={async () => {
+                              if (!user) { setStockAddError("يجب تسجيل الدخول"); return; }
+                              const n = parseInt(stockAddQty, 10);
+                              if (!Number.isInteger(n) || n <= 0) { setStockAddError("كمية غير صالحة"); return; }
+                              setStockAddBusy(true);
+                              setStockAddError("");
+                              const r = await persistProductStockAdjustment(product.id, n, { id: user.id, displayName: user.displayName });
+                              setStockAddBusy(false);
+                              if (r.error) { setStockAddError(r.error); return; }
+                              adjustStock(product.id, n);
+                              setStockAddingId(null);
+                              setStockAddQty("");
+                              setProductToast(`تمت إضافة ${n} وحدة`);
+                              setTimeout(() => setProductToast(""), 2000);
+                            }}
+                            disabled={stockAddBusy}
+                            className="font-mono text-[10px] px-3 py-1 rounded bg-[#5CC45C]/15 border border-[#5CC45C]/40 text-[#5CC45C] hover:bg-[#5CC45C]/25 transition-colors cursor-pointer disabled:opacity-40"
+                          >
+                            {stockAddBusy ? "جاري…" : "تأكيد"}
+                          </button>
+                          <button
+                            onClick={() => { setStockAddingId(null); setStockAddQty(""); setStockAddError(""); }}
+                            disabled={stockAddBusy}
+                            className="font-mono text-[10px] text-[#777777] hover:text-[#FF3333] cursor-pointer"
+                          >
+                            إلغاء
+                          </button>
+                          {stockAddError && <span className="font-mono text-[10px] text-[#FF3333]">{stockAddError}</span>}
+                        </div>
                       </td>
                     </tr>
                   )}
@@ -539,6 +798,11 @@ export default function StoreBlock() {
           </tbody>
         </table>
       </div>
+      {productToast && (
+        <div className="fixed bottom-6 right-6 z-50 px-4 py-2.5 bg-[#1A1A1A] border border-[#5CC45C]/40 rounded-sm font-mono text-xs text-[#5CC45C] shadow-lg">
+          {productToast}
+        </div>
+      )}
 
       {/* ════════════ B) TODAY'S SALES TABLE ════════════ */}
       <div className="px-5 pt-5 pb-2 flex items-center justify-between">
