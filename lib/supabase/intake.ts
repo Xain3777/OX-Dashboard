@@ -66,6 +66,16 @@ export async function persistExchangeRate(
       .select();
     if (error) { logError("app_settings", "upsert", error); return { error: error.message }; }
     logSuccess("app_settings", "upsert", data);
+
+    // Append the change to the exchange_rate_history audit table so the
+    // manager dashboard can chart rate-over-time. Best-effort: if this
+    // fails, app_settings already reflects the new rate, so the user's
+    // intent is honored — we just log the failure for observability.
+    const { error: histErr } = await supabase
+      .from("exchange_rate_history")
+      .insert({ rate, changed_by: user.id });
+    if (histErr) logError("exchange_rate_history", "insert", histErr);
+
     await pushActivity({
       user,
       action: "exchange_rate_update",
