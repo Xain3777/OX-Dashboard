@@ -8,6 +8,7 @@ import {
   Banknote,
   TrendingUp,
   Package,
+  CreditCard,
 } from "lucide-react";
 import { useLiveKPI } from "@/lib/supabase/dashboard";
 
@@ -71,12 +72,19 @@ export default function KPIStrip({ hideProfit }: KPIStripProps) {
       className="w-full border-t-2 border-gold pt-4"
       data-loading={loading}
     >
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8">
         <KPICard
           label="إيرادات اليوم"
           value={fmtUSD(kpi.todayRevenueUSD)}
           icon={<DollarSign size={14} />}
           accent="gold"
+        />
+        <KPICard
+          label={`غير مكتمل الدفع${kpi.partiallyPaidRemainingUSD > 0 ? ` — متبقي ${fmtUSD(kpi.partiallyPaidRemainingUSD)}` : ""}`}
+          value={String(kpi.partiallyPaidCount)}
+          icon={<CreditCard size={14} />}
+          accent={kpi.partiallyPaidCount > 0 ? "gold" : "default"}
+          badge={kpi.partiallyPaidCount > 0 ? <GoldBadge count={kpi.partiallyPaidCount} /> : undefined}
         />
         {!hideProfit && (
           <KPICard

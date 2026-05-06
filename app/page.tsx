@@ -202,8 +202,9 @@ function exportMonthlyExcel(ctx: {
   const stockRows = [
     ["المنتج", "التصنيف", "التكلفة ($)", "سعر البيع ($)", "هامش الربح %", "المخزون"],
     ...products.map(p => {
-      const margin = p.price > 0 ? Math.round(((p.price - p.cost) / p.price) * 100) : 0;
-      return [p.name, p.category, p.cost, p.price, `${margin}%`, p.stock];
+      const cost = p.cost ?? 0;
+      const margin = p.price > 0 && p.cost != null ? Math.round(((p.price - cost) / p.price) * 100) : 0;
+      return [p.name, p.category, p.cost ?? "", p.price, `${margin}%`, p.stock];
     }),
   ];
   const wsStock = XLSX.utils.aoa_to_sheet(stockRows);

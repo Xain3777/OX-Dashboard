@@ -23,7 +23,14 @@ export default function KitchenBlock() {
 
   const today = new Date().toISOString().slice(0, 10);
 
-  const activeItems = useMemo(() => foodItems.filter((f) => f.is_active), [foodItems]);
+  const activeItems = useMemo(
+    () =>
+      foodItems
+        .filter((f) => f.is_active && Number(f.price_syp) > 0)
+        .slice()
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name)),
+    [foodItems]
+  );
 
   const todayKitchenSales = useMemo(
     () => sales

@@ -60,12 +60,26 @@ export const SUBSCRIPTIONS: Subscription[] = [
   },
 ];
 
+// First-boot fallback only — the canonical menu lives in food_items
+// (see 0023_food_items_costs_and_catalog_update.sql). Hydration in
+// store-context overwrites this list as soon as the user logs in.
 export const FOOD_ITEMS: FoodItem[] = [
-  { id: "food-1", name: "أرز",   category: "meals",   price_syp: 40000, is_active: true },
-  { id: "food-2", name: "دجاج",  category: "meals",   price_syp: 70000, is_active: true },
-  { id: "food-3", name: "سلطة",  category: "salads",  price_syp: 30000, is_active: true },
-  { id: "food-4", name: "تونة",  category: "meals",   price_syp: 50000, is_active: true },
-  { id: "food-5", name: "شوفان", category: "meals",   price_syp: 25000, is_active: true },
+  // Main meals (rice + chicken + salad)
+  { id: "food-meal-150", name: "وجبة 150غ", category: "meals", price_syp: 29000, cost_syp: 19000, sort_order:  10, description: "رز 250غ + جاج 150غ + سلطة", is_active: true },
+  { id: "food-meal-200", name: "وجبة 200غ", category: "meals", price_syp: 34000, cost_syp: 23800, sort_order:  20, description: "رز 300غ + جاج 200غ + سلطة", is_active: true },
+  { id: "food-meal-250", name: "وجبة 250غ", category: "meals", price_syp: 38000, cost_syp: 26225, sort_order:  30, description: "رز 300غ + جاج 250غ + سلطة", is_active: true },
+  { id: "food-meal-300", name: "وجبة 300غ", category: "meals", price_syp: 42000, cost_syp: 29050, sort_order:  40, description: "رز 300غ + جاج 300غ + سلطة", is_active: true },
+  // Add-ons
+  { id: "food-rice-200", name: "رز 200غ",        category: "meals", price_syp: 10000, cost_syp: null, sort_order: 110, is_active: true },
+  { id: "food-rice-300", name: "رز 300غ",        category: "meals", price_syp: 15000, cost_syp:  8100, sort_order: 120, is_active: true },
+  { id: "food-chk-150",  name: "إضافة جاج 150غ", category: "meals", price_syp: 20000, cost_syp:  8500, sort_order: 210, is_active: true },
+  { id: "food-chk-200",  name: "إضافة جاج 200غ", category: "meals", price_syp: 25000, cost_syp: 11300, sort_order: 220, is_active: true },
+  { id: "food-chk-250",  name: "إضافة جاج 250غ", category: "meals", price_syp: 30000, cost_syp: 14125, sort_order: 230, is_active: true },
+  { id: "food-chk-300",  name: "إضافة جاج 300غ", category: "meals", price_syp: 35000, cost_syp: 16950, sort_order: 240, is_active: true },
+  { id: "food-salad",    name: "سلطة",           category: "meals", price_syp: 0,     cost_syp:  4000, sort_order: 300, is_active: false },
+  // Drinks
+  { id: "food-water-s",  name: "ماء صغير", category: "drinks", price_syp: 5000, cost_syp: 2437, sort_order: 410, is_active: true },
+  { id: "food-water-l",  name: "ماء كبير", category: "drinks", price_syp: 7000, cost_syp: 4875, sort_order: 420, is_active: true },
 ];
 
 export const PRODUCTS: Product[] = [
@@ -110,6 +124,12 @@ export const PRODUCTS: Product[] = [
   { id: "p32", name: "Levrone Omega 3 90 caps",            category: "health",      cost: 9,  price: 14, stock: 9,  lowStockThreshold: 3, createdAt: "2026-01-01" },
   // ── Focus / Performance ────────────────────────────────────────────────────
   { id: "p33", name: "R-Weiler Focus 300g",                category: "focus",       cost: 8,  price: 13, stock: 5,  lowStockThreshold: 3, createdAt: "2026-01-01" },
+  // ── Accessories / Drinks / Water (added in 0021) ───────────────────────────
+  { id: "p34", name: "Shaker",                             category: "accessory",   cost: 60000, costCurrency: "syp", price: 2,     priceCurrency: "usd", stock: 0, lowStockThreshold: 3, createdAt: "2026-05-05" },
+  { id: "p35", name: "BCAA Cup",                           category: "drink",       cost: null,  costCurrency: "usd", price: 20000, priceCurrency: "syp", stock: 0, lowStockThreshold: 3, createdAt: "2026-05-05" },
+  { id: "p36", name: "Pre-workout Cup",                    category: "drink",       cost: null,  costCurrency: "usd", price: 20000, priceCurrency: "syp", stock: 0, lowStockThreshold: 3, createdAt: "2026-05-05" },
+  { id: "p37", name: "Small Water",                        category: "water",       cost: null,  costCurrency: "usd", price: 5000,  priceCurrency: "syp", stock: 0, lowStockThreshold: 5, createdAt: "2026-05-05" },
+  { id: "p38", name: "Big Water",                          category: "water",       cost: null,  costCurrency: "usd", price: 7000,  priceCurrency: "syp", stock: 0, lowStockThreshold: 5, createdAt: "2026-05-05" },
 ];
 
 export const SALES: Sale[] = [

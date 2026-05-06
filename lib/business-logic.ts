@@ -32,6 +32,7 @@ const OFFER_BONUS_DAYS: Record<OfferType, number> = {
   corporate: 0,
   college: 0,
   owner_family: 0,
+  custom_registration: 0,
   group_5: 0,
   group_9: 0,
 };
@@ -44,6 +45,7 @@ const OFFER_DISCOUNT_PERCENT: Record<OfferType, number> = {
   corporate: 15,
   college: 20,
   owner_family: 0,  // owner family priced separately ($20 × months)
+  custom_registration: 0,  // amount entered manually by reception
   group_5: 0,  // legacy
   group_9: 0,  // legacy
 };
@@ -111,6 +113,7 @@ export function getOfferLabel(offer: OfferType): string {
     corporate: "شركات / بنك (خصم ١٥٪)",
     college: "خصم طلاب ٢٠٪",
     owner_family: "عائلة المالك",
+    custom_registration: "تسجيل مجاني / مخصص",
     group_5: "مجموعة ٥ (٥ يدفعون ثمن ٤)",
     group_9: "مجموعة ٩ (٩ يدفعون ثمن ٧)",
   };
@@ -219,9 +222,28 @@ export function getProductCategoryLabel(cat: ProductCategory): string {
     fat_burner:  "حرق دهون",
     health:      "صحة وتعافي",
     focus:       "تركيز وأداء",
+    accessory:   "إكسسوار",
+    drink:       "مشروب",
+    water:       "ماء",
     other:       "أخرى",
   };
   return labels[cat];
+}
+
+// Auto-derive payment status from total/paid. Mirrors the rule shown
+// in the cashier UI: 0 → unpaid, 0 < paid < total → partial, else paid.
+export function derivePaymentStatus(amount: number, paidAmount: number): "paid" | "partial" | "unpaid" {
+  const safePaid = Math.max(0, paidAmount);
+  if (safePaid <= 0) return "unpaid";
+  if (safePaid >= amount) return "paid";
+  return "partial";
+}
+
+// Remaining never goes negative. If reception entered too much, the
+// surplus is swallowed silently rather than displayed as -X.
+export function calculateRemaining(amount: number, paidAmount: number): number {
+  const remaining = amount - Math.max(0, paidAmount);
+  return remaining < 0 ? 0 : Number(remaining.toFixed(2));
 }
 
 export function getPaymentMethodLabel(method: string): string {

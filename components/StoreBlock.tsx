@@ -35,7 +35,8 @@ import BarcodeScanner, { type CatalogItem } from "@/components/BarcodeScanner";
 
 const PRODUCT_CATEGORY_OPTIONS: ProductCategory[] = [
   "protein", "mass_gainer", "creatine", "amino",
-  "pre_workout", "fat_burner", "health", "focus", "other",
+  "pre_workout", "fat_burner", "health", "focus",
+  "accessory", "drink", "water", "other",
 ];
 
 // ── Category badge colours ────────────────────────────────────────────────────
@@ -49,6 +50,9 @@ const CATEGORY_STYLES: Record<ProductCategory, string> = {
   fat_burner:  "bg-[#FF7A00]/15 text-[#FF7A00] border border-[#FF7A00]/25",
   health:      "bg-[#7DDE7D]/15 text-[#7DDE7D] border border-[#7DDE7D]/25",
   focus:       "bg-[#9B59B6]/15 text-[#9B59B6] border border-[#9B59B6]/25",
+  accessory:   "bg-[#AAAAAA]/15 text-[#AAAAAA] border border-[#AAAAAA]/25",
+  drink:       "bg-[#4AA8E8]/15 text-[#4AA8E8] border border-[#4AA8E8]/25",
+  water:       "bg-[#7DDEDE]/15 text-[#7DDEDE] border border-[#7DDEDE]/25",
   other:       "bg-[#252525] text-[#777777] border border-[#555555]/30",
 };
 
@@ -71,6 +75,9 @@ const CATEGORY_GROUP_ORDER: ProductCategory[] = [
   "fat_burner",
   "health",
   "focus",
+  "accessory",
+  "drink",
+  "water",
   "other",
 ];
 
@@ -130,7 +137,7 @@ interface PriceEditRowProps {
 }
 
 function PriceEditRow({ product, onSave, onCancel }: PriceEditRowProps) {
-  const [costInput, setCostInput]   = useState(String(product.cost));
+  const [costInput, setCostInput]   = useState(product.cost == null ? "" : String(product.cost));
   const [markupInput, setMarkupInput] = useState("");
 
   // Compute preview
@@ -660,7 +667,7 @@ export default function StoreBlock() {
                     {/* Cost — manager only */}
                     {isManager && (
                       <td className="px-4 py-2.5 font-mono text-[#777777] tabular-nums text-right">
-                        {formatCurrency(product.cost)}
+                        {product.cost == null ? "—" : formatCurrency(product.cost)}
                       </td>
                     )}
                     {/* Price */}
@@ -674,7 +681,7 @@ export default function StoreBlock() {
                     {/* Margin — manager only */}
                     {isManager && (
                       <td className="px-4 py-2.5 text-right">
-                        <MarginPct cost={product.cost} price={product.price} />
+                        {product.cost == null ? <span className="font-mono text-xs text-[#555555]">—</span> : <MarginPct cost={product.cost} price={product.price} />}
                       </td>
                     )}
                     {/* Actions: edit price + add stock — all roles */}
@@ -732,7 +739,7 @@ export default function StoreBlock() {
                           <ReceptionPriceEditRow
                             product={product}
                             onSave={async (price) => {
-                              const r = await updateProductPrice(product.id, product.cost, price);
+                              const r = await updateProductPrice(product.id, product.cost ?? 0, price);
                               if (r.error) { setStockAddError(r.error); return; }
                               setEditingProductId(null);
                               setProductToast("تم تحديث السعر");

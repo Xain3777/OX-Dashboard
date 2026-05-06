@@ -214,6 +214,8 @@ export async function pushSubscription(opts: {
   currency?: Currency;
   exchangeRate: number;
   groupId?: string;
+  privateCoachName?: string | null;
+  note?: string | null;
 }): Promise<{ data?: DbRow; error?: string }> {
   try {
     assertUser(opts.user);
@@ -255,6 +257,8 @@ export async function pushSubscription(opts: {
         : Math.round(opts.paidAmount * opts.exchangeRate);
 
     const trimmedPhone = (opts.phone ?? "").trim();
+    const trimmedCoach = (opts.privateCoachName ?? "").trim();
+    const trimmedNote  = (opts.note ?? "").trim();
     const subPayload = {
       member_name: opts.memberName,
       ...(opts.memberId ? { member_id: opts.memberId } : {}),
@@ -272,6 +276,8 @@ export async function pushSubscription(opts: {
       amount_syp: amountSYP,
       status: "active",
       ...(opts.groupId ? { group_id: opts.groupId } : {}),
+      private_coach_name: trimmedCoach || null,
+      note: trimmedNote || null,
       cash_session_id: cashSessionId,
       created_by: opts.user.id,
     };
@@ -320,6 +326,8 @@ export async function updateSubscription(
     amount?: number;
     paidAmount?: number;
     paymentStatus?: "paid" | "partial" | "unpaid";
+    privateCoachName?: string | null;
+    note?: string | null;
   },
   user: CurrentUser
 ): Promise<{ data?: DbRow; error?: string }> {
@@ -335,6 +343,10 @@ export async function updateSubscription(
     if (fields.startDate !== undefined)     mapped.start_date     = fields.startDate;
     if (fields.endDate !== undefined)       mapped.end_date       = fields.endDate;
     if (fields.paymentStatus !== undefined) mapped.payment_status = fields.paymentStatus;
+    if (fields.privateCoachName !== undefined)
+      mapped.private_coach_name = (fields.privateCoachName ?? "").toString().trim() || null;
+    if (fields.note !== undefined)
+      mapped.note = (fields.note ?? "").toString().trim() || null;
     if (fields.amount !== undefined) {
       if (fields.amount < 0) return { error: "مبلغ غير صالح" };
       mapped.amount = fields.amount;
@@ -888,6 +900,12 @@ export async function pushPrivateSession(opts: {
   groupId?: string;
   notes?: string;
   exchangeRate: number;
+  privateCoachName?: string | null;
+  /** Override the computed price (trainerFee + groupPrice). Useful when
+   *  reception negotiates a custom rate. */
+  totalPriceOverride?: number;
+  paidAmount?: number;
+  paymentStatus?: "paid" | "partial" | "unpaid";
 }): Promise<{ data?: DbRow; error?: string }> {
   try {
     assertUser(opts.user);
@@ -896,7 +914,14 @@ export async function pushPrivateSession(opts: {
 
     const BASE_TRAINER_FEE = 18;
     const groupPrice = ptGroupPrice(opts.numberOfPlayers);
-    const totalPrice = BASE_TRAINER_FEE + groupPrice;
+    const computedTotal = BASE_TRAINER_FEE + groupPrice;
+    const totalPrice = opts.totalPriceOverride != null && opts.totalPriceOverride >= 0
+      ? opts.totalPriceOverride
+      : computedTotal;
+    const paidAmount = opts.paidAmount != null && opts.paidAmount >= 0 ? opts.paidAmount : totalPrice;
+    if (paidAmount > totalPrice && totalPrice > 0) return { error: "المبلغ المدفوع أكبر من المبلغ الإجمالي" };
+    const paymentStatus = opts.paymentStatus ??
+      (paidAmount <= 0 ? "unpaid" : paidAmount >= totalPrice ? "paid" : "partial");
     const amountSYP = Math.round(totalPrice * opts.exchangeRate);
 
     const session = await getActiveSession();
@@ -904,6 +929,7 @@ export async function pushPrivateSession(opts: {
     const supabase = supabaseBrowser();
     const cashSessionId = session.id;
 
+    const trimmedCoach = (opts.privateCoachName ?? "").trim();
     const { data, error } = await supabase
       .from("private_sessions")
       .insert({
@@ -912,11 +938,14 @@ export async function pushPrivateSession(opts: {
         base_trainer_fee: BASE_TRAINER_FEE,
         group_price: groupPrice,
         total_price: totalPrice,
+        paid_amount: paidAmount,
+        payment_status: paymentStatus,
         currency: "usd",
         exchange_rate: opts.exchangeRate,
         amount_syp: amountSYP,
         group_id: opts.groupId ?? null,
         notes: opts.notes?.trim() || null,
+        private_coach_name: trimmedCoach || null,
         cash_session_id: cashSessionId,
         created_by: opts.user.id,
         created_by_name: opts.user.displayName,
@@ -928,11 +957,15 @@ export async function pushPrivateSession(opts: {
     if (!data) { logError("private_sessions", "insert", "no row returned"); return { error: "لم يتم حفظ الجلسة — تحقق من RLS" }; }
     logSuccess("private_sessions", "insert", data);
 
+    const statusSuffix =
+      paymentStatus === "paid" ? "" :
+      paymentStatus === "partial" ? ` (مدفوع: $${paidAmount} من $${totalPrice})` :
+      ` (غير مدفوع — $${totalPrice})`;
     await pushActivity({
       user: opts.user,
       action: "private_session_create",
-      description: `تدريب خاص — ${opts.numberOfPlayers} لاعبين — $${totalPrice}`,
-      amountUSD: totalPrice,
+      description: `تدريب خاص — ${opts.numberOfPlayers} لاعبين — $${totalPrice}${statusSuffix}`,
+      amountUSD: paidAmount,
       entityType: "private_session",
       entityId: (data as DbRow).id as string,
     });
@@ -1037,7 +1070,9 @@ export async function persistProductInsert(opts: {
   name: string;
   category: string;
   price: number;
-  cost?: number;
+  priceCurrency?: Currency;
+  cost?: number | null;
+  costCurrency?: Currency;
   stock?: number;
   lowStockThreshold?: number;
 }): Promise<{ data?: DbRow; error?: string }> {
@@ -1048,11 +1083,18 @@ export async function persistProductInsert(opts: {
     if (!Number.isFinite(opts.price) || opts.price <= 0) return { error: "سعر البيع غير صالح" };
 
     const supabase = supabaseBrowser();
+    // cost is nullable in 0021 — pass null when caller didn't set it.
+    const costValue =
+      opts.cost === undefined || opts.cost === null
+        ? null
+        : Number.isFinite(opts.cost) && opts.cost >= 0 ? opts.cost : null;
     const payload = {
       name: trimmedName,
       category: opts.category,
-      cost: Number.isFinite(opts.cost) && (opts.cost ?? 0) >= 0 ? opts.cost : 0,
+      cost: costValue,
+      cost_currency: opts.costCurrency ?? "usd",
       price: opts.price,
+      price_currency: opts.priceCurrency ?? "usd",
       stock: Number.isInteger(opts.stock) && (opts.stock ?? 0) >= 0 ? opts.stock : 0,
       low_stock_threshold:
         Number.isInteger(opts.lowStockThreshold) && (opts.lowStockThreshold ?? 0) >= 0
@@ -1080,6 +1122,166 @@ export async function persistProductInsert(opts: {
     return { data: data as DbRow };
   } catch (e) {
     logError("products", "insert", e);
+    return { error: String(e) };
+  }
+}
+
+// === food_items: manager-only catalog mutations ===
+//
+// food_items is the canonical kitchen menu (RLS: read by all, mutate
+// by manager only — see 0003_food_items.sql). Mutations here go
+// straight to Supabase; the local store mirrors the returned row.
+// Cost is stored in either SYP (cost_syp) or USD (cost_usd); the UI
+// converts USD costs at the live exchange rate, never at write-time.
+
+export async function persistFoodItemInsert(opts: {
+  user: CurrentUser;
+  name: string;
+  category: string;
+  priceSYP: number;
+  costSYP?: number | null;
+  costUSD?: number | null;
+  description?: string | null;
+  sortOrder?: number;
+  isActive?: boolean;
+}): Promise<{ data?: DbRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    const trimmedName = opts.name.trim();
+    if (!trimmedName) return { error: "أدخل اسم الصنف" };
+    if (!Number.isFinite(opts.priceSYP) || opts.priceSYP < 0) return { error: "سعر البيع غير صالح" };
+
+    const supabase = supabaseBrowser();
+    const payload = {
+      name: trimmedName,
+      category: opts.category,
+      price_syp: opts.priceSYP,
+      cost_syp: opts.costSYP == null || !Number.isFinite(opts.costSYP) ? null : opts.costSYP,
+      cost_usd: opts.costUSD == null || !Number.isFinite(opts.costUSD) ? null : opts.costUSD,
+      description: opts.description?.trim() || null,
+      sort_order: Number.isInteger(opts.sortOrder) ? opts.sortOrder : 0,
+      is_active: opts.isActive ?? true,
+    };
+    console.log("Supabase insert payload:", { table: "food_items", payload });
+
+    const { data, error } = await supabase
+      .from("food_items")
+      .insert(payload)
+      .select()
+      .single();
+    if (error) { logError("food_items", "insert", error); return { error: error.message }; }
+    if (!data) { logError("food_items", "insert", "no row returned"); return { error: "لم يتم إضافة الصنف — تحقق من RLS" }; }
+    logSuccess("food_items", "insert", data);
+
+    await pushActivity({
+      user: opts.user,
+      action: "food_item_create",
+      description: `صنف مطبخ جديد — ${trimmedName} (${opts.priceSYP.toLocaleString("en-US")} ل.س)`,
+      entityType: "food_item",
+      entityId: (data as DbRow).id as string,
+    });
+    return { data: data as DbRow };
+  } catch (e) {
+    logError("food_items", "insert", e);
+    return { error: String(e) };
+  }
+}
+
+export async function persistFoodItemUpdate(opts: {
+  user: CurrentUser;
+  id: string;
+  fields: {
+    name?: string;
+    category?: string;
+    priceSYP?: number;
+    costSYP?: number | null;
+    costUSD?: number | null;
+    description?: string | null;
+    sortOrder?: number;
+    isActive?: boolean;
+  };
+}): Promise<{ data?: DbRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.id) return { error: "معرّف الصنف مفقود" };
+
+    const mapped: Record<string, unknown> = {};
+    if (opts.fields.name !== undefined)        mapped.name        = opts.fields.name.trim();
+    if (opts.fields.category !== undefined)    mapped.category    = opts.fields.category;
+    if (opts.fields.priceSYP !== undefined) {
+      if (!Number.isFinite(opts.fields.priceSYP) || opts.fields.priceSYP < 0) return { error: "سعر البيع غير صالح" };
+      mapped.price_syp = opts.fields.priceSYP;
+    }
+    if (opts.fields.costSYP !== undefined)
+      mapped.cost_syp = opts.fields.costSYP == null || !Number.isFinite(opts.fields.costSYP) ? null : opts.fields.costSYP;
+    if (opts.fields.costUSD !== undefined)
+      mapped.cost_usd = opts.fields.costUSD == null || !Number.isFinite(opts.fields.costUSD) ? null : opts.fields.costUSD;
+    if (opts.fields.description !== undefined)
+      mapped.description = (opts.fields.description ?? "").toString().trim() || null;
+    if (opts.fields.sortOrder !== undefined && Number.isInteger(opts.fields.sortOrder))
+      mapped.sort_order = opts.fields.sortOrder;
+    if (opts.fields.isActive !== undefined) mapped.is_active = opts.fields.isActive;
+    mapped.updated_at = new Date().toISOString();
+    if (Object.keys(mapped).length === 1) return { error: "لا توجد تغييرات" };
+
+    const supabase = supabaseBrowser();
+    console.log("Supabase update payload:", { table: "food_items", id: opts.id, payload: mapped });
+    const { data, error } = await supabase
+      .from("food_items")
+      .update(mapped)
+      .eq("id", opts.id)
+      .select()
+      .single();
+    if (error) { logError("food_items", "update", error); return { error: error.message }; }
+    if (!data) { logError("food_items", "update", "no row returned"); return { error: "لم يتم تعديل الصنف — تحقق من صلاحيات المدير" }; }
+    logSuccess("food_items", "update", data);
+
+    await pushActivity({
+      user: opts.user,
+      action: "food_item_update",
+      description: `تعديل صنف — ${(data as DbRow).name as string} (${Object.keys(mapped).filter((k) => k !== "updated_at").join(", ")})`,
+      entityType: "food_item",
+      entityId: opts.id,
+    });
+    return { data: data as DbRow };
+  } catch (e) {
+    logError("food_items", "update", e);
+    return { error: String(e) };
+  }
+}
+
+export async function persistFoodItemDelete(opts: {
+  user: CurrentUser;
+  id: string;
+}): Promise<{ error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.id) return { error: "معرّف الصنف مفقود" };
+
+    const supabase = supabaseBrowser();
+    const { data, error } = await supabase
+      .from("food_items")
+      .delete()
+      .eq("id", opts.id)
+      .select();
+    if (error) { logError("food_items", "delete", error); return { error: error.message }; }
+    if (!data || (data as unknown[]).length === 0) {
+      logError("food_items", "delete", "no rows deleted — RLS may be blocking");
+      return { error: "لم يتم حذف الصنف — تحقق من صلاحيات المدير" };
+    }
+    logSuccess("food_items", "delete", data);
+
+    const row = (data as DbRow[])[0];
+    await pushActivity({
+      user: opts.user,
+      action: "food_item_delete",
+      description: `حذف صنف — ${(row.name as string) ?? opts.id}`,
+      entityType: "food_item",
+      entityId: opts.id,
+    });
+    return {};
+  } catch (e) {
+    logError("food_items", "delete", e);
     return { error: String(e) };
   }
 }

@@ -63,7 +63,7 @@ export default function LiveAlertsBlock() {
       id: String(r.id),
       name: String(r.name),
       category: String(r.category) as Product["category"],
-      cost: Number(r.cost ?? 0),
+      cost: r.cost == null ? null : Number(r.cost),
       price: Number(r.price ?? 0),
       stock: Number(r.stock ?? 0),
       lowStockThreshold: Number(r.low_stock_threshold ?? 5),

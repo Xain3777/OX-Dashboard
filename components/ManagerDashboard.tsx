@@ -5,10 +5,13 @@ import Image from "next/image";
 import {
   Shield, LogOut, ChevronDown, ChevronUp, Plus, Trash2,
   Check, X, AlertTriangle, ChefHat, Package, ReceiptText,
-  Users, Dumbbell, Clock, Edit2, ShoppingBag,
+  Users, Dumbbell, Clock, Edit2, ShoppingBag, DollarSign,
+  TrendingUp, TrendingDown, Banknote, Activity, CreditCard,
+  Calendar, Snowflake, CalendarX, CalendarClock,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
+import { useCurrency } from "@/lib/currency-context";
 import type { LocalSession } from "@/lib/store-context";
 import type { FoodItem, FoodItemCategory, ProductCategory, ExpenseCategory, ExpenseFrequency, Expense } from "@/lib/types";
 import type { Product } from "@/lib/types";
@@ -20,16 +23,36 @@ import { formatTime, formatDate } from "@/lib/utils/time";
 import KPIStrip from "@/components/KPIStrip";
 import DailyExportButton from "@/components/DailyExportButton";
 import { findStaffByEmail } from "@/lib/staff-accounts";
+import {
+  makeDateRange,
+  useManagerOverview,
+  type DateRangePreset,
+  type ManagerDateRange,
+  type CurrencyBucket,
+  type PlanRow,
+  type OfferRow,
+} from "@/lib/supabase/dashboard";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 type ManagerSection = "sessions" | "subscriptions" | "inbody" | "store" | "kitchen" | "expenses";
 
-const FOOD_CATEGORIES: FoodItemCategory[] = ["meals", "breakfast", "salads", "drinks", "snacks", "other"];
+const FOOD_CATEGORIES: FoodItemCategory[] = ["meals", "breakfast", "salads", "drinks", "snacks", "food", "other"];
 const FOOD_CAT_LABELS: Record<FoodItemCategory, string> = {
   meals: "وجبات", breakfast: "فطور", salads: "سلطات",
-  drinks: "مشروبات", snacks: "وجبات خفيفة", other: "أخرى",
+  drinks: "مشروبات", snacks: "وجبات خفيفة", food: "مطبخ عام", other: "أخرى",
 };
+
+// Effective cost in SYP. Prefers cost_syp; falls back to cost_usd × rate;
+// finally falls back to the legacy `cost` column. Returns null when no
+// cost has been recorded — callers must render a "—" placeholder.
+function effectiveCostSYP(item: FoodItem, exchangeRate: number): number | null {
+  if (item.cost_syp != null && Number.isFinite(item.cost_syp)) return Number(item.cost_syp);
+  if (item.cost_usd != null && Number.isFinite(item.cost_usd) && exchangeRate > 0)
+    return Number(item.cost_usd) * exchangeRate;
+  if (item.cost != null && Number.isFinite(item.cost)) return Number(item.cost);
+  return null;
+}
 
 const PRODUCT_CATEGORIES: ProductCategory[] = [
   "protein", "mass_gainer", "creatine", "amino",
@@ -416,7 +439,7 @@ function StoreDashboard() {
   const [editRows, setEditRows] = useState<Record<string, ProdEdit>>({});
 
   function startEdit(p: Product) {
-    setEditRows((prev) => ({ ...prev, [p.id]: { cost: String(p.cost), price: String(p.price), stock: String(p.stock) } }));
+    setEditRows((prev) => ({ ...prev, [p.id]: { cost: p.cost == null ? "" : String(p.cost), price: String(p.price), stock: String(p.stock) } }));
   }
   function cancelEdit(id: string) {
     setEditRows((prev) => { const n = { ...prev }; delete n[id]; return n; });
@@ -506,7 +529,7 @@ function StoreDashboard() {
               <tbody className="divide-y divide-[#252525]/60">
                 {products.map((p) => {
                   const editing = editRows[p.id];
-                  const profit = p.price - p.cost;
+                  const profit = p.cost == null ? null : p.price - p.cost;
                   const low = p.stock <= p.lowStockThreshold;
                   return (
                     <tr key={p.id} className="hover:bg-[#252525]/20 transition-colors">
@@ -541,9 +564,9 @@ function StoreDashboard() {
                         </>
                       ) : (
                         <>
-                          <td className="px-4 py-2.5 font-mono tabular-nums text-[#777777]">${p.cost.toFixed(2)}</td>
+                          <td className="px-4 py-2.5 font-mono tabular-nums text-[#777777]">{p.cost == null ? "—" : `$${p.cost.toFixed(2)}`}</td>
                           <td className="px-4 py-2.5 font-mono tabular-nums text-[#F5C100]">${p.price.toFixed(2)}</td>
-                          <td className={`px-4 py-2.5 font-mono tabular-nums text-[10px] ${profit >= 0 ? "text-[#5CC45C]" : "text-[#FF3333]"}`}>${profit.toFixed(2)}</td>
+                          <td className={`px-4 py-2.5 font-mono tabular-nums text-[10px] ${profit == null ? "text-[#555555]" : profit >= 0 ? "text-[#5CC45C]" : "text-[#FF3333]"}`}>{profit == null ? "—" : `$${profit.toFixed(2)}`}</td>
                           <td className={`px-4 py-2.5 font-mono tabular-nums ${low ? "text-[#FF3333]" : "text-[#AAAAAA]"}`}>
                             {p.stock}{low && <span className="mr-1 text-[9px]">↓</span>}
                           </td>
@@ -568,10 +591,11 @@ function StoreDashboard() {
 
 // ─── Kitchen dashboard (sales log + food items) ───────────────────────────────
 
-type FoodEdit = { cost: string; price: string };
+type FoodEdit = { price: string; costSyp: string; costUsd: string };
 
 function KitchenDashboard() {
   const { sales, foodItems, addFoodItem, updateFoodItem, removeFoodItem } = useStore();
+  const { exchangeRate, openRateModal } = useCurrency();
   const sessionLabel = useSessionLabel();
 
   // Kitchen sales log
@@ -585,23 +609,42 @@ function KitchenDashboard() {
   // Add form
   const [newName, setNewName] = useState("");
   const [newCat, setNewCat] = useState<FoodItemCategory>("meals");
-  const [newCost, setNewCost] = useState("");
+  const [newCostSyp, setNewCostSyp] = useState("");
+  const [newCostUsd, setNewCostUsd] = useState("");
   const [newPrice, setNewPrice] = useState("");
   const [addErr, setAddErr] = useState("");
   const [addOk, setAddOk] = useState("");
 
   const liveProfit = useMemo(() => {
-    const c = parseFloat(newCost), p = parseFloat(newPrice);
-    return !isNaN(c) && !isNaN(p) ? p - c : null;
-  }, [newCost, newPrice]);
+    const p = parseFloat(newPrice);
+    if (isNaN(p)) return null;
+    const cs = parseFloat(newCostSyp);
+    const cu = parseFloat(newCostUsd);
+    const cost = !isNaN(cs)
+      ? cs
+      : !isNaN(cu) && exchangeRate > 0
+        ? cu * exchangeRate
+        : null;
+    return cost == null ? null : p - cost;
+  }, [newCostSyp, newCostUsd, newPrice, exchangeRate]);
 
-  function handleAdd() {
+  async function handleAdd() {
     setAddErr(""); setAddOk("");
     if (!newName.trim()) { setAddErr("أدخل اسم الصنف."); return; }
     const p = parseFloat(newPrice);
-    if (isNaN(p) || p <= 0) { setAddErr("سعر البيع غير صحيح."); return; }
-    addFoodItem({ name: newName.trim(), category: newCat, cost: newCost ? parseFloat(newCost) : undefined, price_syp: p, is_active: true });
-    setNewName(""); setNewCost(""); setNewPrice("");
+    if (isNaN(p) || p < 0) { setAddErr("سعر البيع غير صحيح."); return; }
+    const cs = parseFloat(newCostSyp);
+    const cu = parseFloat(newCostUsd);
+    const r = await addFoodItem({
+      name: newName.trim(),
+      category: newCat,
+      price_syp: p,
+      cost_syp: !isNaN(cs) ? cs : null,
+      cost_usd: !isNaN(cu) ? cu : null,
+      is_active: true,
+    });
+    if (r.error) { setAddErr(r.error); return; }
+    setNewName(""); setNewCostSyp(""); setNewCostUsd(""); setNewPrice("");
     setAddOk("تمت الإضافة."); setTimeout(() => setAddOk(""), 2000);
   }
 
@@ -609,19 +652,30 @@ function KitchenDashboard() {
   const [foodEdits, setFoodEdits] = useState<Record<string, FoodEdit>>({});
 
   function startFoodEdit(f: FoodItem) {
-    setFoodEdits((prev) => ({ ...prev, [f.id]: { cost: f.cost != null ? String(f.cost) : "", price: String(f.price_syp) } }));
+    setFoodEdits((prev) => ({
+      ...prev,
+      [f.id]: {
+        price: String(f.price_syp ?? 0),
+        costSyp: f.cost_syp != null ? String(f.cost_syp) : f.cost != null ? String(f.cost) : "",
+        costUsd: f.cost_usd != null ? String(f.cost_usd) : "",
+      },
+    }));
   }
   function cancelFoodEdit(id: string) {
     setFoodEdits((prev) => { const n = { ...prev }; delete n[id]; return n; });
   }
-  function saveFoodEdit(f: FoodItem) {
+  async function saveFoodEdit(f: FoodItem) {
     const row = foodEdits[f.id];
     if (!row) return;
     const updates: Partial<FoodItem> = {};
     const pr = parseFloat(row.price);
-    if (!isNaN(pr) && pr > 0) updates.price_syp = pr;
-    if (row.cost !== "") { const c = parseFloat(row.cost); if (!isNaN(c)) updates.cost = c; }
-    if (Object.keys(updates).length) updateFoodItem(f.id, updates);
+    if (!isNaN(pr) && pr >= 0) updates.price_syp = pr;
+    // Empty string clears the cost; numeric value sets it.
+    if (row.costSyp === "") updates.cost_syp = null;
+    else { const c = parseFloat(row.costSyp); if (!isNaN(c)) updates.cost_syp = c; }
+    if (row.costUsd === "") updates.cost_usd = null;
+    else { const c = parseFloat(row.costUsd); if (!isNaN(c)) updates.cost_usd = c; }
+    if (Object.keys(updates).length) await updateFoodItem(f.id, updates);
     cancelFoodEdit(f.id);
   }
 
@@ -663,6 +717,12 @@ function KitchenDashboard() {
 
       {/* ── Food items management ── */}
       <div className="bg-[#1A1A1A] border border-[#252525] rounded-sm overflow-hidden">
+        <div className="px-5 py-3 border-b border-[#252525] bg-[#111111] flex items-center justify-between gap-3">
+          <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">سعر الصرف الحالي</p>
+          <button onClick={openRateModal} className="font-mono tabular-nums text-xs text-[#F5C100] hover:underline cursor-pointer" dir="ltr">
+            1$ = {Math.round(exchangeRate).toLocaleString("en-US")} ل.س
+          </button>
+        </div>
         <div className="px-5 py-4 border-b border-[#252525] bg-[#111111]">
           <SubHeader label="إضافة صنف جديد للمطبخ" />
           <div className="flex flex-wrap gap-2">
@@ -670,12 +730,15 @@ function KitchenDashboard() {
             <select value={newCat} onChange={(e) => setNewCat(e.target.value as FoodItemCategory)} className={SELECT}>
               {FOOD_CATEGORIES.map((c) => <option key={c} value={c}>{FOOD_CAT_LABELS[c]}</option>)}
             </select>
-            <input value={newCost} onChange={(e) => setNewCost(e.target.value)} placeholder="السعر الأصلي (ل.س) (اختياري)" type="number" min="0" step="1" className={`w-48 ${INPUT}`} />
+            <input value={newCostSyp} onChange={(e) => setNewCostSyp(e.target.value)} placeholder="تكلفة (ل.س)" type="number" min="0" step="1" className={`w-36 ${INPUT}`} />
+            <input value={newCostUsd} onChange={(e) => setNewCostUsd(e.target.value)} placeholder="تكلفة ($)" type="number" min="0" step="0.01" className={`w-32 ${INPUT}`} />
             <input value={newPrice} onChange={(e) => setNewPrice(e.target.value)} placeholder="السعر (ل.س)" type="number" min="0" step="1" className={`w-36 ${INPUT}`} />
             {liveProfit !== null && (
               <div className="flex items-center px-3 py-1.5 bg-[#111111] border border-[#252525] rounded-sm">
                 <span className="font-mono text-[10px] text-[#555555] ml-1.5">ربح:</span>
-                <span className={`font-mono tabular-nums text-xs ${liveProfit >= 0 ? "text-[#5CC45C]" : "text-[#FF3333]"}`}>${liveProfit.toFixed(2)}</span>
+                <span className={`font-mono tabular-nums text-xs ${liveProfit >= 0 ? "text-[#5CC45C]" : "text-[#FF3333]"}`}>
+                  {Math.round(liveProfit).toLocaleString("ar-SY")} ل.س
+                </span>
               </div>
             )}
             <button onClick={handleAdd} className={BTN_ADD}><Plus size={12} />إضافة</button>
@@ -689,35 +752,52 @@ function KitchenDashboard() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
-              <THead cols={["الاسم", "السعر الأصلي (ل.س)", "السعر (ل.س)", "الربح", "الفئة", "الحالة", ""]} />
+              <THead cols={["الاسم", "تكلفة (ل.س)", "تكلفة ($)", "سعر البيع (ل.س)", "الربح", "الهامش", "الفئة", "الحالة", ""]} />
               <tbody className="divide-y divide-[#252525]/60">
                 {foodItems.map((item) => {
                   const editing = foodEdits[item.id];
-                  const profit = item.cost != null ? item.price_syp - item.cost : null;
+                  const effCost = effectiveCostSYP(item, exchangeRate);
+                  const profit  = effCost != null ? item.price_syp - effCost : null;
+                  const margin  = profit != null && item.price_syp > 0 ? (profit / item.price_syp) * 100 : null;
                   return (
                     <tr key={item.id} className={`hover:bg-[#252525]/20 transition-colors ${!item.is_active ? "opacity-50" : ""}`}>
-                      <td className="px-4 py-2.5 text-[#F0EDE6]">{item.name}</td>
+                      <td className="px-4 py-2.5 text-[#F0EDE6]">
+                        {item.name}
+                        {item.description && (
+                          <span className="block font-mono text-[9px] text-[#555555] mt-0.5">{item.description}</span>
+                        )}
+                      </td>
                       {editing ? (
                         <>
                           <td className="px-4 py-2.5">
-                            <input value={editing.cost} onChange={(e) => setFoodEdits((r) => ({ ...r, [item.id]: { ...r[item.id], cost: e.target.value } }))}
+                            <input value={editing.costSyp} onChange={(e) => setFoodEdits((r) => ({ ...r, [item.id]: { ...r[item.id], costSyp: e.target.value } }))}
+                              type="number" step="1" placeholder="—" className={`${EDIT_INPUT} text-[#777777]`} />
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <input value={editing.costUsd} onChange={(e) => setFoodEdits((r) => ({ ...r, [item.id]: { ...r[item.id], costUsd: e.target.value } }))}
                               type="number" step="0.01" placeholder="—" className={`${EDIT_INPUT} text-[#777777]`} />
                           </td>
                           <td className="px-4 py-2.5">
                             <input value={editing.price} onChange={(e) => setFoodEdits((r) => ({ ...r, [item.id]: { ...r[item.id], price: e.target.value } }))}
-                              type="number" step="0.01" className={`${EDIT_INPUT} text-[#F5C100]`} />
+                              type="number" step="1" className={`${EDIT_INPUT} text-[#F5C100]`} />
                           </td>
                           <td className="px-4 py-2.5 font-mono tabular-nums text-[10px]">
                             {(() => {
-                              const diff = parseFloat(editing.price) - parseFloat(editing.cost || "0");
-                              return isNaN(diff) ? "—" : <span className={diff >= 0 ? "text-[#5CC45C]" : "text-[#FF3333]"}>${diff.toFixed(2)}</span>;
+                              const pr = parseFloat(editing.price);
+                              const cs = parseFloat(editing.costSyp);
+                              const cu = parseFloat(editing.costUsd);
+                              const c  = !isNaN(cs) ? cs : !isNaN(cu) && exchangeRate > 0 ? cu * exchangeRate : NaN;
+                              if (isNaN(pr) || isNaN(c)) return "—";
+                              const diff = pr - c;
+                              return <span className={diff >= 0 ? "text-[#5CC45C]" : "text-[#FF3333]"}>{Math.round(diff).toLocaleString("ar-SY")} ل.س</span>;
                             })()}
                           </td>
+                          <td className="px-4 py-2.5 font-mono tabular-nums text-[10px] text-[#777777]">—</td>
                           <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA]">{FOOD_CAT_LABELS[item.category]}</td>
                           <td className="px-4 py-2.5" />
                           <td className="px-4 py-2.5">
                             <div className="flex items-center gap-1">
-                              <button onClick={() => saveFoodEdit(item)} className="text-[#5CC45C] hover:opacity-80 cursor-pointer"><Check size={12} /></button>
+                              <button onClick={() => void saveFoodEdit(item)} className="text-[#5CC45C] hover:opacity-80 cursor-pointer"><Check size={12} /></button>
                               <button onClick={() => cancelFoodEdit(item.id)} className="text-[#FF3333] hover:opacity-80 cursor-pointer"><X size={12} /></button>
                             </div>
                           </td>
@@ -725,15 +805,23 @@ function KitchenDashboard() {
                       ) : (
                         <>
                           <td className="px-4 py-2.5 font-mono tabular-nums text-[#777777]">
-                            {item.cost != null ? `${Math.round(item.cost).toLocaleString("ar-SY")} ل.س` : "—"}
+                            {item.cost_syp != null ? `${Math.round(item.cost_syp).toLocaleString("ar-SY")} ل.س` : "—"}
                           </td>
-                          <td className="px-4 py-2.5 font-mono tabular-nums text-[#F5C100]">{Math.round(item.price_syp).toLocaleString("ar-SY")} ل.س</td>
+                          <td className="px-4 py-2.5 font-mono tabular-nums text-[#777777]" dir="ltr">
+                            {item.cost_usd != null ? `$${Number(item.cost_usd).toFixed(2)}` : "—"}
+                          </td>
+                          <td className="px-4 py-2.5 font-mono tabular-nums text-[#F5C100]">
+                            {item.price_syp > 0 ? `${Math.round(item.price_syp).toLocaleString("ar-SY")} ل.س` : "—"}
+                          </td>
                           <td className={`px-4 py-2.5 font-mono tabular-nums text-[10px] ${profit != null ? (profit >= 0 ? "text-[#5CC45C]" : "text-[#FF3333]") : "text-[#555555]"}`}>
                             {profit != null ? `${Math.round(profit).toLocaleString("ar-SY")} ل.س` : "—"}
                           </td>
+                          <td className={`px-4 py-2.5 font-mono tabular-nums text-[10px] ${margin != null ? (margin >= 0 ? "text-[#5CC45C]" : "text-[#FF3333]") : "text-[#555555]"}`}>
+                            {margin != null ? `${margin.toFixed(1)}%` : "—"}
+                          </td>
                           <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA]">{FOOD_CAT_LABELS[item.category]}</td>
                           <td className="px-4 py-2.5">
-                            <button onClick={() => updateFoodItem(item.id, { is_active: !item.is_active })}
+                            <button onClick={() => void updateFoodItem(item.id, { is_active: !item.is_active })}
                               className={`font-mono text-[10px] px-2 py-0.5 rounded border cursor-pointer transition-colors ${item.is_active ? "text-[#5CC45C] border-[#5CC45C]/30 bg-[#5CC45C]/10" : "text-[#777777] border-[#555555]/30"}`}>
                               {item.is_active ? "مفعل" : "متوقف"}
                             </button>
@@ -741,7 +829,7 @@ function KitchenDashboard() {
                           <td className="px-4 py-2.5">
                             <div className="flex items-center gap-1">
                               <button onClick={() => startFoodEdit(item)} className="p-1 text-[#555555] hover:text-[#F5C100] transition-colors cursor-pointer"><Edit2 size={11} /></button>
-                              <button onClick={() => removeFoodItem(item.id)} className="p-1 text-[#555555] hover:text-[#FF3333] transition-colors cursor-pointer"><Trash2 size={11} /></button>
+                              <button onClick={() => void removeFoodItem(item.id)} className="p-1 text-[#555555] hover:text-[#FF3333] transition-colors cursor-pointer"><Trash2 size={11} /></button>
                             </div>
                           </td>
                         </>
@@ -859,17 +947,519 @@ function ExpensesManager() {
   );
 }
 
+// ─── New manager overview blocks (KPI redesign) ──────────────────────────────
+
+function fmtSYP(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  return `${Math.round(n).toLocaleString("en-US")} ل.س`;
+}
+function fmtUSD(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  return `$${n.toFixed(2)}`;
+}
+
+const PLAN_AR: Record<string, string> = {
+  daily: "يومي", "15_days": "١٥ يوم", "1_month": "شهر",
+  "3_months": "٣ أشهر", "6_months": "٦ أشهر",
+  "9_months": "٩ أشهر", "12_months": "١٢ شهر",
+  other: "أخرى",
+};
+
+function SummaryCard({
+  label, syp, usd, icon, accent = "default", subtitle, badge, skipped,
+}: {
+  label: string;
+  syp: number;
+  usd?: number;
+  icon: React.ReactNode;
+  accent?: "default" | "gold" | "green" | "red";
+  subtitle?: string;
+  badge?: React.ReactNode;
+  skipped?: number;
+}) {
+  const valueColor =
+    accent === "gold" ? "text-[#F5C100]" :
+    accent === "green" ? "text-[#5CC45C]" :
+    accent === "red" ? "text-[#FF3333]" : "text-[#F0EDE6]";
+  return (
+    <div className="bg-[#1A1A1A] border border-[#252525] rounded-sm p-3 flex flex-col gap-1">
+      <div className="flex items-center justify-between">
+        <span className="text-[#777777]">{icon}</span>
+        {badge ?? null}
+      </div>
+      <p className={`font-display text-xl leading-none tabular-nums tracking-wide ${valueColor}`} dir="ltr">
+        {fmtSYP(syp)}
+      </p>
+      {usd != null && (
+        <p className="font-mono text-[10px] tabular-nums text-[#777777]" dir="ltr">{fmtUSD(usd)}</p>
+      )}
+      <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555] truncate">
+        {label}
+        {subtitle ? ` — ${subtitle}` : ""}
+      </p>
+      {skipped != null && skipped > 0 && (
+        <p className="font-mono text-[9px] text-[#FF7A00]" title="صفوف تم استبعادها من الإجمالي بالدولار بسبب سعر صرف مفقود">
+          ⚠ {skipped} صفوف بدون سعر صرف
+        </p>
+      )}
+    </div>
+  );
+}
+
+function CountCard({
+  label, value, icon, accent = "default", subtitle, badge,
+}: {
+  label: string; value: number; icon: React.ReactNode;
+  accent?: "default" | "gold" | "green" | "red";
+  subtitle?: string;
+  badge?: React.ReactNode;
+}) {
+  const valueColor =
+    accent === "gold" ? "text-[#F5C100]" :
+    accent === "green" ? "text-[#5CC45C]" :
+    accent === "red" ? "text-[#FF3333]" : "text-[#F0EDE6]";
+  return (
+    <div className="bg-[#1A1A1A] border border-[#252525] rounded-sm p-3 flex flex-col gap-1">
+      <div className="flex items-center justify-between">
+        <span className="text-[#777777]">{icon}</span>
+        {badge ?? null}
+      </div>
+      <p className={`font-display text-2xl leading-none tabular-nums tracking-wide ${valueColor}`}>
+        {value}
+      </p>
+      <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555] truncate">
+        {label}
+        {subtitle ? ` — ${subtitle}` : ""}
+      </p>
+    </div>
+  );
+}
+
+function DateRangePicker({
+  range, setRange,
+}: {
+  range: ManagerDateRange;
+  setRange: (r: ManagerDateRange) => void;
+}) {
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customStart, setCustomStart] = useState(range.startDate);
+  const [customEnd,   setCustomEnd]   = useState(range.endDate);
+
+  const presets: { id: DateRangePreset; label: string }[] = [
+    { id: "today", label: "اليوم" },
+    { id: "week",  label: "هذا الأسبوع" },
+    { id: "month", label: "هذا الشهر" },
+  ];
+
+  return (
+    <div className="bg-[#1A1A1A] border border-[#252525] rounded-sm px-4 py-3 flex flex-wrap items-center gap-2">
+      <Calendar size={14} className="text-[#F5C100]" />
+      <span className="font-mono text-[10px] uppercase tracking-widest text-[#555555] ml-2">الفترة</span>
+      {presets.map((p) => {
+        const active = range.preset === p.id;
+        return (
+          <button
+            key={p.id}
+            onClick={() => setRange(makeDateRange(p.id))}
+            className={`px-3 py-1 rounded-sm border font-mono text-[11px] cursor-pointer transition-colors ${
+              active
+                ? "bg-[#F5C100]/15 border-[#F5C100]/40 text-[#F5C100]"
+                : "border-[#252525] text-[#AAAAAA] hover:border-[#555555]"
+            }`}
+          >
+            {p.label}
+          </button>
+        );
+      })}
+      <button
+        onClick={() => setCustomOpen((v) => !v)}
+        className={`px-3 py-1 rounded-sm border font-mono text-[11px] cursor-pointer transition-colors ${
+          range.preset === "custom"
+            ? "bg-[#F5C100]/15 border-[#F5C100]/40 text-[#F5C100]"
+            : "border-[#252525] text-[#AAAAAA] hover:border-[#555555]"
+        }`}
+      >
+        مخصص
+      </button>
+      {customOpen && (
+        <div className="flex items-center gap-2 mr-2">
+          <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)}
+            className="bg-[#0A0A0A] border border-[#252525] rounded-sm px-2 py-1 text-[11px] text-[#F0EDE6]" />
+          <span className="text-[#555555] font-mono text-xs">→</span>
+          <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)}
+            className="bg-[#0A0A0A] border border-[#252525] rounded-sm px-2 py-1 text-[11px] text-[#F0EDE6]" />
+          <button
+            onClick={() => {
+              if (!customStart || !customEnd || customStart > customEnd) return;
+              setRange(makeDateRange("custom", { startDate: customStart, endDate: customEnd }));
+              setCustomOpen(false);
+            }}
+            className="px-3 py-1 bg-[#F5C100] text-[#0A0A0A] font-display text-[11px] tracking-widest rounded-sm cursor-pointer"
+          >
+            تطبيق
+          </button>
+        </div>
+      )}
+      <span className="mr-auto font-mono text-[10px] text-[#555555]">
+        {range.startDate} → {range.endDate}
+      </span>
+    </div>
+  );
+}
+
+function bucketSkipped(b: CurrencyBucket | undefined): number | undefined {
+  return b?.skippedUSD && b.skippedUSD > 0 ? b.skippedUSD : undefined;
+}
+
+function RevenueSummaryCards({
+  loading, summary,
+}: {
+  loading: boolean;
+  summary: ReturnType<typeof useManagerOverview>["summary"];
+}) {
+  if (loading && !summary) {
+    return (
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8 gap-2">
+        {Array.from({ length: 8 }).map((_, i) => (
+          <div key={i} className="bg-[#1A1A1A] border border-[#252525] rounded-sm p-3 h-[88px] animate-pulse" />
+        ))}
+      </div>
+    );
+  }
+  if (!summary) return null;
+  const s = summary;
+  const otherIncome = bucketSum(s.store, s.kitchen);
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8 gap-2">
+      <SummaryCard
+        label="إجمالي الإيرادات" syp={s.totalRevenue.syp} usd={s.totalRevenue.usd}
+        icon={<DollarSign size={14} />} accent="gold"
+        skipped={bucketSkipped(s.totalRevenue)}
+      />
+      <SummaryCard
+        label="إيرادات الاشتراكات" syp={s.subscriptions.syp} usd={s.subscriptions.usd}
+        icon={<Users size={14} />} skipped={bucketSkipped(s.subscriptions)}
+      />
+      <SummaryCard
+        label="InBody" syp={s.inbody.syp} usd={s.inbody.usd}
+        icon={<Dumbbell size={14} />} skipped={bucketSkipped(s.inbody)}
+      />
+      <SummaryCard
+        label="إيرادات أخرى" syp={otherIncome.syp} usd={otherIncome.usd}
+        icon={<ShoppingBag size={14} />} subtitle="متجر + مطبخ"
+        skipped={bucketSkipped(otherIncome)}
+      />
+      <SummaryCard
+        label="جلسات خاصة" syp={s.privateSessions.syp} usd={s.privateSessions.usd}
+        icon={<Activity size={14} />} skipped={bucketSkipped(s.privateSessions)}
+      />
+      <SummaryCard
+        label="المصاريف" syp={s.expenses.syp} usd={s.expenses.usd}
+        icon={<TrendingDown size={14} />} accent="red"
+        skipped={bucketSkipped(s.expenses)}
+      />
+      <SummaryCard
+        label="صافي الدخل" syp={s.netIncome.syp} usd={s.netIncome.usd}
+        icon={<TrendingUp size={14} />}
+        accent={s.netIncome.syp >= 0 ? "green" : "red"}
+        skipped={bucketSkipped(s.netIncome)}
+      />
+      <CountCard
+        label="أعضاء نشطون" value={s.activeMembers.distinct}
+        icon={<Users size={14} />}
+        subtitle={s.activeMembers.unattached > 0 ? `${s.activeMembers.unattached} بدون member_id` : undefined}
+      />
+    </div>
+  );
+}
+
+function bucketSum(...xs: CurrencyBucket[]): CurrencyBucket {
+  return xs.reduce((acc, x) => ({
+    syp: acc.syp + x.syp,
+    usd: acc.usd + x.usd,
+    skippedUSD: acc.skippedUSD + x.skippedUSD,
+  }), { syp: 0, usd: 0, skippedUSD: 0 });
+}
+
+function CashOnHandRow({ summary }: { summary: ReturnType<typeof useManagerOverview>["summary"] }) {
+  if (!summary) return null;
+  const c = summary.cashOnHand;
+  return (
+    <div className="bg-[#1A1A1A] border border-[#252525] rounded-sm p-4 flex flex-wrap items-center gap-6">
+      <div className="flex items-center gap-2">
+        <Banknote size={16} className="text-[#F5C100]" />
+        <span className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">النقد في الخزنة</span>
+      </div>
+      {c.hasOpenSession ? (
+        <>
+          <div>
+            <p className="font-display text-xl text-[#F5C100] tabular-nums" dir="ltr">{fmtSYP(c.syp)}</p>
+            <p className="font-mono text-[10px] text-[#777777]" dir="ltr">{fmtUSD(c.usd)}</p>
+          </div>
+          <span className="font-mono text-[10px] text-[#555555]">
+            (افتتاحي + دخل الجلسة − مصاريف الجلسة)
+          </span>
+        </>
+      ) : (
+        <span className="font-mono text-xs text-[#777777]">لا توجد جلسة نقدية مفتوحة</span>
+      )}
+      <div className="mr-auto flex items-center gap-2">
+        <CreditCard size={14} className="text-[#777777]" />
+        <span className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">غير مكتمل الدفع</span>
+        <span className="font-display text-sm text-[#F5C100] tabular-nums">{summary.partiallyPaid.count}</span>
+        {summary.partiallyPaid.remainingSYP > 0 && (
+          <span className="font-mono text-[10px] text-[#777777]" dir="ltr">
+            متبقي {fmtSYP(summary.partiallyPaid.remainingSYP)}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SubscriptionRevenueSection({
+  loading, subs,
+}: {
+  loading: boolean;
+  subs: ReturnType<typeof useManagerOverview>["subs"];
+}) {
+  if (loading && !subs) return <div className="font-mono text-[10px] text-[#555555]">جاري التحميل…</div>;
+  if (!subs) return null;
+  const t = subs.totals;
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2">
+        <SummaryCard label="شهري"        syp={t.monthlySYP}    icon={<Calendar size={14} />} />
+        <SummaryCard label="متعدد الأشهر" syp={t.multiMonthSYP} icon={<Calendar size={14} />} />
+        <SummaryCard label="بعروض"       syp={t.offerSYP}      icon={<TrendingUp size={14} />} accent="gold" />
+        <SummaryCard label="بدون عروض"   syp={t.normalSYP}     icon={<Users size={14} />} />
+        <SummaryCard label="متبقي جزئي"  syp={t.partialRemainingSYP} icon={<CreditCard size={14} />} accent="gold" />
+        <SummaryCard label="متبقي غير مدفوع" syp={t.unpaidRemainingSYP} icon={<AlertTriangle size={14} />} accent="red" />
+      </div>
+
+      {/* Plan-type breakdown */}
+      <div className="bg-[#1A1A1A] border border-[#252525] rounded-sm overflow-hidden">
+        <div className="px-5 py-2 border-b border-[#252525] bg-[#111111]">
+          <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">تفصيل حسب الخطة</p>
+        </div>
+        {subs.byPlanType.length === 0 ? (
+          <EmptyTable label="لا توجد اشتراكات في هذه الفترة" />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <THead cols={["الخطة", "العدد", "أعضاء فريدون", "إجمالي مدفوع", "متوسط مدفوع", "جزئي", "غير مدفوع"]} />
+              <tbody className="divide-y divide-[#252525]/60">
+                {subs.byPlanType.map((p: PlanRow) => (
+                  <tr key={p.plan} className="hover:bg-[#252525]/20 transition-colors">
+                    <td className="px-4 py-2.5 text-[#F0EDE6]">{PLAN_AR[p.plan] ?? p.plan}</td>
+                    <td className="px-4 py-2.5 font-mono tabular-nums text-[#AAAAAA]">{p.count}</td>
+                    <td className="px-4 py-2.5 font-mono tabular-nums text-[#AAAAAA]">{p.members}</td>
+                    <td className="px-4 py-2.5 font-mono tabular-nums text-[#F5C100]" dir="ltr">{fmtSYP(p.paidSYP)}</td>
+                    <td className="px-4 py-2.5 font-mono tabular-nums text-[#777777]" dir="ltr">{fmtSYP(p.avgPaidSYP)}</td>
+                    <td className="px-4 py-2.5 font-mono tabular-nums text-[#F5C100]">{p.partialCount}</td>
+                    <td className="px-4 py-2.5 font-mono tabular-nums text-[#FF3333]">{p.unpaidCount}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Offer breakdown */}
+      <div className="bg-[#1A1A1A] border border-[#252525] rounded-sm overflow-hidden">
+        <div className="px-5 py-2 border-b border-[#252525] bg-[#111111]">
+          <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">تفصيل حسب العرض</p>
+        </div>
+        {subs.byOffer.length === 0 ? (
+          <EmptyTable label="لا توجد بيانات عروض" />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <THead cols={["العرض", "العدد", "إجمالي مدفوع"]} />
+              <tbody className="divide-y divide-[#252525]/60">
+                {subs.byOffer.map((o: OfferRow) => (
+                  <tr key={o.offer} className="hover:bg-[#252525]/20 transition-colors">
+                    <td className="px-4 py-2.5 text-[#F0EDE6]">{getOfferLabel(o.offer as Parameters<typeof getOfferLabel>[0]) ?? o.offer}</td>
+                    <td className="px-4 py-2.5 font-mono tabular-nums text-[#AAAAAA]">{o.count}</td>
+                    <td className="px-4 py-2.5 font-mono tabular-nums text-[#F5C100]" dir="ltr">{fmtSYP(o.paidSYP)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MemberCategoriesSection({
+  loading, members,
+}: {
+  loading: boolean;
+  members: ReturnType<typeof useManagerOverview>["members"];
+}) {
+  if (loading && !members) return <div className="font-mono text-[10px] text-[#555555]">جاري التحميل…</div>;
+  if (!members) return null;
+  const m = members;
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8 gap-2">
+        <CountCard label="نشطون"             value={m.totalActive}      icon={<Users size={14} />} accent="green" />
+        <CountCard label="مجمدون"            value={m.frozen}           icon={<Snowflake size={14} />} />
+        <CountCard label="منتهون"            value={m.expired}          icon={<CalendarX size={14} />} accent={m.expired > 0 ? "red" : "default"} />
+        <CountCard label="ينتهون هذا الأسبوع" value={m.expiringThisWeek} icon={<CalendarClock size={14} />} accent={m.expiringThisWeek > 0 ? "gold" : "default"} />
+        <CountCard label="عروض متعددة الأشهر" value={m.multiMonthOfferTotal} icon={<TrendingUp size={14} />} accent="gold" />
+        <CountCard label="شهري عادي"          value={m.monthlyNormal}    icon={<Calendar size={14} />} />
+        <CountCard label="شهري بعرض"          value={m.monthlyOffer}     icon={<Calendar size={14} />} accent="gold" />
+        <CountCard label="بدون member_id"     value={m.unattachedActive} icon={<AlertTriangle size={14} />} accent={m.unattachedActive > 0 ? "red" : "default"} />
+      </div>
+
+      <div className="bg-[#1A1A1A] border border-[#252525] rounded-sm overflow-hidden">
+        <div className="px-5 py-2 border-b border-[#252525] bg-[#111111]">
+          <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">تفصيل النشطين حسب الخطة (أعضاء فريدون)</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <THead cols={["الخطة", "بدون عرض", "بعرض", "الإجمالي"]} />
+            <tbody className="divide-y divide-[#252525]/60">
+              <PlanCategoryRow label="شهر"     normal={m.monthlyNormal}    offer={m.monthlyOffer} />
+              <PlanCategoryRow label="٣ أشهر"  normal={m.threeMonthNormal} offer={m.threeMonthOffer} />
+              <PlanCategoryRow label="٦ أشهر"  normal={m.sixMonthNormal}   offer={m.sixMonthOffer} />
+              <PlanCategoryRow label="٩ أشهر"  normal={m.nineMonthNormal}  offer={m.nineMonthOffer} />
+              <PlanCategoryRow label="١٢ شهر"  normal={m.yearlyNormal}     offer={m.yearlyOffer} />
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PlanCategoryRow({ label, normal, offer }: { label: string; normal: number; offer: number }) {
+  return (
+    <tr className="hover:bg-[#252525]/20 transition-colors">
+      <td className="px-4 py-2.5 text-[#F0EDE6]">{label}</td>
+      <td className="px-4 py-2.5 font-mono tabular-nums text-[#AAAAAA]">{normal}</td>
+      <td className="px-4 py-2.5 font-mono tabular-nums text-[#F5C100]">{offer}</td>
+      <td className="px-4 py-2.5 font-mono tabular-nums text-[#5CC45C]">{normal + offer}</td>
+    </tr>
+  );
+}
+
+function OtherIncomeSection({
+  loading, other,
+}: {
+  loading: boolean;
+  other: ReturnType<typeof useManagerOverview>["other"];
+}) {
+  if (loading && !other) return <div className="font-mono text-[10px] text-[#555555]">جاري التحميل…</div>;
+  if (!other) return null;
+  const o = other;
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <SummaryCard label="InBody — الإجمالي" syp={o.inbody.bucket.syp} usd={o.inbody.bucket.usd}
+          icon={<Dumbbell size={14} />} subtitle={`${o.inbody.sessionCount} جلسة`}
+          skipped={bucketSkipped(o.inbody.bucket)} />
+        <SummaryCard label="مطبخ" syp={o.kitchen.bucket.syp} usd={o.kitchen.bucket.usd}
+          icon={<ChefHat size={14} />} subtitle={`${o.kitchen.orderCount} طلب`}
+          skipped={bucketSkipped(o.kitchen.bucket)} />
+        <SummaryCard label="متجر" syp={o.store.bucket.syp} usd={o.store.bucket.usd}
+          icon={<Package size={14} />} subtitle={`${o.store.saleCount} عملية بيع`}
+          skipped={bucketSkipped(o.store.bucket)} />
+        <SummaryCard label="جلسات خاصة" syp={o.privateSessions.bucket.syp} usd={o.privateSessions.bucket.usd}
+          icon={<Activity size={14} />} subtitle={`${o.privateSessions.sessionCount} جلسة`}
+          skipped={bucketSkipped(o.privateSessions.bucket)} />
+      </div>
+      <div className="bg-[#1A1A1A] border border-[#252525] rounded-sm px-5 py-3 flex flex-wrap gap-6 font-mono text-[11px]">
+        <div>
+          <span className="text-[#555555] uppercase tracking-widest text-[10px]">جلسات الأعضاء</span>
+          <span className="mr-2 text-[#F0EDE6] tabular-nums">{o.inbody.gymMember}</span>
+        </div>
+        <div>
+          <span className="text-[#555555] uppercase tracking-widest text-[10px]">زيارات خارجية</span>
+          <span className="mr-2 text-[#F0EDE6] tabular-nums">{o.inbody.nonMember}</span>
+        </div>
+        <div>
+          <span className="text-[#555555] uppercase tracking-widest text-[10px]">جلسات باقات (legacy)</span>
+          <span className="mr-2 text-[#F0EDE6] tabular-nums">{o.inbody.packageSessions}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExpensesNetSection({
+  loading, expenses, summary,
+}: {
+  loading: boolean;
+  expenses: ReturnType<typeof useManagerOverview>["expenses"];
+  summary: ReturnType<typeof useManagerOverview>["summary"];
+}) {
+  if (loading && !expenses) return <div className="font-mono text-[10px] text-[#555555]">جاري التحميل…</div>;
+  if (!expenses || !summary) return null;
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        <SummaryCard label="إجمالي الإيرادات" syp={summary.totalRevenue.syp} usd={summary.totalRevenue.usd}
+          icon={<TrendingUp size={14} />} accent="green" skipped={bucketSkipped(summary.totalRevenue)} />
+        <SummaryCard label="إجمالي المصاريف" syp={expenses.total.syp} usd={expenses.total.usd}
+          icon={<TrendingDown size={14} />} accent="red" skipped={bucketSkipped(expenses.total)} />
+        <SummaryCard label="صافي الدخل" syp={summary.netIncome.syp} usd={summary.netIncome.usd}
+          icon={<DollarSign size={14} />} accent={summary.netIncome.syp >= 0 ? "green" : "red"}
+          skipped={bucketSkipped(summary.netIncome)} />
+      </div>
+      <div className="bg-[#1A1A1A] border border-[#252525] rounded-sm overflow-hidden">
+        <div className="px-5 py-2 border-b border-[#252525] bg-[#111111]">
+          <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">تفصيل المصاريف حسب الفئة</p>
+        </div>
+        {expenses.byCategory.length === 0 ? (
+          <EmptyTable label="لا توجد مصاريف في هذه الفترة" />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <THead cols={["الفئة", "العدد", "الإجمالي ل.س", "الإجمالي $", "صفوف بدون سعر صرف"]} />
+              <tbody className="divide-y divide-[#252525]/60">
+                {expenses.byCategory.map((c) => (
+                  <tr key={c.category} className="hover:bg-[#252525]/20 transition-colors">
+                    <td className="px-4 py-2.5 text-[#F0EDE6]">{getCategoryLabel(c.category)}</td>
+                    <td className="px-4 py-2.5 font-mono tabular-nums text-[#AAAAAA]">{c.count}</td>
+                    <td className="px-4 py-2.5 font-mono tabular-nums text-[#FF3333]" dir="ltr">{fmtSYP(c.bucket.syp)}</td>
+                    <td className="px-4 py-2.5 font-mono tabular-nums text-[#777777]" dir="ltr">{fmtUSD(c.bucket.usd)}</td>
+                    <td className="px-4 py-2.5 font-mono tabular-nums text-[#FF7A00]">{c.bucket.skippedUSD || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
+
+type OverviewSection = "revenue" | "subs" | "members" | "other" | "expensesNet";
 
 export default function ManagerDashboard() {
   const { user, signOut } = useAuth();
   const [showLogout, setShowLogout] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<ManagerSection, boolean>>({
-    sessions: false, subscriptions: false, inbody: false,
-    store: false, kitchen: false, expenses: false,
+    sessions: true, subscriptions: true, inbody: true,
+    store: true, kitchen: true, expenses: true,
+  });
+  const [ovCollapsed, setOvCollapsed] = useState<Record<OverviewSection, boolean>>({
+    revenue: false, subs: false, members: false, other: false, expensesNet: false,
   });
   const toggle = useCallback((s: ManagerSection) => setCollapsed((p) => ({ ...p, [s]: !p[s] })), []);
+  const toggleOv = useCallback((s: OverviewSection) => setOvCollapsed((p) => ({ ...p, [s]: !p[s] })), []);
   const handleLogout = useCallback(() => { setShowLogout(false); void signOut(); }, [signOut]);
+
+  const [range, setRange] = useState<ManagerDateRange>(() => makeDateRange("today"));
+  const overview = useManagerOverview(range);
 
   return (
     <div className="min-h-screen bg-void" dir="rtl">
@@ -901,6 +1491,68 @@ export default function ManagerDashboard() {
       </nav>
 
       <main className="max-w-[1280px] mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {/* Date range */}
+        <DateRangePicker range={range} setRange={setRange} />
+
+        {/* Live revenue summary cards */}
+        <Section
+          title={`نظرة عامة — ${range.label}`}
+          icon={<DollarSign size={18} className="text-[#F5C100]" />}
+          collapsed={ovCollapsed.revenue}
+          onToggle={() => toggleOv("revenue")}
+        >
+          <div className="space-y-3">
+            <RevenueSummaryCards loading={overview.loading} summary={overview.summary} />
+            <CashOnHandRow summary={overview.summary} />
+          </div>
+        </Section>
+
+        {/* Subscription revenue */}
+        <Section
+          title="إيرادات الاشتراكات"
+          icon={<Users size={18} className="text-[#F5C100]" />}
+          collapsed={ovCollapsed.subs}
+          onToggle={() => toggleOv("subs")}
+        >
+          <SubscriptionRevenueSection loading={overview.loading} subs={overview.subs} />
+        </Section>
+
+        {/* Member categories */}
+        <Section
+          title="فئات الأعضاء"
+          icon={<Users size={18} className="text-[#F5C100]" />}
+          collapsed={ovCollapsed.members}
+          onToggle={() => toggleOv("members")}
+        >
+          <MemberCategoriesSection loading={overview.loading} members={overview.members} />
+        </Section>
+
+        {/* Other income */}
+        <Section
+          title="إيرادات أخرى — InBody / المطبخ / المتجر / الجلسات الخاصة"
+          icon={<ShoppingBag size={18} className="text-[#F5C100]" />}
+          collapsed={ovCollapsed.other}
+          onToggle={() => toggleOv("other")}
+        >
+          <OtherIncomeSection loading={overview.loading} other={overview.other} />
+        </Section>
+
+        {/* Expenses + Net */}
+        <Section
+          title="المصاريف وصافي الدخل"
+          icon={<TrendingDown size={18} className="text-[#F5C100]" />}
+          collapsed={ovCollapsed.expensesNet}
+          onToggle={() => toggleOv("expensesNet")}
+        >
+          <ExpensesNetSection
+            loading={overview.loading}
+            expenses={overview.expenses}
+            summary={overview.summary}
+          />
+        </Section>
+
+        {/* Reception-style live KPI strip — kept for parity with the
+            cashier view, useful at a glance regardless of date range. */}
         <KPIStrip hideProfit={false} />
 
         <Section title="الجلسات" icon={<Clock size={18} className="text-[#F5C100]" />}

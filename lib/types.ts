@@ -26,14 +26,15 @@ export type PlanType =
 
 export type OfferType =
   | "none"
-  | "referral_4"   // bring 4+ friends → 1 month free
-  | "referral_9"   // bring 9+ friends → 2 months free
-  | "couple"       // 2 people on 1-month → $60 flat
-  | "corporate"    // 15% discount on any plan
-  | "college"      // 20% discount for university students
-  | "owner_family" // owner family — $20 × months
-  | "group_5"      // legacy — 5 people pay for 4 (kept for backward compat with old DB rows)
-  | "group_9";     // legacy — 9 people pay for 7 (kept for backward compat with old DB rows)
+  | "referral_4"          // bring 4+ friends → 1 month free
+  | "referral_9"          // bring 9+ friends → 2 months free
+  | "couple"              // 2 people on 1-month → $60 flat
+  | "corporate"           // 15% discount on any plan
+  | "college"             // 20% discount for university students
+  | "owner_family"        // owner family — $20 × months
+  | "custom_registration" // free / custom registration with manual amount + note
+  | "group_5"             // legacy — 5 people pay for 4 (kept for backward compat with old DB rows)
+  | "group_9";            // legacy — 9 people pay for 7 (kept for backward compat with old DB rows)
 
 export type PaymentStatus = "paid" | "partial" | "unpaid";
 export type SubStatus = "active" | "expired" | "frozen" | "cancelled";
@@ -54,21 +55,28 @@ export interface Subscription {
   paymentMethod: PaymentMethod;
   currency?: Currency;
   status: SubStatus;
+  privateCoachName?: string | null;
+  note?: string | null;
   createdAt: string;
   createdBy: string;
   lockedAt?: string;
 }
 
 // --- KITCHEN / FOOD ITEMS ---
-export type FoodItemCategory = "meals" | "breakfast" | "salads" | "drinks" | "snacks" | "other";
+export type FoodItemCategory = "meals" | "breakfast" | "salads" | "drinks" | "snacks" | "other" | "food";
 
 export interface FoodItem {
   id: string;
   name: string;
   category: FoodItemCategory;
+  /** Legacy single-currency cost. Prefer cost_syp / cost_usd. */
   cost?: number;
+  cost_syp?: number | null;
+  cost_usd?: number | null;
   price_syp: number;
   is_active: boolean;
+  description?: string | null;
+  sort_order?: number;
 }
 
 // --- STORE / INVENTORY ---
@@ -81,14 +89,19 @@ export type ProductCategory =
   | "fat_burner"
   | "health"
   | "focus"
+  | "accessory"
+  | "drink"
+  | "water"
   | "other";
 
 export interface Product {
   id: string;
   name: string;
   category: ProductCategory;
-  cost: number;
+  cost: number | null;
+  costCurrency?: Currency;
   price: number;
+  priceCurrency?: Currency;
   stock: number;
   lowStockThreshold: number;
   createdAt: string;
