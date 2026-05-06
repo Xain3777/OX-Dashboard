@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { LogIn, LogOut, Banknote, Clock, Lock, AlertTriangle } from "lucide-react";
+import { LogIn, LogOut, Banknote, Clock, AlertTriangle } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useStore, type LocalSession } from "@/lib/store-context";
 import { openCashSession, closeCashSession } from "@/lib/supabase/intake";
@@ -27,8 +27,6 @@ export default function CashSessionBlock() {
   const { user } = useAuth();
   const {
     localSession,
-    lastClosingCash,
-    lastClosedByName,
     setLocalSession,
     closeLocalSession,
     storeIncome,
@@ -39,7 +37,6 @@ export default function CashSessionBlock() {
     runningCash,
   } = useStore();
 
-  const [openingInput, setOpeningInput] = useState("");
   const [closingInput, setClosingInput] = useState("");
   const [discrepancyNote, setDiscrepancyNote] = useState("");
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
@@ -67,24 +64,24 @@ export default function CashSessionBlock() {
   async function handleOpen() {
     setMsg(null);
     if (!user) return;
-    const isHandoff = lastClosingCash > 0;
-    const openingOverride = isHandoff ? undefined : Math.max(0, Number(openingInput) || 0);
+    // Each session starts fresh at $0. The drawer is emptied to the safe
+    // between sessions, so opening cash is always zero — running total
+    // accumulates only this session's income.
     const r = await openCashSession(
       { id: user.id, displayName: user.displayName },
-      openingOverride
+      0
     );
     if (r.error) { setMsg({ kind: "err", text: r.error }); return; }
     const row = r.data!;
     const session: LocalSession = {
       id: String(row.id),
-      openingCash: Number(row.opening_cash ?? openingOverride ?? 0),
+      openingCash: 0,
       openedAt: String(row.opened_at ?? new Date().toISOString()),
       openedByName: user.displayName,
       status: "open",
     };
     setLocalSession(session);
-    setOpeningInput("");
-    setMsg({ kind: "ok", text: `فُتحت الجلسة — افتتاحي ${fmt(session.openingCash)}` });
+    setMsg({ kind: "ok", text: "فُتحت الجلسة" });
   }
 
   async function handleClose() {
@@ -139,44 +136,14 @@ export default function CashSessionBlock() {
 
       <div className="p-5 space-y-4">
         {!isOpen ? (
-          /* ── OPEN FORM ── */
-          <div className="space-y-3">
-            {lastClosedByName && (
-              <p className="font-mono text-[10px] text-[#555555] tracking-widest">
-                آخر جلسة بواسطة: <span className="text-[#777777]">{lastClosedByName}</span>
-              </p>
-            )}
-            {lastClosingCash > 0 ? (
-              <div className="flex items-center gap-2 p-3 bg-[#F5C100]/5 border border-[#F5C100]/20 clip-corner-sm">
-                <Lock size={14} className="text-[#F5C100]" />
-                <p className="font-mono text-xs text-[#AAAAAA] leading-snug">
-                  استلام من الجلسة السابقة — رصيد افتتاحي مقفل:{" "}
-                  <span className="text-[#F5C100] tabular-nums">{fmt(lastClosingCash)}</span>
-                </p>
-              </div>
-            ) : (
-              <>
-                <label className="block font-mono text-[11px] text-[#777777] tracking-widest">
-                  الرصيد الافتتاحي ($) — أول وردية اليوم
-                </label>
-                <input
-                  type="number"
-                  value={openingInput}
-                  onChange={(e) => setOpeningInput(e.target.value)}
-                  placeholder="0"
-                  className="ox-input w-full font-mono text-lg"
-                  dir="ltr"
-                />
-              </>
-            )}
-            <button
-              onClick={handleOpen}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-[#5CC45C]/15 border border-[#5CC45C]/30 text-[#5CC45C] font-display tracking-wider clip-corner-sm hover:bg-[#5CC45C]/25 transition-colors cursor-pointer"
-            >
-              <LogIn size={16} />
-              فتح الجلسة
-            </button>
-          </div>
+          /* ── OPEN FORM — single button, no opening-cash input ── */
+          <button
+            onClick={handleOpen}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-[#5CC45C]/15 border border-[#5CC45C]/30 text-[#5CC45C] font-display tracking-wider clip-corner-sm hover:bg-[#5CC45C]/25 transition-colors cursor-pointer"
+          >
+            <LogIn size={16} />
+            فتح الجلسة
+          </button>
         ) : (
           /* ── OPEN SESSION DASHBOARD ── */
           <>
@@ -190,9 +157,8 @@ export default function CashSessionBlock() {
               </div>
             </div>
 
-            <div className="border-t border-[#252525] pt-3 grid grid-cols-2 gap-3">
-              <Stat label="افتتاحي ($)"       value={fmt(localSession!.openingCash)} accent="silver" big />
-              <Stat label="إجمالي الخزنة ($)" value={fmt(runningCash)}               accent="gold"   big />
+            <div className="border-t border-[#252525] pt-3">
+              <Stat label="إجمالي الخزنة ($)" value={fmt(runningCash)} accent="gold" big />
             </div>
 
             {/* Close form */}
