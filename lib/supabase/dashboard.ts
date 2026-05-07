@@ -55,19 +55,27 @@ async function sumUSD(
   source?: string,
 ): Promise<number> {
   const supabase = supabaseBrowser();
+  // Pull currency and exchange_rate alongside the amount so we can normalize
+  // any row stored in SYP (kitchen sales today; potentially store sales /
+  // subs in the future) to USD. Without this, raw SYP totals were summed
+  // into USD aggregates — the kitchen-currency bug from ultrareview.
+  const select = `${col}, currency, exchange_rate`;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let q: any = supabase
     .from(table)
-    .select(col)
+    .select(select)
     .gte("created_at", since)
     .is("cancelled_at", null);
   if (source) q = q.eq("source", source);
   if (MEMBER_NAMED_TABLES.has(table)) q = q.not("member_name", "ilike", "%test%");
   const { data } = await q;
-  return (data ?? []).reduce(
-    (a: number, r: unknown) => a + Number((r as Record<string, unknown>)[col] ?? 0),
-    0,
-  );
+  return (data ?? []).reduce((a: number, r: unknown) => {
+    const row    = r as Record<string, unknown>;
+    const amount = Number(row[col] ?? 0);
+    const cur    = String(row.currency ?? "usd");
+    const rate   = Number(row.exchange_rate ?? 1) || 1;
+    return a + (cur === "syp" ? amount / rate : amount);
+  }, 0);
 }
 
 export async function fetchLiveKPI(): Promise<LiveKPI> {

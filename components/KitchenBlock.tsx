@@ -65,6 +65,11 @@ export default function KitchenBlock() {
     for (const { it, q } of lines) {
       const unitPrice = Number(it.price_syp);
       const total = Math.round(q * unitPrice);
+      // exchange_rate must be the LIVE rate, not 1. Stored alongside currency='syp'
+      // so that downstream USD aggregations (sumKitchenAsUSD, fetchLiveKPI,
+      // fetchSessionIncome) divide total / rate to recover USD. With rate=1 the
+      // raw SYP number was being summed into USD totals, inflating reported
+      // revenue by ~exchangeRate× — see ultrareview findings on KitchenBlock.
       const r = await pushSale({
         user: currentUser,
         productName: it.name,
@@ -72,7 +77,7 @@ export default function KitchenBlock() {
         unitPrice,
         total,
         currency: "syp",
-        exchangeRate: 1,
+        exchangeRate,
         source: "kitchen",
         paymentMethod: "cash",
       });
