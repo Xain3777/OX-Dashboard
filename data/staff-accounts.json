@@ -1,10 +1,7 @@
 [
-  { "id": "adham",      "email": "adham@ox.local",      "displayName": "كوتش ادهم", "role": "manager"   },
-  { "id": "reception1", "email": "reception1@ox.local", "displayName": "reception1", "role": "reception" },
-  { "id": "reception2", "email": "reception2@ox.local", "displayName": "reception2", "role": "reception" },
-  { "id": "reception3", "email": "reception3@ox.local", "displayName": "reception3", "role": "reception" },
-  { "id": "reception4", "email": "reception4@ox.local", "displayName": "reception4", "role": "reception" },
-  { "id": "reception5", "email": "reception5@ox.local", "displayName": "reception5", "role": "reception" },
-  { "id": "reception6", "email": "reception6@ox.local", "displayName": "reception6", "role": "reception" },
-  { "id": "reception7", "email": "reception7@ox.local", "displayName": "reception7", "role": "reception" }
+  { "id": "adham",   "email": "adham@ox.local",   "displayName": "كوتش ادهم",      "role": "manager"   },
+  { "id": "haidar",  "email": "haidar@ox.local",  "displayName": "حيدر",            "role": "reception" },
+  { "id": "morning", "email": "morning@ox.local", "displayName": "استقبال صباحي",  "role": "reception" },
+  { "id": "noon",    "email": "noon@ox.local",    "displayName": "استقبال ظهر",    "role": "reception" },
+  { "id": "night",   "email": "night@ox.local",   "displayName": "استقبال مسائي",  "role": "reception" }
 ]

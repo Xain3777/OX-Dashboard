@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { useCurrency } from "@/lib/currency-context";
 import { X, DollarSign } from "lucide-react";
 
@@ -11,6 +12,7 @@ export default function ExchangeRateModal() {
   const [err, setErr] = useState<string | null>(null);
 
   if (!showRateModal) return null;
+  if (typeof document === "undefined") return null;
 
   const handleSave = async () => {
     const val = parseInt(inputValue.replace(/,/g, ""), 10);
@@ -23,7 +25,9 @@ export default function ExchangeRateModal() {
     else closeRateModal();
   };
 
-  return (
+  // Portal-rendered to escape any ancestor stacking context (transform /
+  // filter on a parent flips position:fixed into position:absolute).
+  return createPortal(
     <div
       className="fixed inset-0 bg-void/80 backdrop-blur-sm flex items-center justify-center"
       style={{ zIndex: 200 }}
@@ -89,6 +93,7 @@ export default function ExchangeRateModal() {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

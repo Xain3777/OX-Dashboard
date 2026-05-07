@@ -38,6 +38,22 @@ const __dirname  = dirname(fileURLToPath(import.meta.url));
 const rosterPath = resolve(__dirname, "..", "data", "staff-accounts.json");
 const STAFF      = JSON.parse(readFileSync(rosterPath, "utf8"));
 
+// ── per-user passwords (gitignored, optional) ───────────────
+// staff-passwords.local.json is a flat { id: password } map. If a staff
+// id has an entry there, that password is used; otherwise DEFAULT_PASSWORD
+// applies. The file is gitignored so credentials stay on the local machine.
+const passwordsPath = resolve(__dirname, "..", "data", "staff-passwords.local.json");
+let PASSWORDS = {};
+try {
+  PASSWORDS = JSON.parse(readFileSync(passwordsPath, "utf8"));
+  console.log(`Loaded per-user passwords for: ${Object.keys(PASSWORDS).join(", ")}\n`);
+} catch {
+  console.log(`(no ${passwordsPath} found — falling back to SEED_DEFAULT_PASSWORD for all)\n`);
+}
+function passwordFor(id) {
+  return PASSWORDS[id] || DEFAULT_PASSWORD;
+}
+
 async function findUserByEmail(email) {
   // listUsers paginates; one page of 200 covers the seed list comfortably.
   const { data, error } = await admin.auth.admin.listUsers({ perPage: 200 });
@@ -45,14 +61,15 @@ async function findUserByEmail(email) {
   return data.users.find((u) => u.email === email);
 }
 
-async function ensureAuthUser(email, displayName, role) {
+async function ensureAuthUser(id, email, displayName, role) {
+  const password = passwordFor(id);
   const existing = await findUserByEmail(email);
   if (existing) {
     // Reset the password every run — the seed is the canonical authority.
     // Without this, an account that drifted out of sync (manual change,
     // sister-app reseed, etc.) stays broken even after the dashboard seed.
     const { error } = await admin.auth.admin.updateUserById(existing.id, {
-      password: DEFAULT_PASSWORD,
+      password,
       email_confirm: true,
       user_metadata: { display_name: displayName, role },
     });
@@ -62,7 +79,7 @@ async function ensureAuthUser(email, displayName, role) {
   }
   const { data, error } = await admin.auth.admin.createUser({
     email,
-    password: DEFAULT_PASSWORD,
+    password,
     email_confirm: true,
     user_metadata: { display_name: displayName, role },
   });
@@ -82,9 +99,9 @@ async function upsertProfile(id, displayName, role) {
 }
 
 async function main() {
-  console.log(`Seeding ${STAFF.length} staff accounts (default password: ${DEFAULT_PASSWORD})\n`);
+  console.log(`Seeding ${STAFF.length} staff accounts (default password fallback: ${DEFAULT_PASSWORD})\n`);
   for (const s of STAFF) {
-    const id = await ensureAuthUser(s.email, s.displayName, s.role);
+    const id = await ensureAuthUser(s.id, s.email, s.displayName, s.role);
     await upsertProfile(id, s.displayName, s.role);
     console.log(`  → profile ${s.role.padEnd(10)} ${s.displayName}`);
   }

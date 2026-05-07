@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { ListChecks, X, Undo2, ShoppingCart, Activity, Dumbbell } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { supabaseBrowser } from "@/lib/supabase/client";
@@ -63,23 +64,33 @@ export default function SessionTransactionsList() {
         return (data ?? []) as T[];
       };
 
-      type SaleRow   = { id: string; product_name: string; quantity: number; total: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
+      type SaleRow   = { id: string; product_name: string; quantity: number; total: number; currency: string | null; exchange_rate: number | null; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
       type SubRow    = { id: string; member_name: string; plan_type: string; paid_amount: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
       type InBodyRow = { id: string; member_name: string; session_type: string; amount: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
 
       const [sales, subs, inbody] = await Promise.all([
-        fetchTable<SaleRow>("sales",            "id, product_name, quantity, total, created_at, cancelled_at, cancelled_reason"),
+        fetchTable<SaleRow>("sales",            "id, product_name, quantity, total, currency, exchange_rate, created_at, cancelled_at, cancelled_reason"),
         fetchTable<SubRow>("gym_subscriptions", "id, member_name, plan_type, paid_amount, created_at, cancelled_at, cancelled_reason", true),
         fetchTable<InBodyRow>("inbody_sessions","id, member_name, session_type, amount, created_at, cancelled_at, cancelled_reason", true),
       ]);
 
       const all: Row[] = [
-        ...sales.map((s): Row => ({
-          id: s.id, kind: "sale", table: "sales",
-          label: `${s.quantity}× ${s.product_name}`,
-          amount: Number(s.total),
-          createdAt: s.created_at, cancelledAt: s.cancelled_at, cancelledReason: s.cancelled_reason,
-        })),
+        ...sales.map((s): Row => {
+          // Kitchen sales are stored as currency='syp'; the displayed amount
+          // must be converted to USD using the row's snapshot exchange_rate.
+          // Without this, a 14,000 SYP sale rendered as "$14,000.00" and
+          // inflated the session "دخل" total by ~rate× — see ultrareview.
+          const total = Number(s.total);
+          const cur   = String(s.currency ?? "usd");
+          const rate  = Number(s.exchange_rate ?? 1) || 1;
+          const amountUSD = cur === "syp" ? total / rate : total;
+          return {
+            id: s.id, kind: "sale", table: "sales",
+            label: `${s.quantity}× ${s.product_name}`,
+            amount: amountUSD,
+            createdAt: s.created_at, cancelledAt: s.cancelled_at, cancelledReason: s.cancelled_reason,
+          };
+        }),
         ...subs.map((s): Row => ({
           id: s.id, kind: "subscription", table: "gym_subscriptions",
           label: `${s.member_name} (${s.plan_type})`,
@@ -205,7 +216,11 @@ export default function SessionTransactionsList() {
         </div>
       )}
 
-      {confirming && (
+      {/* Modal rendered via portal to escape any ancestor stacking context.
+          Without the portal, an ancestor with `transform`, `filter`, or
+          `will-change` turns `position: fixed` into `position: absolute` and
+          the modal scrolls with the page / hides under siblings. */}
+      {confirming && typeof document !== "undefined" && createPortal(
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 backdrop-blur-sm" dir="rtl" onClick={() => !busy && setConfirming(null)}>
           <div className="bg-[#1A1A1A] border border-[#252525] p-6 max-w-sm w-full mx-4" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
@@ -240,7 +255,8 @@ export default function SessionTransactionsList() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

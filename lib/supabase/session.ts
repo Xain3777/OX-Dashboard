@@ -85,28 +85,35 @@ export async function getLastClosedSession(): Promise<{ id: string; actualCash: 
 
 export async function fetchSessionIncome(sessionId: string): Promise<SessionIncome> {
   const supabase = supabaseBrowser();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const sumCol = async (
+  // Sums an amount column to USD, normalizing rows stored in SYP via the
+  // row's snapshot exchange_rate. Without this, kitchen sales (currency='syp')
+  // were summed as raw SYP into USD totals — inflating the cashier's
+  // "المطبخ" tile and "إجمالي الخزنة" by ~exchangeRate× per ultrareview.
+  const sumAsUSD = async (
     table: string,
-    col: string,
+    amountCol: string,
     extra?: { col: string; val: string },
     excludeTestMembers?: boolean,
   ): Promise<number> => {
+    const select = `${amountCol}, currency, exchange_rate`;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let q: any = supabase.from(table).select(col).eq("cash_session_id", sessionId).is("cancelled_at", null);
+    let q: any = supabase.from(table).select(select).eq("cash_session_id", sessionId).is("cancelled_at", null);
     if (extra) q = q.eq(extra.col, extra.val);
     if (excludeTestMembers) q = q.not("member_name", "ilike", "%test%");
     const { data } = await q;
-    return (data ?? []).reduce(
-      (a: number, r: unknown) => a + Number((r as Record<string, unknown>)[col] ?? 0),
-      0
-    );
+    return (data ?? []).reduce((a: number, r: unknown) => {
+      const row = r as Record<string, unknown>;
+      const amount = Number(row[amountCol] ?? 0);
+      const cur    = String(row.currency ?? "usd");
+      const rate   = Number(row.exchange_rate ?? 1) || 1;
+      return a + (cur === "syp" ? amount / rate : amount);
+    }, 0);
   };
   const [sub, store, meals, inbody] = await Promise.all([
-    sumCol("gym_subscriptions", "paid_amount", undefined, true),
-    sumCol("sales",             "total", { col: "source", val: "store" }),
-    sumCol("sales",             "total", { col: "source", val: "kitchen" }),
-    sumCol("inbody_sessions",   "amount", undefined, true),
+    sumAsUSD("gym_subscriptions", "paid_amount", undefined, true),
+    sumAsUSD("sales",             "total", { col: "source", val: "store" }),
+    sumAsUSD("sales",             "total", { col: "source", val: "kitchen" }),
+    sumAsUSD("inbody_sessions",   "amount", undefined, true),
   ]);
   return {
     subsIncome:   Number(sub.toFixed(2)),

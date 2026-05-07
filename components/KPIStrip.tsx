@@ -8,6 +8,7 @@ import {
   Banknote,
   TrendingUp,
   Package,
+  CreditCard,
 } from "lucide-react";
 import { useLiveKPI } from "@/lib/supabase/dashboard";
 
@@ -71,7 +72,7 @@ export default function KPIStrip({ hideProfit }: KPIStripProps) {
       className="w-full border-t-2 border-gold pt-4"
       data-loading={loading}
     >
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8">
         <KPICard
           label="إيرادات اليوم"
           value={fmtUSD(kpi.todayRevenueUSD)}
@@ -79,30 +80,45 @@ export default function KPIStrip({ hideProfit }: KPIStripProps) {
           accent="gold"
         />
         <KPICard
-          label="الأعضاء النشطين"
-          value={String(kpi.activeMembers)}
-          icon={<Users size={14} />}
+          label={`غير مكتمل الدفع${kpi.partiallyPaidRemainingUSD > 0 ? ` — متبقي ${fmtUSD(kpi.partiallyPaidRemainingUSD)}` : ""}`}
+          value={String(kpi.partiallyPaidCount)}
+          icon={<CreditCard size={14} />}
+          accent={kpi.partiallyPaidCount > 0 ? "gold" : "default"}
+          badge={kpi.partiallyPaidCount > 0 ? <GoldBadge count={kpi.partiallyPaidCount} /> : undefined}
         />
-        <KPICard
-          label="تنتهي هذا الأسبوع"
-          value={String(kpi.expiringThisWeek)}
-          icon={<CalendarClock size={14} />}
-          accent={kpi.expiringThisWeek > 0 ? "gold" : "default"}
-          badge={kpi.expiringThisWeek > 0 ? <GoldBadge count={kpi.expiringThisWeek} /> : undefined}
-        />
-        <KPICard
-          label="اشتراكات منتهية"
-          value={String(kpi.endedCount)}
-          icon={<CalendarX size={14} />}
-          accent={kpi.endedCount > 0 ? "red" : "default"}
-          badge={kpi.endedCount > 0 ? <RedBadge count={kpi.endedCount} /> : undefined}
-        />
-        <KPICard
-          label="النقد في الخزنة"
-          value={fmtUSD(kpi.cashOnHandUSD)}
-          icon={<Banknote size={14} />}
-          accent="gold"
-        />
+        {!hideProfit && (
+          <KPICard
+            label="الأعضاء النشطين"
+            value={String(kpi.activeMembers)}
+            icon={<Users size={14} />}
+          />
+        )}
+        {!hideProfit && (
+          <KPICard
+            label="تنتهي هذا الأسبوع"
+            value={String(kpi.expiringThisWeek)}
+            icon={<CalendarClock size={14} />}
+            accent={kpi.expiringThisWeek > 0 ? "gold" : "default"}
+            badge={kpi.expiringThisWeek > 0 ? <GoldBadge count={kpi.expiringThisWeek} /> : undefined}
+          />
+        )}
+        {!hideProfit && (
+          <KPICard
+            label="اشتراكات منتهية"
+            value={String(kpi.endedCount)}
+            icon={<CalendarX size={14} />}
+            accent={kpi.endedCount > 0 ? "red" : "default"}
+            badge={kpi.endedCount > 0 ? <RedBadge count={kpi.endedCount} /> : undefined}
+          />
+        )}
+        {!hideProfit && (
+          <KPICard
+            label="النقد في الخزنة"
+            value={fmtUSD(kpi.cashOnHandUSD)}
+            icon={<Banknote size={14} />}
+            accent="gold"
+          />
+        )}
         {!hideProfit && (
           <KPICard
             label="الإيرادات الشهرية"

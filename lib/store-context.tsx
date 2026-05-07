@@ -18,6 +18,13 @@ import { generateId, calculateRemainingDays } from "./business-logic";
 import { useAuth } from "./auth-context";
 import { supabaseBrowser } from "./supabase/client";
 import { fetchSessionIncome, SessionIncome, getActiveSession, getLastClosedSession } from "./supabase/session";
+import {
+  persistProductPrice,
+  persistProductInsert,
+  persistFoodItemInsert,
+  persistFoodItemUpdate,
+  persistFoodItemDelete,
+} from "./supabase/intake";
 
 // ─── InBody ───────────────────────────────────────────────────────────────────
 
@@ -112,13 +119,14 @@ export interface StoreContextType extends StoreState {
   reverseSale: (saleId: string, reason?: string) => void;
   cancelSale: (id: string) => void;
   updateProductCost: (productId: string, cost: number) => void;
-  updateProductPrice: (productId: string, cost: number, price: number) => void;
+  updateProductPrice: (productId: string, cost: number, price: number) => Promise<{ error?: string }>;
   adjustStock: (productId: string, delta: number) => void;
-  addProduct: (product: Omit<Product, "id" | "createdAt">) => void;
-  addFoodItem: (item: Omit<FoodItem, "id">) => void;
-  updateFoodItem: (id: string, updates: Partial<FoodItem>) => void;
-  removeFoodItem: (id: string) => void;
+  addProduct: (product: Omit<Product, "id" | "createdAt">) => Promise<{ error?: string }>;
+  addFoodItem: (item: Omit<FoodItem, "id">) => Promise<{ error?: string }>;
+  updateFoodItem: (id: string, updates: Partial<FoodItem>) => Promise<{ error?: string }>;
+  removeFoodItem: (id: string) => Promise<{ error?: string }>;
   addSubscription: (sub: Subscription) => void;
+  replaceSubscription: (id: string, sub: Subscription) => void;
   cancelSubscriptionLocal: (id: string) => void;
   addInBodySession: (session: InBodySession) => void;
   cancelInBodySession: (id: string) => void;
@@ -201,6 +209,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       id: String(row.id),
       memberId: String(row.created_by ?? ""),
       memberName: String(row.member_name ?? ""),
+      phone: row.phone == null ? null : String(row.phone),
       planType: String(row.plan_type ?? "1_month") as PlanType,
       offer: String(row.offer ?? "none") as OfferType,
       startDate: String(row.start_date ?? ""),
@@ -212,6 +221,8 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       paymentMethod: String(row.payment_method ?? "cash") as PaymentMethod,
       currency: String(row.currency ?? "usd") as Currency,
       status: String(row.status ?? "active") as SubStatus,
+      privateCoachName: row.private_coach_name == null ? null : String(row.private_coach_name),
+      note: row.note == null ? null : String(row.note),
       createdAt: String(row.created_at ?? ""),
       createdBy: String(row.created_by ?? ""),
       lockedAt: String(row.created_at ?? ""),
@@ -273,13 +284,19 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
     const foodRows = (foodRes.data ?? []) as Row[];
     const foodItems: FoodItem[] =
       foodRows.length > 0
-        ? foodRows.map((row) => ({
-            id: String(row.id),
-            name: String(row.name ?? ""),
-            category: String(row.category ?? "other") as FoodItemCategory,
-            price_usd: Number(row.price_usd ?? 0),
-            is_active: !!row.is_active,
-          }))
+        ? foodRows
+            .map((row) => ({
+              id: String(row.id),
+              name: String(row.name ?? ""),
+              category: String(row.category ?? "other") as FoodItemCategory,
+              cost_syp: row.cost_syp == null ? null : Number(row.cost_syp),
+              cost_usd: row.cost_usd == null ? null : Number(row.cost_usd),
+              price_syp: Number(row.price_syp ?? 0),
+              is_active: !!row.is_active,
+              description: row.description == null ? null : String(row.description),
+              sort_order: row.sort_order == null ? 0 : Number(row.sort_order),
+            }))
+            .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name))
         : FOOD_ITEMS;
 
     const productRows = (productsRes.data ?? []) as Row[];
@@ -289,8 +306,10 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
             id: String(row.id),
             name: String(row.name ?? ""),
             category: String(row.category ?? "other") as Product["category"],
-            cost: Number(row.cost ?? 0),
+            cost: row.cost == null ? null : Number(row.cost),
+            costCurrency: String(row.cost_currency ?? "usd") as Currency,
             price: Number(row.price ?? 0),
+            priceCurrency: String(row.price_currency ?? "usd") as Currency,
             stock: Number(row.stock ?? 0),
             lowStockThreshold: Number(row.low_stock_threshold ?? 5),
             createdAt: String(row.created_at ?? ""),
@@ -326,13 +345,14 @@ const StoreContext = createContext<StoreContextType>({
   reverseSale: () => {},
   cancelSale: () => {},
   updateProductCost: () => {},
-  updateProductPrice: () => {},
+  updateProductPrice: async () => ({}),
   adjustStock: () => {},
-  addProduct: () => {},
-  addFoodItem: () => {},
-  updateFoodItem: () => {},
-  removeFoodItem: () => {},
+  addProduct: async () => ({}),
+  addFoodItem: async () => ({}),
+  updateFoodItem: async () => ({}),
+  removeFoodItem: async () => ({}),
   addSubscription: () => {},
+  replaceSubscription: () => {},
   cancelSubscriptionLocal: () => {},
   addInBodySession: () => {},
   cancelInBodySession: () => {},
@@ -445,7 +465,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }));
   }, [setState]);
 
-  const updateProductPrice = useCallback((productId: string, cost: number, price: number) => {
+  const updateProductPrice = useCallback(async (productId: string, cost: number, price: number): Promise<{ error?: string }> => {
     const entry: ActivityEntry = {
       id: generateId(),
       type: "price_edit",
@@ -455,12 +475,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       userName: "المدير",
       timestamp: new Date().toISOString(),
     };
+    // Snapshot the prior product so we can roll back on RLS / network failure.
+    const prevProduct = stateRef.current.products.find((p) => p.id === productId);
     setState((prev) => ({
       ...prev,
       products: prev.products.map((p) => (p.id === productId ? { ...p, cost, price } : p)),
       activityFeed: [entry, ...prev.activityFeed].slice(0, 100),
     }));
-  }, [setState]);
+    if (!user) return { error: "يجب تسجيل الدخول" };
+    const r = await persistProductPrice(productId, price, { id: user.id, displayName: user.displayName });
+    if (r.error) {
+      // Roll back local optimistic update.
+      if (prevProduct) {
+        setState((prev) => ({
+          ...prev,
+          products: prev.products.map((p) => (p.id === productId ? prevProduct : p)),
+        }));
+      }
+      return { error: r.error };
+    }
+    return {};
+  }, [setState, user]);
 
   const adjustStock = useCallback((productId: string, delta: number) => {
     setState((prev) => ({
@@ -471,33 +506,114 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }));
   }, [setState]);
 
-  const addProduct = useCallback((product: Omit<Product, "id" | "createdAt">) => {
+  const addProduct = useCallback(async (product: Omit<Product, "id" | "createdAt">): Promise<{ error?: string }> => {
+    if (!user) return { error: "يجب تسجيل الدخول" };
+    const r = await persistProductInsert({
+      user: { id: user.id, displayName: user.displayName },
+      name: product.name,
+      category: product.category,
+      price: product.price,
+      priceCurrency: product.priceCurrency,
+      cost: product.cost,
+      costCurrency: product.costCurrency,
+      stock: product.stock,
+      lowStockThreshold: product.lowStockThreshold,
+    });
+    if (r.error || !r.data) return { error: r.error ?? "تعذّر حفظ المنتج" };
+    const row = r.data;
+    const rowCost = row.cost == null ? null : Number(row.cost);
     const full: Product = {
-      ...product,
-      id: generateId(),
-      createdAt: new Date().toISOString().split("T")[0],
+      id: String(row.id),
+      name: String(row.name ?? product.name),
+      category: String(row.category ?? product.category) as Product["category"],
+      cost: rowCost ?? product.cost ?? null,
+      costCurrency: String(row.cost_currency ?? product.costCurrency ?? "usd") as Currency,
+      price: Number(row.price ?? product.price),
+      priceCurrency: String(row.price_currency ?? product.priceCurrency ?? "usd") as Currency,
+      stock: Number(row.stock ?? product.stock ?? 0),
+      lowStockThreshold: Number(row.low_stock_threshold ?? product.lowStockThreshold ?? 3),
+      createdAt: String(row.created_at ?? new Date().toISOString().split("T")[0]),
     };
     setState((prev) => ({ ...prev, products: [...prev.products, full] }));
-  }, [setState]);
+    return {};
+  }, [setState, user]);
 
-  const addFoodItem = useCallback((item: Omit<FoodItem, "id">) => {
-    const full: FoodItem = { ...item, id: `food-${generateId()}` };
+  const addFoodItem = useCallback(async (item: Omit<FoodItem, "id">): Promise<{ error?: string }> => {
+    if (!user) return { error: "يجب تسجيل الدخول" };
+    const r = await persistFoodItemInsert({
+      user: { id: user.id, displayName: user.displayName },
+      name: item.name,
+      category: item.category,
+      priceSYP: item.price_syp,
+      costSYP: item.cost_syp ?? (item.cost ?? null),
+      costUSD: item.cost_usd ?? null,
+      description: item.description ?? null,
+      sortOrder: item.sort_order ?? 0,
+      isActive: item.is_active,
+    });
+    if (r.error || !r.data) return { error: r.error ?? "تعذّر حفظ الصنف" };
+    const row = r.data;
+    const full: FoodItem = {
+      id: String(row.id),
+      name: String(row.name ?? item.name),
+      category: String(row.category ?? item.category) as FoodItem["category"],
+      cost_syp: row.cost_syp == null ? null : Number(row.cost_syp),
+      cost_usd: row.cost_usd == null ? null : Number(row.cost_usd),
+      price_syp: Number(row.price_syp ?? item.price_syp),
+      is_active: !!row.is_active,
+      description: row.description == null ? null : String(row.description),
+      sort_order: row.sort_order == null ? 0 : Number(row.sort_order),
+    };
     setState((prev) => ({ ...prev, foodItems: [...prev.foodItems, full] }));
-  }, [setState]);
+    return {};
+  }, [setState, user]);
 
-  const updateFoodItem = useCallback((id: string, updates: Partial<FoodItem>) => {
-    setState((prev) => ({
-      ...prev,
-      foodItems: prev.foodItems.map((f) => (f.id === id ? { ...f, ...updates } : f)),
+  const updateFoodItem = useCallback(async (id: string, updates: Partial<FoodItem>): Promise<{ error?: string }> => {
+    if (!user) return { error: "يجب تسجيل الدخول" };
+    const prev = stateRef.current.foodItems.find((f) => f.id === id);
+    // Optimistic: apply the partial update locally first, roll back on RLS rejection.
+    setState((s) => ({
+      ...s,
+      foodItems: s.foodItems.map((f) => (f.id === id ? { ...f, ...updates } : f)),
     }));
-  }, [setState]);
+    const r = await persistFoodItemUpdate({
+      user: { id: user.id, displayName: user.displayName },
+      id,
+      fields: {
+        name: updates.name,
+        category: updates.category,
+        priceSYP: updates.price_syp,
+        costSYP: updates.cost_syp,
+        costUSD: updates.cost_usd,
+        description: updates.description,
+        sortOrder: updates.sort_order,
+        isActive: updates.is_active,
+      },
+    });
+    if (r.error) {
+      if (prev) setState((s) => ({
+        ...s,
+        foodItems: s.foodItems.map((f) => (f.id === id ? prev : f)),
+      }));
+      return { error: r.error };
+    }
+    return {};
+  }, [setState, user]);
 
-  const removeFoodItem = useCallback((id: string) => {
-    setState((prev) => ({
-      ...prev,
-      foodItems: prev.foodItems.filter((f) => f.id !== id),
-    }));
-  }, [setState]);
+  const removeFoodItem = useCallback(async (id: string): Promise<{ error?: string }> => {
+    if (!user) return { error: "يجب تسجيل الدخول" };
+    const prev = stateRef.current.foodItems.find((f) => f.id === id);
+    setState((s) => ({ ...s, foodItems: s.foodItems.filter((f) => f.id !== id) }));
+    const r = await persistFoodItemDelete({
+      user: { id: user.id, displayName: user.displayName },
+      id,
+    });
+    if (r.error) {
+      if (prev) setState((s) => ({ ...s, foodItems: [...s.foodItems, prev] }));
+      return { error: r.error };
+    }
+    return {};
+  }, [setState, user]);
 
   const addInBodySession = useCallback((session: InBodySession) => {
     const entry: ActivityEntry = {
@@ -590,6 +706,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       subscriptions: prev.subscriptions.map((s) =>
         s.id === id ? { ...s, status: "cancelled" as const } : s
       ),
+    }));
+  }, [setState]);
+
+  const replaceSubscription = useCallback((id: string, sub: Subscription) => {
+    setState((prev) => ({
+      ...prev,
+      subscriptions: prev.subscriptions.map((s) => (s.id === id ? sub : s)),
     }));
   }, [setState]);
 
@@ -690,6 +813,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     updateFoodItem,
     removeFoodItem,
     addSubscription,
+    replaceSubscription,
     cancelSubscriptionLocal,
     addInBodySession,
     cancelInBodySession,

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { ScanBarcode, X, Search, CheckCircle } from "lucide-react";
 
 // All catalog items merged for barcode lookup
@@ -128,8 +129,10 @@ export default function BarcodeScanner({ onItemFound }: BarcodeScannerProps) {
         باركود
       </button>
 
-      {/* Modal */}
-      {isOpen && (
+      {/* Modal — rendered through a portal so an ancestor's transform /
+          filter / will-change can't trap position:fixed inside its
+          stacking context. */}
+      {isOpen && typeof document !== "undefined" && createPortal(
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" dir="rtl">
           <div className="bg-[#1A1A1A] border border-[#252525] rounded-sm w-full max-w-md mx-4 animate-fade-in">
             {/* Header */}
@@ -223,7 +226,8 @@ export default function BarcodeScanner({ onItemFound }: BarcodeScannerProps) {
               )}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );
