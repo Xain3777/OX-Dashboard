@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { createPortal } from "react-dom";
 import {
   type Subscription,
   PlanType,
@@ -1844,8 +1845,9 @@ export default function SubscriptionsBlock() {
           </div>
         )}
 
-        {/* ── Edit subscription modal ───────────────────────────────────── */}
-        {editSub && editForm && (
+        {/* ── Edit subscription modal — portal-rendered so it can't be
+              trapped inside an ancestor's stacking context ─────────────── */}
+        {editSub && editForm && typeof document !== "undefined" && createPortal(
           <div className="fixed inset-0 z-[150] flex items-center justify-center bg-void/80 backdrop-blur-sm" dir="rtl">
             <div className="bg-charcoal border border-gunmetal rounded clip-corner p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto" style={{ borderTop: "3px solid #F5C100" }}>
               <div className="flex items-center justify-between mb-5">
@@ -1996,7 +1998,8 @@ export default function SubscriptionsBlock() {
                 </div>
               </form>
             </div>
-          </div>
+          </div>,
+          document.body
         )}
 
       </section>
