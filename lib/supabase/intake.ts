@@ -382,15 +382,19 @@ export async function updateSubscription(
     console.log("Supabase update payload:", { table: "gym_subscriptions", id, payload: mapped });
 
     const supabase = supabaseBrowser();
+    // .maybeSingle() — not .single() — so an RLS-blocked update returns
+    // data=null cleanly instead of throwing the cryptic
+    // "Cannot coerce the result to a single JSON object" error.
+    // The post-check below converts that into a localized message.
     const { data, error } = await supabase
       .from("gym_subscriptions")
       .update(mapped)
       .eq("id", id)
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) { logError("gym_subscriptions", "update", error); return { error: error.message }; }
-    if (!data)  { logError("gym_subscriptions", "update", "no row returned"); return { error: "RLS rejected update" }; }
+    if (!data)  { logError("gym_subscriptions", "update", "no row returned"); return { error: "تعذّر تحديث الاشتراك — تحقق من الصلاحيات أو أن الصف لم يُحذف" }; }
     logSuccess("gym_subscriptions", "update", data);
 
     await pushActivity({
