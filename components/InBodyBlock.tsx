@@ -15,7 +15,7 @@ function fmtUSD(n: number) { return `$${n.toFixed(2)}`; }
 
 // ── Member search ─────────────────────────────────────────────────────────────
 
-type DbMember = { id: string; name: string };
+type DbMember = { id: string; name: string; phone: string | null };
 
 function MemberSearch({
   value,
@@ -33,7 +33,15 @@ function MemberSearch({
   const results = useMemo(() => {
     if (!query.trim()) return members.slice(0, 8);
     const q = query.toLowerCase();
-    return members.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
+    // Match by name OR phone substring — phone is not displayed in the
+    // dropdown to keep it clean, but receptionists can search by either.
+    return members
+      .filter(
+        (m) =>
+          m.name.toLowerCase().includes(q) ||
+          (m.phone ?? "").toLowerCase().includes(q)
+      )
+      .slice(0, 8);
   }, [query, members]);
 
   const selected = members.find((m) => m.id === value);
@@ -91,19 +99,24 @@ export default function InBodyBlock() {
 
   useEffect(() => {
     const supabase = supabaseBrowser();
-    // The shared DB uses sister-app's `members` shape (auth_id, full_name,
-    // role, ...) since its RESET_AND_SEED replaced the older dashboard
-    // schema. Players have role='player'; staff are excluded.
+    // Load every row in the members table — receptionists need to attach
+    // an InBody session to anyone who walks in, including coaches and
+    // staff who occasionally use the machine for themselves. The earlier
+    // role='player' filter was too restrictive and hid most Arabic-named
+    // entries (which happen to be coaches in this dev DB).
     supabase
       .from("members")
-      .select("id, full_name, role")
-      .eq("role", "player")
+      .select("id, full_name, phone")
       .order("full_name")
       .then(({ data }) => {
         if (!data) return;
-        const rows = (data as Array<{ id: string; full_name: string }>).map(
-          (m) => ({ id: m.id, name: m.full_name })
-        );
+        const rows = (
+          data as Array<{ id: string; full_name: string; phone: string | null }>
+        ).map((m) => ({
+          id: m.id,
+          name: m.full_name,
+          phone: m.phone ?? null,
+        }));
         setMembers(rows);
       });
   }, []);
