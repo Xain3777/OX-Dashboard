@@ -3,6 +3,20 @@
 import type { PaymentStatus } from "@/lib/types";
 import { calculateRemaining, derivePaymentStatus } from "@/lib/business-logic";
 
+// Normalize a free-form decimal string so typing on Arabic / Persian
+// keyboards "just works". Without this, `<input type="number">` silently
+// rejects Arabic-Indic digits (٠-٩) — receptionists end up only able to
+// nudge the value via the browser's 0.01-step spinner arrows because
+// every keystroke vanishes. Strips everything that isn't a digit or
+// a decimal point, and keeps only the first decimal point.
+function sanitizeDecimal(input: string): string {
+  return input
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660)) // Arabic-Indic
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06F0)) // Eastern Arabic-Indic / Persian
+    .replace(/[^0-9.]/g, "")
+    .replace(/(\..*)\./g, "$1");
+}
+
 // Shared payment-fields widget. One component wired across every offer
 // form (normal / private / couple / referral / corporate / college /
 // owner_family / custom_registration) so the rules
@@ -77,27 +91,31 @@ export default function PaymentFields({
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div>
           <label className={labelCls}>{totalLabel} ({currencyLabel})</label>
+          {/* type=text + inputMode=decimal — keeps the mobile numeric keypad
+              while letting users type freely on Arabic keyboards. type=number
+              rejects Arabic-Indic digits silently, which made the spinner
+              arrows the only working way to change the value. */}
           <input
-            type="number"
-            min="0"
-            step="0.01"
+            type="text"
+            inputMode="decimal"
             dir="ltr"
+            placeholder="0.00"
             disabled={totalLocked}
             className={`${inputCls} ${totalLocked ? "opacity-70 cursor-not-allowed" : ""}`}
             value={totalAmount}
-            onChange={(e) => onTotalChange(e.target.value)}
+            onChange={(e) => onTotalChange(sanitizeDecimal(e.target.value))}
           />
         </div>
         <div>
           <label className={labelCls}>المدفوع ({currencyLabel})</label>
           <input
-            type="number"
-            min="0"
-            step="0.01"
+            type="text"
+            inputMode="decimal"
             dir="ltr"
+            placeholder="0.00"
             className={inputCls}
             value={paidAmount}
-            onChange={(e) => onPaidChange(e.target.value)}
+            onChange={(e) => onPaidChange(sanitizeDecimal(e.target.value))}
           />
         </div>
         <div>
