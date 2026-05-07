@@ -33,6 +33,10 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# local-only seed credentials — staff passwords for the seed script.
+# Stays on each developer's machine; never committed.
+data/staff-passwords.local.json
+
 # vercel
 .vercel
 
