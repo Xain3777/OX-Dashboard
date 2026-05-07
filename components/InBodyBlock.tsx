@@ -15,7 +15,17 @@ function fmtUSD(n: number) { return `$${n.toFixed(2)}`; }
 
 // ── Member search ─────────────────────────────────────────────────────────────
 
-type DbMember = { id: string; name: string; phone: string | null };
+// `id` is a synthetic dropdown key (lower(name)::phone) since
+// gym_subscriptions on prod has member_id=NULL for almost every row —
+// we can't rely on a stable UUID. `memberId` carries the real
+// members.id when it happens to be present, passed through to
+// pushInBody so the inbody_session row gets a proper FK when possible.
+type DbMember = {
+  id: string;
+  name: string;
+  phone: string | null;
+  memberId: string | null;
+};
 
 function MemberSearch({
   value,
@@ -108,25 +118,39 @@ export default function InBodyBlock() {
 
   useEffect(() => {
     const supabase = supabaseBrowser();
-    // Load every row in the members table — receptionists need to attach
-    // an InBody session to anyone who walks in, including coaches and
-    // staff who occasionally use the machine for themselves. The earlier
-    // role='player' filter was too restrictive and hid most Arabic-named
-    // entries (which happen to be coaches in this dev DB).
+    // Source the dropdown from gym_subscriptions.member_name (the real
+    // paying-customer roster) rather than public.members. On prod the
+    // members table is owned/reseeded by the sister app and contains
+    // gym staff (coaches/reception) — not customers. The 162+ actual
+    // customers live as snapshot rows in gym_subscriptions.
+    //
+    // Dedupes by (lower(name), phone) since the same customer can have
+    // many historical subscription rows. Excludes cancelled subs and
+    // "%test%" entries to keep dev / QA names out of the dropdown.
     supabase
-      .from("members")
-      .select("id, full_name, phone")
-      .order("full_name")
+      .from("gym_subscriptions")
+      .select("member_id, member_name, phone")
+      .is("cancelled_at", null)
+      .not("member_name", "ilike", "%test%")
+      .order("member_name")
       .then(({ data }) => {
         if (!data) return;
-        const rows = (
-          data as Array<{ id: string; full_name: string; phone: string | null }>
-        ).map((m) => ({
-          id: m.id,
-          name: m.full_name,
-          phone: m.phone ?? null,
-        }));
-        setMembers(rows);
+        type Row = { member_id: string | null; member_name: string | null; phone: string | null };
+        const seen = new Map<string, DbMember>();
+        for (const r of (data as Row[])) {
+          const name = (r.member_name ?? "").trim();
+          if (!name) continue;
+          const phone = r.phone ?? null;
+          const key = name.toLowerCase() + "::" + (phone ?? "");
+          if (seen.has(key)) continue;
+          seen.set(key, {
+            id: key,
+            name,
+            phone,
+            memberId: r.member_id ?? null,
+          });
+        }
+        setMembers(Array.from(seen.values()));
       });
   }, []);
 
@@ -165,9 +189,16 @@ export default function InBodyBlock() {
   async function handleRecord() {
     setError(""); setSuccess(false);
     let name = "";
+    let realMemberId: string | undefined = undefined;
     if (memberType === "gym_member") {
       if (!memberId) { setError("اختر عضواً من القائمة."); return; }
       name = memberName;
+      // `memberId` here is the synthetic dropdown key (name::phone),
+      // not the real UUID. The real UUID (when known) lives on the
+      // selected DbMember.memberId field — null for subscription-only
+      // customers, which is most of prod.
+      const selected = members.find((m) => m.id === memberId);
+      realMemberId = selected?.memberId ?? undefined;
     } else {
       if (!guestName.trim()) { setError("أدخل اسم الزائر."); return; }
       name = guestName.trim();
@@ -176,7 +207,7 @@ export default function InBodyBlock() {
 
     const r = await pushInBody({
       user: { id: user.id, displayName: user.displayName },
-      memberId: memberType === "gym_member" ? memberId : undefined,
+      memberId: memberType === "gym_member" ? realMemberId : undefined,
       memberName: name,
       memberType,
       amountUSD: priceUSD,
@@ -189,7 +220,7 @@ export default function InBodyBlock() {
     const session: InBodySession = {
       id: String(row.id),
       memberType,
-      memberId: memberType === "gym_member" ? memberId : undefined,
+      memberId: memberType === "gym_member" ? realMemberId : undefined,
       memberName: name,
       priceUSD,
       priceSYP: Math.round(priceUSD * exchangeRate),
