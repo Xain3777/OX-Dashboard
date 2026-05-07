@@ -78,6 +78,29 @@ async function sumUSD(
   }, 0);
 }
 
+// Sum item_sales.amount_usd directly. The amount_usd column is GENERATED
+// from each row's own exchange_rate_to_syp snapshot, so historical totals
+// stay correct when the live rate changes. No per-row conversion math
+// needed in the app — the DB does it once at write time.
+async function sumItemSalesUSD(
+  since: string,
+  source?: "kitchen" | "store",
+): Promise<number> {
+  const supabase = supabaseBrowser();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let q: any = supabase
+    .from("item_sales")
+    .select("amount_usd")
+    .gte("created_at", since)
+    .is("cancelled_at", null);
+  if (source) q = q.eq("source", source);
+  const { data } = await q;
+  return (data ?? []).reduce(
+    (a: number, r: unknown) => a + Number((r as Record<string, unknown>).amount_usd ?? 0),
+    0,
+  );
+}
+
 export async function fetchLiveKPI(): Promise<LiveKPI> {
   const supabase = supabaseBrowser();
   const today = startOfTodayISO();
@@ -100,12 +123,12 @@ export async function fetchLiveKPI(): Promise<LiveKPI> {
     partiallyPaid,
   ] = await Promise.all([
     sumUSD("gym_subscriptions", "paid_amount", today),
-    sumUSD("sales",           "total",       today, "store"),
-    sumUSD("sales",           "total",       today, "kitchen"),
+    sumItemSalesUSD(today, "store"),
+    sumItemSalesUSD(today, "kitchen"),
     sumUSD("inbody_sessions", "amount",      today),
     sumUSD("gym_subscriptions", "paid_amount", month),
-    sumUSD("sales",           "total",       month, "store"),
-    sumUSD("sales",           "total",       month, "kitchen"),
+    sumItemSalesUSD(month, "store"),
+    sumItemSalesUSD(month, "kitchen"),
     sumUSD("inbody_sessions", "amount",      month),
     supabase
       .from("gym_subscriptions")
@@ -137,7 +160,11 @@ export async function fetchLiveKPI(): Promise<LiveKPI> {
       .from("cash_sessions")
       .select("opening_cash")
       .eq("status", "open"),
-    supabase.from("products").select("id, stock, low_stock_threshold"),
+    supabase
+      .from("catalog_items")
+      .select("id, stock_quantity, low_stock_threshold, track_stock")
+      .eq("track_stock", true)
+      .eq("is_active", true),
     // Partially paid subscriptions (any offer type, any plan).
     // We pull amount + paid_amount + currency + exchange_rate so we can
     // surface remaining balances in USD even if the row was stored in SYP.
@@ -159,7 +186,7 @@ export async function fetchLiveKPI(): Promise<LiveKPI> {
 
   const lowStockCount = (lowStock.data ?? []).filter(
     (p: Record<string, unknown>) =>
-      Number(p.stock ?? 0) <= Number(p.low_stock_threshold ?? 0),
+      Number(p.stock_quantity ?? 0) <= Number(p.low_stock_threshold ?? 0),
   ).length;
 
   const partialRows = (partiallyPaid.data ?? []) as Record<string, unknown>[];
@@ -313,10 +340,11 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
       .is("cancelled_at", null)
       .not("member_name", "ilike", "%test%"),
     supabase
-      .from("sales")
+      .from("item_sales")
       .select(
-        "created_at, source, product_name, quantity, unit_price, total, " +
-        "currency, exchange_rate, payment_method, created_by, created_by_name"
+        "created_at, source, item_name_snapshot, quantity, unit_price, original_total, " +
+        "original_currency, exchange_rate_to_syp, amount_usd, payment_method, " +
+        "created_by, created_by_name"
       )
       .gte("created_at", dayStart)
       .lte("created_at", dayEnd)
@@ -368,14 +396,13 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
   const kitchenSales: SaleDailyRow[] = [];
   for (const s of salesRes.data ?? []) {
     const r = s as unknown as Record<string, unknown>;
-    const currency = String(r.currency ?? "usd");
-    const rate = Number(r.exchange_rate ?? 0);
+    // item_sales already has amount_usd as a generated column.
     const qty = Number(r.quantity ?? 1);
-    const total = toUSD(Number(r.total ?? 0), currency, rate);
-    const unit = qty > 0 ? total / qty : toUSD(Number(r.unit_price ?? 0), currency, rate);
+    const total = Number(r.amount_usd ?? 0);
+    const unit = qty > 0 ? total / qty : 0;
     const row: SaleDailyRow = {
       time: String(r.created_at ?? ""),
-      productName: String(r.product_name ?? ""),
+      productName: String(r.item_name_snapshot ?? ""),
       quantity: qty,
       unitPriceUSD: Number(unit.toFixed(2)),
       totalUSD: Number(total.toFixed(2)),
@@ -463,10 +490,10 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
 
 const REALTIME_TABLES = [
   "gym_subscriptions",
-  "sales",
+  "item_sales",
   "inbody_sessions",
   "cash_sessions",
-  "products",
+  "catalog_items",
 ] as const;
 
 export function useLiveKPI() {
@@ -673,8 +700,12 @@ export interface ManagerSummary {
 
 const SUB_SELECT =
   "id, member_id, member_name, plan_type, offer, paid_amount, amount, payment_status, currency, exchange_rate, amount_syp, status, end_date, created_at, cancelled_at";
-const SALE_SELECT =
-  "id, source, total, currency, exchange_rate, amount_syp, is_reversal, cancelled_at, created_at";
+// item_sales replaces sales. amount_syp + amount_usd are GENERATED on the
+// row, so the bucket builder can just read them. We keep `original_*`
+// columns around for the optional native-currency display.
+const ITEM_SALE_SELECT =
+  "id, source, original_total, original_currency, exchange_rate_to_syp, " +
+  "amount_syp, amount_usd, cancelled_at, created_at";
 const INBODY_SELECT =
   "id, member_id, member_name, session_type, amount, currency, exchange_rate, amount_syp, cancelled_at, created_at";
 const PRIVATE_SELECT =
@@ -694,6 +725,21 @@ function bucketise(rows: Row[], amountCol: string): CurrencyBucket {
     if (syp != null) out.syp += syp;
     const usd = rowUSD(r as AmountRow, native);
     if (usd != null) out.usd += usd;
+    else out.skippedUSD += 1;
+  }
+  return out;
+}
+
+/** item_sales bucket builder — reads the GENERATED amount_syp / amount_usd
+ *  columns directly. Skips rows where amount_usd is NULL (legacy USD rows
+ *  without a stored exchange_rate_to_syp). */
+function bucketiseItemSales(rows: Row[]): CurrencyBucket {
+  const out: CurrencyBucket = { syp: 0, usd: 0, skippedUSD: 0 };
+  for (const r of rows) {
+    const sypVal = r.amount_syp == null ? null : Number(r.amount_syp);
+    const usdVal = r.amount_usd == null ? null : Number(r.amount_usd);
+    if (sypVal != null && Number.isFinite(sypVal)) out.syp += sypVal;
+    if (usdVal != null && Number.isFinite(usdVal)) out.usd += usdVal;
     else out.skippedUSD += 1;
   }
   return out;
@@ -742,12 +788,11 @@ export async function fetchManagerDashboardSummary(
       .is("cancelled_at", null)
       .not("member_name", "ilike", "%test%"),
     supabase
-      .from("sales")
-      .select(SALE_SELECT)
+      .from("item_sales")
+      .select(ITEM_SALE_SELECT)
       .gte("created_at", range.startUTC)
       .lte("created_at", range.endUTC)
-      .is("cancelled_at", null)
-      .eq("is_reversal", false),
+      .is("cancelled_at", null),
     supabase
       .from("inbody_sessions")
       .select(INBODY_SELECT)
@@ -787,18 +832,18 @@ export async function fetchManagerDashboardSummary(
       .limit(1),
   ]);
 
-  const subRows     = (subsRes.data     ?? []) as Row[];
-  const saleRows    = (salesRes.data    ?? []) as Row[];
-  const inbodyRows  = (inbodyRes.data   ?? []) as Row[];
-  const privateRows = (privateRes.data  ?? []) as Row[];
-  const expRows     = (expensesRes.data ?? []) as Row[];
+  const subRows     = (subsRes.data     ?? []) as unknown as Row[];
+  const saleRows    = (salesRes.data    ?? []) as unknown as Row[];
+  const inbodyRows  = (inbodyRes.data   ?? []) as unknown as Row[];
+  const privateRows = (privateRes.data  ?? []) as unknown as Row[];
+  const expRows     = (expensesRes.data ?? []) as unknown as Row[];
 
   const subscriptions = bucketise(subRows, "paid_amount");
   const inbody        = bucketise(inbodyRows, "amount");
   const storeRows     = saleRows.filter((r) => String(r.source ?? "store") === "store");
   const kitchenRows   = saleRows.filter((r) => String(r.source ?? "store") === "kitchen");
-  const store         = bucketise(storeRows, "total");
-  const kitchen       = bucketise(kitchenRows, "total");
+  const store         = bucketiseItemSales(storeRows);
+  const kitchen       = bucketiseItemSales(kitchenRows);
   const privateSessions = bucketise(privateRows, "paid_amount");
   const expenses      = bucketise(expRows, "amount");
 
@@ -862,14 +907,14 @@ export async function fetchManagerDashboardSummary(
 
     const [sessionSubs, sessionSales, sessionInbody, sessionPrivate, sessionExp] = await Promise.all([
       supabase.from("gym_subscriptions").select("paid_amount, currency, exchange_rate, amount_syp").eq("cash_session_id", sid).is("cancelled_at", null),
-      supabase.from("sales").select("total, currency, exchange_rate, amount_syp, source, is_reversal").eq("cash_session_id", sid).is("cancelled_at", null).eq("is_reversal", false),
+      supabase.from("item_sales").select("amount_syp, amount_usd, source").eq("cash_session_id", sid).is("cancelled_at", null),
       supabase.from("inbody_sessions").select("amount, currency, exchange_rate, amount_syp").eq("cash_session_id", sid).is("cancelled_at", null),
       supabase.from("private_sessions").select("paid_amount, currency, exchange_rate, amount_syp").eq("cash_session_id", sid).is("cancelled_at", null),
       supabase.from("expenses").select("amount, currency, exchange_rate, amount_syp").eq("cash_session_id", sid).is("cancelled_at", null),
     ]);
     const incomeBucket = bucketSum(
       bucketise((sessionSubs.data ?? []) as Row[], "paid_amount"),
-      bucketise((sessionSales.data ?? []) as Row[], "total"),
+      bucketiseItemSales((sessionSales.data ?? []) as Row[]),
       bucketise((sessionInbody.data ?? []) as Row[], "amount"),
       bucketise((sessionPrivate.data ?? []) as Row[], "paid_amount"),
     );
@@ -1175,12 +1220,11 @@ export async function fetchOtherIncomeBreakdown(
   const supabase = supabaseBrowser();
   const [salesRes, inbodyRes, privateRes] = await Promise.all([
     supabase
-      .from("sales")
-      .select(SALE_SELECT)
+      .from("item_sales")
+      .select(ITEM_SALE_SELECT)
       .gte("created_at", range.startUTC)
       .lte("created_at", range.endUTC)
-      .is("cancelled_at", null)
-      .eq("is_reversal", false),
+      .is("cancelled_at", null),
     supabase
       .from("inbody_sessions")
       .select(INBODY_SELECT)
@@ -1196,11 +1240,11 @@ export async function fetchOtherIncomeBreakdown(
       .is("cancelled_at", null),
   ]);
 
-  const saleRows = (salesRes.data ?? []) as Row[];
+  const saleRows = (salesRes.data ?? []) as unknown as Row[];
   const storeRows   = saleRows.filter((r) => String(r.source ?? "store") === "store");
   const kitchenRows = saleRows.filter((r) => String(r.source ?? "store") === "kitchen");
 
-  const inbodyRows = (inbodyRes.data ?? []) as Row[];
+  const inbodyRows = (inbodyRes.data ?? []) as unknown as Row[];
   const sessionType = (r: Row) => String(r.session_type ?? "");
   const gymMember = inbodyRows.filter((r) => sessionType(r) === "gym_member" || sessionType(r) === "single").length;
   const nonMember = inbodyRows.filter((r) => sessionType(r) === "non_member").length;
@@ -1217,8 +1261,8 @@ export async function fetchOtherIncomeBreakdown(
       nonMember,
       packageSessions,
     },
-    kitchen: { bucket: bucketise(kitchenRows, "total"), orderCount: kitchenRows.length },
-    store:   { bucket: bucketise(storeRows,   "total"), saleCount:  storeRows.length },
+    kitchen: { bucket: bucketiseItemSales(kitchenRows), orderCount: kitchenRows.length },
+    store:   { bucket: bucketiseItemSales(storeRows),   saleCount:  storeRows.length },
     privateSessions: { bucket: bucketise(privateRows, "paid_amount"), sessionCount: privateRows.length },
   };
 }

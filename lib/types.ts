@@ -62,7 +62,77 @@ export interface Subscription {
   lockedAt?: string;
 }
 
-// --- KITCHEN / FOOD ITEMS ---
+// --- UNIFIED CATALOG (catalog_items) ---
+// Replaces FoodItem + Product. One row per sellable item, regardless of
+// whether it's sold from the kitchen UI or the store UI. Currency is on
+// the row, not chosen by the cashier at sale time.
+export type CatalogItemCategory =
+  | "meals"
+  | "drinks"
+  | "supplements"
+  | "accessories"
+  | "other";
+
+export type CatalogItemType =
+  | "meal"
+  | "water"
+  | "drink"
+  | "supplement"
+  | "product"
+  | "other";
+
+export interface CatalogItem {
+  id: string;
+  name: string;
+  category: CatalogItemCategory;
+  itemType: CatalogItemType;
+  sellCurrency: Currency;
+  sellPrice: number;
+  costCurrency: Currency | null;
+  costPrice: number | null;
+  stockQuantity: number;
+  trackStock: boolean;
+  lowStockThreshold: number;
+  sortOrder: number;
+  isActive: boolean;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// --- UNIFIED SALES (item_sales) ---
+// Replaces Sale. Snapshots the catalog row at sale time so the audit
+// trail survives catalog renames/deletes. amount_syp and amount_usd are
+// generated columns on the DB side — TypeScript treats them as
+// readonly numbers populated by the row that comes back from the
+// .select() chained on the insert.
+export interface ItemSale {
+  id: string;
+  catalogItemId: string | null;
+  itemNameSnapshot: string;
+  categorySnapshot: CatalogItemCategory;
+  itemTypeSnapshot: CatalogItemType;
+  quantity: number;
+  unitPrice: number;
+  originalCurrency: Currency;
+  originalTotal: number;
+  exchangeRateToSyp: number | null;
+  amountSyp: number | null; // generated; null only for legacy USD rows w/ NULL rate
+  amountUsd: number | null; // generated
+  source: "kitchen" | "store";
+  paymentMethod: PaymentMethod | null;
+  cashSessionId: string | null;
+  createdBy: string;
+  createdByName: string | null;
+  createdAt: string;
+  cancelledAt: string | null;
+  cancelledBy: string | null;
+  cancelledReason: string | null;
+}
+
+// --- LEGACY KITCHEN / FOOD ITEMS (food_items table) ---
+// Retained for the legacy hydration path while the catalog cutover is
+// stabilising. New code should use CatalogItem.
 export type FoodItemCategory = "meals" | "breakfast" | "salads" | "drinks" | "snacks" | "other" | "food";
 
 export interface FoodItem {
@@ -79,7 +149,7 @@ export interface FoodItem {
   sort_order?: number;
 }
 
-// --- STORE / INVENTORY ---
+// --- LEGACY STORE / INVENTORY (products table) ---
 export type ProductCategory =
   | "protein"
   | "mass_gainer"
@@ -107,6 +177,7 @@ export interface Product {
   createdAt: string;
 }
 
+// --- LEGACY SALES (sales table) ---
 export interface Sale {
   id: string;
   productId: string;

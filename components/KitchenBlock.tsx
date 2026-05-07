@@ -5,15 +5,17 @@ import { ChefHat, Plus, Minus, AlertTriangle, CheckCircle, Undo2 } from "lucide-
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
 import { useCurrency } from "@/lib/currency-context";
-import { pushSale, cancelTransaction } from "@/lib/supabase/intake";
-import type { Sale } from "@/lib/types";
+import { pushItemSale, cancelTransaction } from "@/lib/supabase/intake";
+import type { ItemSale, PaymentMethod } from "@/lib/types";
 import { formatTime } from "@/lib/utils/time";
 
 interface QtyMap { [id: string]: number }
 
+const KITCHEN_TYPES = new Set(["meal", "water", "drink"]);
+
 export default function KitchenBlock() {
   const { user } = useAuth();
-  const { foodItems, addSale, cancelSale, sales } = useStore();
+  const { catalogItems, addItemSale, cancelItemSale, itemSales } = useStore();
   const { exchangeRate } = useCurrency();
 
   const [qty,     setQty]     = useState<QtyMap>({});
@@ -23,24 +25,36 @@ export default function KitchenBlock() {
 
   const today = new Date().toISOString().slice(0, 10);
 
+  // Kitchen UI shows catalog items whose item_type is meal / water / drink
+  // and whose sell_price is positive. Currency comes from the catalog row
+  // (sellCurrency); the cashier never picks it.
   const activeItems = useMemo(
     () =>
-      foodItems
-        .filter((f) => f.is_active && Number(f.price_syp) > 0)
+      catalogItems
+        .filter((c) => c.isActive && KITCHEN_TYPES.has(c.itemType) && Number(c.sellPrice) > 0)
         .slice()
-        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name)),
-    [foodItems]
+        .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name)),
+    [catalogItems]
   );
 
   const todayKitchenSales = useMemo(
-    () => sales
-      .filter((s) => s.source === "kitchen" && !s.isReversal && s.createdAt.startsWith(today))
+    () => itemSales
+      .filter((s) => s.source === "kitchen" && s.createdAt.startsWith(today))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-    [sales, today]
+    [itemSales, today]
   );
 
+  // SYP-only ordering total (kitchen items today are all SYP-priced).
+  // If a future kitchen item is USD-priced, this just won't include it
+  // in the SYP total — but we render the per-line total in its native
+  // currency below so the cashier sees the right number.
   const totalSYP = useMemo(
-    () => activeItems.reduce((sum, it) => sum + (qty[it.id] ?? 0) * Number(it.price_syp), 0),
+    () =>
+      activeItems.reduce((sum, it) => {
+        const q = qty[it.id] ?? 0;
+        if (q === 0) return sum;
+        return it.sellCurrency === "syp" ? sum + q * Number(it.sellPrice) : sum;
+      }, 0),
     [activeItems, qty]
   );
   const orderedCount = useMemo(
@@ -49,6 +63,8 @@ export default function KitchenBlock() {
   );
 
   const fmtSYP = (n: number) => `${new Intl.NumberFormat("ar-SY", { maximumFractionDigits: 0 }).format(Math.round(n))} ل.س`;
+  const fmtUSD = (n: number) => `$${n.toFixed(2)}`;
+  const fmtPrice = (n: number, cur: "syp" | "usd") => (cur === "syp" ? fmtSYP(n) : fmtUSD(n));
 
   const inc = (id: string) => setQty((q) => ({ ...q, [id]: (q[id] ?? 0) + 1 }));
   const dec = (id: string) => setQty((q) => ({ ...q, [id]: Math.max(0, (q[id] ?? 0) - 1) }));
@@ -58,49 +74,65 @@ export default function KitchenBlock() {
     if (!user) { setError("يجب تسجيل الدخول."); return; }
     const lines = activeItems.map((it) => ({ it, q: qty[it.id] ?? 0 })).filter((l) => l.q > 0);
     if (lines.length === 0) { setError("اختر صنفاً واحداً على الأقل."); return; }
+    if (!exchangeRate || exchangeRate <= 0) { setError("سعر الصرف غير صالح — حدّثه من أعلى الصفحة."); return; }
 
     setBusy(true);
     const currentUser = { id: user.id, displayName: user.displayName };
-    console.log("Kitchen order start (SYP):", { user: currentUser, lines: lines.map((l) => ({ name: l.it.name, q: l.q, price_syp: l.it.price_syp })) });
+    console.log("Kitchen order start:", {
+      user: currentUser,
+      exchangeRate,
+      lines: lines.map((l) => ({
+        name: l.it.name, q: l.q,
+        sellPrice: l.it.sellPrice, sellCurrency: l.it.sellCurrency,
+      })),
+    });
+
     for (const { it, q } of lines) {
-      const unitPrice = Number(it.price_syp);
-      const total = Math.round(q * unitPrice);
-      // exchange_rate must be the LIVE rate, not 1. Stored alongside currency='syp'
-      // so that downstream USD aggregations (sumKitchenAsUSD, fetchLiveKPI,
-      // fetchSessionIncome) divide total / rate to recover USD. With rate=1 the
-      // raw SYP number was being summed into USD totals, inflating reported
-      // revenue by ~exchangeRate× — see ultrareview findings on KitchenBlock.
-      const r = await pushSale({
+      const r = await pushItemSale({
         user: currentUser,
-        productName: it.name,
+        catalogItem: {
+          id: it.id,
+          name: it.name,
+          category: it.category,
+          itemType: it.itemType,
+          sellCurrency: it.sellCurrency,
+          sellPrice: Number(it.sellPrice),
+        },
         quantity: q,
-        unitPrice,
-        total,
-        currency: "syp",
         exchangeRate,
-        source: "kitchen",
         paymentMethod: "cash",
+        source: "kitchen",
       });
       if (r.error) { setError(r.error); setBusy(false); return; }
       const row = r.data!;
-      const sale: Sale = {
+      const sale: ItemSale = {
         id: String(row.id),
-        productId: it.id,
-        productName: it.name,
+        catalogItemId: it.id,
+        itemNameSnapshot: it.name,
+        categorySnapshot: it.category,
+        itemTypeSnapshot: it.itemType,
         quantity: q,
-        unitPrice,
-        total,
-        paymentMethod: "cash",
-        currency: "syp",
+        unitPrice: Number(it.sellPrice),
+        originalCurrency: it.sellCurrency,
+        originalTotal: Number(it.sellPrice) * q,
+        exchangeRateToSyp: exchangeRate,
+        amountSyp: row.amount_syp == null ? null : Number(row.amount_syp),
+        amountUsd: row.amount_usd == null ? null : Number(row.amount_usd),
         source: "kitchen",
-        createdAt: String(row.created_at ?? new Date().toISOString()),
+        paymentMethod: "cash" as PaymentMethod,
+        cashSessionId: row.cash_session_id == null ? null : String(row.cash_session_id),
         createdBy: user.id,
-        isReversal: false,
+        createdByName: user.displayName,
+        createdAt: String(row.created_at ?? new Date().toISOString()),
+        cancelledAt: null,
+        cancelledBy: null,
+        cancelledReason: null,
       };
-      addSale(sale);
+      addItemSale(sale);
     }
+
     setBusy(false);
-    setSuccess(`تم تسجيل الطلب — ${fmtSYP(totalSYP)}`);
+    setSuccess(totalSYP > 0 ? `تم تسجيل الطلب — ${fmtSYP(totalSYP)}` : "تم تسجيل الطلب");
     setQty({});
     setTimeout(() => setSuccess(""), 2500);
   }
@@ -129,7 +161,7 @@ export default function KitchenBlock() {
         ) : (
           activeItems.map((it) => {
             const q         = qty[it.id] ?? 0;
-            const lineTotal = q * Number(it.price_syp);
+            const lineTotal = q * Number(it.sellPrice);
             return (
               <div
                 key={it.id}
@@ -137,7 +169,7 @@ export default function KitchenBlock() {
               >
                 <p className="font-body text-xs text-[#F0EDE6] mb-1.5">{it.name}</p>
                 <p className="font-display text-base text-[#F5C100] tracking-wider" dir="ltr">
-                  {fmtSYP(Number(it.price_syp))}
+                  {fmtPrice(Number(it.sellPrice), it.sellCurrency)}
                 </p>
                 <div className="mt-2.5 flex items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5">
@@ -158,7 +190,7 @@ export default function KitchenBlock() {
                   </div>
                   {q > 0 && (
                     <span className="font-mono tabular-nums text-[10px] text-[#5CC45C]" dir="ltr">
-                      {fmtSYP(lineTotal)}
+                      {fmtPrice(lineTotal, it.sellCurrency)}
                     </span>
                   )}
                 </div>
@@ -177,7 +209,7 @@ export default function KitchenBlock() {
         </div>
         <button
           onClick={handleOrder}
-          disabled={busy || totalSYP === 0}
+          disabled={busy || orderedCount === 0}
           className="flex items-center gap-1.5 px-4 py-2 bg-[#F5C100] hover:bg-[#FFD740] active:bg-[#C49A00] disabled:opacity-40 disabled:cursor-not-allowed text-[#0A0A0A] font-display tracking-widest text-xs uppercase rounded-sm transition-colors clip-corner-sm cursor-pointer"
         >
           <ChefHat size={12} />
@@ -195,43 +227,46 @@ export default function KitchenBlock() {
             <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">طلبات اليوم</p>
           </div>
           <div className="divide-y divide-[#252525]/50 max-h-48 overflow-y-auto">
-            {todayKitchenSales.map((s) => (
-              <div
-                key={s.id}
-                className={`flex items-center gap-3 px-5 py-2 transition-colors ${s.cancelled ? "opacity-40 bg-[#1A0A0A]/30" : "hover:bg-[#252525]/20"}`}
-              >
-                <div className="flex-1 min-w-0">
-                  <p className={`text-xs ${s.cancelled ? "line-through text-[#777777]" : "text-[#F0EDE6]"} truncate`}>
-                    {s.quantity}× {s.productName}
-                  </p>
-                  <p className="font-mono text-[9px] text-[#555555]">
-                    {formatTime(s.createdAt)}
-                  </p>
+            {todayKitchenSales.map((s) => {
+              const cancelled = s.cancelledAt != null;
+              return (
+                <div
+                  key={s.id}
+                  className={`flex items-center gap-3 px-5 py-2 transition-colors ${cancelled ? "opacity-40 bg-[#1A0A0A]/30" : "hover:bg-[#252525]/20"}`}
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-xs ${cancelled ? "line-through text-[#777777]" : "text-[#F0EDE6]"} truncate`}>
+                      {s.quantity}× {s.itemNameSnapshot}
+                    </p>
+                    <p className="font-mono text-[9px] text-[#555555]">
+                      {formatTime(s.createdAt)}
+                    </p>
+                  </div>
+                  <span className={`font-mono tabular-nums text-xs ${cancelled ? "text-[#777777] line-through" : "text-[#F5C100]"}`} dir="ltr">
+                    {fmtPrice(Number(s.originalTotal), s.originalCurrency)}
+                  </span>
+                  {!cancelled ? (
+                    <button
+                      onClick={async () => {
+                        if (!user) return;
+                        const r = await cancelTransaction({
+                          user: { id: user.id, displayName: user.displayName },
+                          table: "item_sales",
+                          id: s.id,
+                        });
+                        if (!r.error) cancelItemSale(s.id);
+                      }}
+                      className="p-1 text-[#555555] hover:text-[#FF3333] transition-colors cursor-pointer"
+                      title="إلغاء"
+                    >
+                      <Undo2 size={12} />
+                    </button>
+                  ) : (
+                    <span className="font-mono text-[9px] text-[#FF3333]">ملغي</span>
+                  )}
                 </div>
-                <span className={`font-mono tabular-nums text-xs ${s.cancelled ? "text-[#777777] line-through" : "text-[#F5C100]"}`} dir="ltr">
-                  {s.currency === "syp" ? fmtSYP(s.total) : `$${s.total.toFixed(2)}`}
-                </span>
-                {!s.cancelled ? (
-                  <button
-                    onClick={async () => {
-                      if (!user) return;
-                      const r = await cancelTransaction({
-                        user: { id: user.id, displayName: user.displayName },
-                        table: "sales",
-                        id: s.id,
-                      });
-                      if (!r.error) cancelSale(s.id);
-                    }}
-                    className="p-1 text-[#555555] hover:text-[#FF3333] transition-colors cursor-pointer"
-                    title="إلغاء"
-                  >
-                    <Undo2 size={12} />
-                  </button>
-                ) : (
-                  <span className="font-mono text-[9px] text-[#FF3333]">ملغي</span>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

@@ -85,35 +85,48 @@ export async function getLastClosedSession(): Promise<{ id: string; actualCash: 
 
 export async function fetchSessionIncome(sessionId: string): Promise<SessionIncome> {
   const supabase = supabaseBrowser();
-  // Sums an amount column to USD, normalizing rows stored in SYP via the
-  // row's snapshot exchange_rate. Without this, kitchen sales (currency='syp')
-  // were summed as raw SYP into USD totals — inflating the cashier's
-  // "المطبخ" tile and "إجمالي الخزنة" by ~exchangeRate× per ultrareview.
-  const sumAsUSD = async (
-    table: string,
+
+  // For subscriptions and inbody (still on legacy currency+rate columns)
+  // we keep the per-row USD normalization. For item_sales we read the
+  // GENERATED amount_usd column directly — no math needed.
+  const sumLegacyUSD = async (
+    table: "gym_subscriptions" | "inbody_sessions",
     amountCol: string,
-    extra?: { col: string; val: string },
-    excludeTestMembers?: boolean,
   ): Promise<number> => {
     const select = `${amountCol}, currency, exchange_rate`;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let q: any = supabase.from(table).select(select).eq("cash_session_id", sessionId).is("cancelled_at", null);
-    if (extra) q = q.eq(extra.col, extra.val);
-    if (excludeTestMembers) q = q.not("member_name", "ilike", "%test%");
-    const { data } = await q;
+    const { data } = await supabase
+      .from(table)
+      .select(select)
+      .eq("cash_session_id", sessionId)
+      .is("cancelled_at", null)
+      .not("member_name", "ilike", "%test%");
     return (data ?? []).reduce((a: number, r: unknown) => {
-      const row = r as Record<string, unknown>;
+      const row    = r as Record<string, unknown>;
       const amount = Number(row[amountCol] ?? 0);
       const cur    = String(row.currency ?? "usd");
       const rate   = Number(row.exchange_rate ?? 1) || 1;
       return a + (cur === "syp" ? amount / rate : amount);
     }, 0);
   };
+
+  const sumItemSalesUSD = async (source: "store" | "kitchen"): Promise<number> => {
+    const { data } = await supabase
+      .from("item_sales")
+      .select("amount_usd")
+      .eq("cash_session_id", sessionId)
+      .eq("source", source)
+      .is("cancelled_at", null);
+    return (data ?? []).reduce(
+      (a: number, r: unknown) => a + Number((r as Record<string, unknown>).amount_usd ?? 0),
+      0,
+    );
+  };
+
   const [sub, store, meals, inbody] = await Promise.all([
-    sumAsUSD("gym_subscriptions", "paid_amount", undefined, true),
-    sumAsUSD("sales",             "total", { col: "source", val: "store" }),
-    sumAsUSD("sales",             "total", { col: "source", val: "kitchen" }),
-    sumAsUSD("inbody_sessions",   "amount", undefined, true),
+    sumLegacyUSD("gym_subscriptions", "paid_amount"),
+    sumItemSalesUSD("store"),
+    sumItemSalesUSD("kitchen"),
+    sumLegacyUSD("inbody_sessions", "amount"),
   ]);
   return {
     subsIncome:   Number(sub.toFixed(2)),

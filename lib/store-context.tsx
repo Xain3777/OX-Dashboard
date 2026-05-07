@@ -10,8 +10,9 @@ import {
   ReactNode,
 } from "react";
 import {
-  Product, Sale, Expense, PaymentMethod, Subscription, FoodItem,
-  PlanType, OfferType, PaymentStatus, SubStatus, Currency, FoodItemCategory,
+  Product, Sale, Expense, PaymentMethod, Subscription, FoodItem, FoodItemCategory,
+  CatalogItem, CatalogItemCategory, CatalogItemType, ItemSale,
+  PlanType, OfferType, PaymentStatus, SubStatus, Currency,
 } from "./types";
 import { PRODUCTS, FOOD_ITEMS } from "./mock-data";
 import { generateId, calculateRemainingDays } from "./business-logic";
@@ -19,11 +20,9 @@ import { useAuth } from "./auth-context";
 import { supabaseBrowser } from "./supabase/client";
 import { fetchSessionIncome, SessionIncome, getActiveSession, getLastClosedSession } from "./supabase/session";
 import {
-  persistProductPrice,
-  persistProductInsert,
-  persistFoodItemInsert,
-  persistFoodItemUpdate,
-  persistFoodItemDelete,
+  persistCatalogItemInsert,
+  persistCatalogItemUpdate,
+  persistCatalogItemDelete,
 } from "./supabase/intake";
 
 // ─── InBody ───────────────────────────────────────────────────────────────────
@@ -94,10 +93,19 @@ export interface LocalSession {
 }
 
 // ─── Full store state ─────────────────────────────────────────────────────────
+//
+// catalogItems + itemSales are the new unified surface (post-0030/0031).
+// products + foodItems + sales are kept for backward compat during the
+// component cutover; they're DERIVED from catalogItems / itemSales below
+// rather than hydrated independently. Once every component reads from
+// catalogItems / itemSales directly, the legacy fields go away.
 
 export interface StoreState {
-  products: Product[];
-  sales: Sale[];
+  // Unified catalog model (canonical)
+  catalogItems: CatalogItem[];
+  itemSales: ItemSale[];
+
+  // Subscriptions / inbody / expenses / sessions / activity
   subscriptions: Subscription[];
   inBodySessions: InBodySession[];
   expenses: Expense[];
@@ -105,16 +113,45 @@ export interface StoreState {
   inBodyPrices: { member: number; nonMember: number };
   expenseRates: ExpenseRate[];
   exchangeRate: number;
-  foodItems: FoodItem[];
   localSession: LocalSession | null;
   sessionHistory: LocalSession[];
   lastClosingCash: number;
   lastClosedByName: string;
+
+  // Legacy compat fields — derived from catalogItems / itemSales for any
+  // component that still reads them. Will be removed once the cutover is
+  // complete.
+  products: Product[];
+  foodItems: FoodItem[];
+  sales: Sale[];
 }
 
 // ─── Context type ─────────────────────────────────────────────────────────────
 
+export interface CatalogItemDraft {
+  name: string;
+  category: CatalogItemCategory;
+  itemType: CatalogItemType;
+  sellCurrency: Currency;
+  sellPrice: number;
+  costCurrency?: Currency | null;
+  costPrice?: number | null;
+  stockQuantity?: number;
+  trackStock?: boolean;
+  lowStockThreshold?: number;
+  sortOrder?: number;
+  isActive?: boolean;
+}
+
 export interface StoreContextType extends StoreState {
+  // ── New unified catalog API ───────────────────────────────────
+  addCatalogItem: (item: CatalogItemDraft) => Promise<{ error?: string }>;
+  updateCatalogItem: (id: string, updates: Partial<CatalogItemDraft>) => Promise<{ error?: string }>;
+  removeCatalogItem: (id: string) => Promise<{ error?: string }>;
+  addItemSale: (sale: ItemSale) => void;
+  cancelItemSale: (id: string) => void;
+
+  // ── Legacy compat API ─────────────────────────────────────────
   addSale: (sale: Sale) => void;
   reverseSale: (saleId: string, reason?: string) => void;
   cancelSale: (id: string) => void;
@@ -152,7 +189,10 @@ export interface StoreContextType extends StoreState {
 // ─── Initial state ────────────────────────────────────────────────────────────
 
 const INITIAL_STATE: StoreState = {
+  catalogItems: [],
+  itemSales: [],
   products: PRODUCTS,
+  foodItems: FOOD_ITEMS,
   sales: [],
   subscriptions: [],
   inBodySessions: [],
@@ -161,12 +201,150 @@ const INITIAL_STATE: StoreState = {
   inBodyPrices: { member: 60000, nonMember: 100000 },
   expenseRates: [],
   exchangeRate: 13200,
-  foodItems: FOOD_ITEMS,
   localSession: null,
   sessionHistory: [],
   lastClosingCash: 0,
   lastClosedByName: "",
 };
+
+// ─── Row mappers + legacy adapters (shared by hydration + realtime) ──────────
+
+type CatalogRow = Record<string, unknown>;
+
+const catalogItemSort = (a: CatalogItem, b: CatalogItem) =>
+  (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name);
+
+function rowToCatalogItem(row: CatalogRow): CatalogItem {
+  return {
+    id: String(row.id),
+    name: String(row.name ?? ""),
+    category: String(row.category ?? "other") as CatalogItemCategory,
+    itemType: String(row.item_type ?? "other") as CatalogItemType,
+    sellCurrency: String(row.sell_currency ?? "usd") as Currency,
+    sellPrice: Number(row.sell_price ?? 0),
+    costCurrency: row.cost_currency == null ? null : (String(row.cost_currency) as Currency),
+    costPrice: row.cost_price == null ? null : Number(row.cost_price),
+    stockQuantity: Number(row.stock_quantity ?? 0),
+    trackStock: !!row.track_stock,
+    lowStockThreshold: Number(row.low_stock_threshold ?? 3),
+    sortOrder: Number(row.sort_order ?? 0),
+    isActive: !!row.is_active,
+    createdBy: row.created_by == null ? null : String(row.created_by),
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
+function rowToItemSale(row: CatalogRow): ItemSale {
+  return {
+    id: String(row.id),
+    catalogItemId: row.catalog_item_id == null ? null : String(row.catalog_item_id),
+    itemNameSnapshot: String(row.item_name_snapshot ?? ""),
+    categorySnapshot: String(row.category_snapshot ?? "other") as CatalogItemCategory,
+    itemTypeSnapshot: String(row.item_type_snapshot ?? "other") as CatalogItemType,
+    quantity: Number(row.quantity ?? 0),
+    unitPrice: Number(row.unit_price ?? 0),
+    originalCurrency: String(row.original_currency ?? "usd") as Currency,
+    originalTotal: Number(row.original_total ?? 0),
+    exchangeRateToSyp: row.exchange_rate_to_syp == null ? null : Number(row.exchange_rate_to_syp),
+    amountSyp: row.amount_syp == null ? null : Number(row.amount_syp),
+    amountUsd: row.amount_usd == null ? null : Number(row.amount_usd),
+    source: String(row.source ?? "store") as "kitchen" | "store",
+    paymentMethod: row.payment_method == null ? null : (String(row.payment_method) as PaymentMethod),
+    cashSessionId: row.cash_session_id == null ? null : String(row.cash_session_id),
+    createdBy: String(row.created_by ?? ""),
+    createdByName: row.created_by_name == null ? null : String(row.created_by_name),
+    createdAt: String(row.created_at ?? ""),
+    cancelledAt: row.cancelled_at == null ? null : String(row.cancelled_at),
+    cancelledBy: row.cancelled_by == null ? null : String(row.cancelled_by),
+    cancelledReason: row.cancelled_reason == null ? null : String(row.cancelled_reason),
+  };
+}
+
+// ── Legacy adapters: derive FoodItem / Product / Sale from catalog ──
+//
+// Components that haven't migrated yet still read foodItems / products /
+// sales. Until they do, we synthesise those views from the canonical
+// catalogItems / itemSales arrays so legacy reads stay consistent with
+// the new write paths.
+
+const KITCHEN_TYPES = new Set(["meal", "water", "drink"]);
+const STORE_TYPES   = new Set(["supplement", "product", "other"]);
+
+function catalogToFoodItem(c: CatalogItem): FoodItem {
+  return {
+    id: c.id,
+    name: c.name,
+    category: (
+      c.category === "meals"  ? "meals"  :
+      c.category === "drinks" ? "drinks" :
+      "food"
+    ) as FoodItemCategory,
+    cost_syp: c.costCurrency === "syp" ? c.costPrice : null,
+    cost_usd: c.costCurrency === "usd" ? c.costPrice : null,
+    price_syp: c.sellCurrency === "syp" ? c.sellPrice : 0,
+    is_active: c.isActive,
+    description: null,
+    sort_order: c.sortOrder,
+  };
+}
+
+function catalogToProduct(c: CatalogItem): Product {
+  // Map flat catalog_items.category back to the more granular legacy
+  // ProductCategory union. Most rows came in as 'supplements' which we
+  // can't disambiguate without a subcategory column — surface as 'other'
+  // so the dropdown still rounds-trips.
+  const cat: Product["category"] =
+    c.itemType === "water"      ? "water" :
+    c.itemType === "drink"      ? "drink" :
+    c.itemType === "supplement" ? "other" :
+    c.itemType === "product"    ? "accessory" :
+    "other";
+  return {
+    id: c.id,
+    name: c.name,
+    category: cat,
+    cost: c.costPrice,
+    costCurrency: c.costCurrency ?? undefined,
+    price: c.sellPrice,
+    priceCurrency: c.sellCurrency,
+    stock: c.stockQuantity,
+    lowStockThreshold: c.lowStockThreshold,
+    createdAt: c.createdAt,
+  };
+}
+
+function itemSaleToSale(s: ItemSale): Sale {
+  return {
+    id: s.id,
+    productId: s.catalogItemId ?? "",
+    productName: s.itemNameSnapshot,
+    quantity: s.quantity,
+    unitPrice: s.unitPrice,
+    total: s.originalTotal,
+    paymentMethod: (s.paymentMethod ?? "cash") as PaymentMethod,
+    currency: s.originalCurrency,
+    source: s.source,
+    cancelled: s.cancelledAt != null,
+    createdAt: s.createdAt,
+    createdBy: s.createdBy,
+    isReversal: false,
+  };
+}
+
+function deriveLegacyFromCatalog(
+  catalogItems: CatalogItem[],
+  itemSales: ItemSale[],
+): { foodItems: FoodItem[]; products: Product[]; sales: Sale[] } {
+  const foodItems = catalogItems
+    .filter((c) => KITCHEN_TYPES.has(c.itemType))
+    .map(catalogToFoodItem);
+  const products = catalogItems
+    .filter((c) => STORE_TYPES.has(c.itemType))
+    .map(catalogToProduct);
+  const sales = itemSales.map(itemSaleToSale);
+  return { foodItems, products, sales };
+}
 
 // ─── Supabase hydration ───────────────────────────────────────────────────────
 
@@ -175,7 +353,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
     const supabase = supabaseBrowser();
     const today = new Date().toISOString().slice(0, 10);
 
-    const [subsRes, salesRes, inbodyRes, foodRes, productsRes, rateRes, activeSession, lastClosed] = await Promise.all([
+    const [subsRes, salesRes, inbodyRes, catalogRes, rateRes, activeSession, lastClosed] = await Promise.all([
       supabase
         .from("gym_subscriptions")
         .select("*")
@@ -183,7 +361,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
         .not("member_name", "ilike", "%test%")
         .order("created_at", { ascending: false }),
       supabase
-        .from("sales")
+        .from("item_sales")
         .select("*")
         .gte("created_at", today + "T00:00:00")
         .order("created_at", { ascending: true }),
@@ -192,8 +370,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
         .select("*")
         .gte("created_at", today + "T00:00:00")
         .not("member_name", "ilike", "%test%"),
-      supabase.from("food_items").select("*"),
-      supabase.from("products").select("*"),
+      supabase.from("catalog_items").select("*"),
       supabase
         .from("app_settings")
         .select("value")
@@ -228,21 +405,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       lockedAt: String(row.created_at ?? ""),
     }));
 
-    const sales: Sale[] = (salesRes.data ?? []).map((row: Row) => ({
-      id: String(row.id),
-      productId: String(row.product_id ?? ""),
-      productName: String(row.product_name ?? ""),
-      quantity: Number(row.quantity ?? 1),
-      unitPrice: Number(row.unit_price ?? 0),
-      total: Number(row.total ?? 0),
-      paymentMethod: String(row.payment_method ?? "cash") as PaymentMethod,
-      currency: String(row.currency ?? "usd") as Currency,
-      source: String(row.source ?? "store") as "store" | "kitchen",
-      cancelled: !!row.cancelled_at,
-      createdAt: String(row.created_at ?? ""),
-      createdBy: String(row.created_by ?? ""),
-      isReversal: false,
-    }));
+    const itemSales: ItemSale[] = (salesRes.data ?? []).map((row: Row) => rowToItemSale(row));
 
     const inBodySessions: InBodySession[] = (inbodyRes.data ?? []).map((row: Row) => {
       // session_type historically held both "category" labels (single, package_5,
@@ -281,40 +444,11 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
     const lastClosingCash = lastClosed?.actualCash ?? 0;
     const lastClosedByName = lastClosed?.openedByName ?? "";
 
-    const foodRows = (foodRes.data ?? []) as Row[];
-    const foodItems: FoodItem[] =
-      foodRows.length > 0
-        ? foodRows
-            .map((row) => ({
-              id: String(row.id),
-              name: String(row.name ?? ""),
-              category: String(row.category ?? "other") as FoodItemCategory,
-              cost_syp: row.cost_syp == null ? null : Number(row.cost_syp),
-              cost_usd: row.cost_usd == null ? null : Number(row.cost_usd),
-              price_syp: Number(row.price_syp ?? 0),
-              is_active: !!row.is_active,
-              description: row.description == null ? null : String(row.description),
-              sort_order: row.sort_order == null ? 0 : Number(row.sort_order),
-            }))
-            .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name))
-        : FOOD_ITEMS;
+    const catalogRows = (catalogRes.data ?? []) as Row[];
+    const catalogItems: CatalogItem[] = catalogRows.map(rowToCatalogItem).sort(catalogItemSort);
 
-    const productRows = (productsRes.data ?? []) as Row[];
-    const products: Product[] =
-      productRows.length > 0
-        ? productRows.map((row) => ({
-            id: String(row.id),
-            name: String(row.name ?? ""),
-            category: String(row.category ?? "other") as Product["category"],
-            cost: row.cost == null ? null : Number(row.cost),
-            costCurrency: String(row.cost_currency ?? "usd") as Currency,
-            price: Number(row.price ?? 0),
-            priceCurrency: String(row.price_currency ?? "usd") as Currency,
-            stock: Number(row.stock ?? 0),
-            lowStockThreshold: Number(row.low_stock_threshold ?? 5),
-            createdAt: String(row.created_at ?? ""),
-          }))
-        : PRODUCTS;
+    // Derive legacy-shaped views for any component that still reads them.
+    const { foodItems, products, sales } = deriveLegacyFromCatalog(catalogItems, itemSales);
 
     const rateVal = rateRes.data?.value;
     const rateNum = typeof rateVal === "number" ? rateVal : Number(rateVal);
@@ -322,15 +456,27 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
 
     console.log("Supabase hydration:", {
       subscriptions: subscriptions.length,
-      sales: sales.length,
+      itemSales: itemSales.length,
       inBodySessions: inBodySessions.length,
       hasOpenSession: !!localSession,
-      foodItems: foodItems.length,
-      products: products.length,
+      catalogItems: catalogItems.length,
       exchangeRate,
     });
 
-    return { subscriptions, sales, inBodySessions, localSession, foodItems, products, exchangeRate, lastClosingCash, lastClosedByName };
+    return {
+      catalogItems,
+      itemSales,
+      subscriptions,
+      inBodySessions,
+      localSession,
+      exchangeRate,
+      lastClosingCash,
+      lastClosedByName,
+      // Legacy compat fields derived from canonical state
+      foodItems,
+      products,
+      sales,
+    };
   } catch (e) {
     console.error("Supabase hydration failed:", e);
     return {};
@@ -341,6 +487,11 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
 
 const StoreContext = createContext<StoreContextType>({
   ...INITIAL_STATE,
+  addCatalogItem: async () => ({}),
+  updateCatalogItem: async () => ({}),
+  removeCatalogItem: async () => ({}),
+  addItemSale: () => {},
+  cancelItemSale: () => {},
   addSale: () => {},
   reverseSale: () => {},
   cancelSale: () => {},
@@ -458,6 +609,164 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     });
   }, [setState]);
 
+  // ── New unified catalog + sales actions ─────────────────────────────
+
+  const addItemSale = useCallback((sale: ItemSale) => {
+    const usd = sale.amountUsd != null && sale.amountUsd > 0 ? sale.amountUsd : undefined;
+    const syp = sale.amountSyp != null && sale.amountSyp > 0 ? sale.amountSyp : undefined;
+    const label = sale.originalCurrency === "syp"
+      ? `${Math.round(sale.originalTotal).toLocaleString("en-US")} ل.س`
+      : `$${sale.originalTotal}`;
+    const entry: ActivityEntry = {
+      id: generateId(),
+      type: "sale",
+      description: `بيع ${sale.quantity}× ${sale.itemNameSnapshot} — ${label}`,
+      amountUSD: usd,
+      amountSYP: syp,
+      userId: sale.createdBy,
+      userName: sale.createdByName ?? sale.createdBy,
+      timestamp: sale.createdAt,
+    };
+    setState((prev) => {
+      const itemSales = [...prev.itemSales, sale];
+      // Mirror stock decrement for catalog items that track inventory.
+      const catalogItems = prev.catalogItems.map((c) =>
+        c.id === sale.catalogItemId && c.trackStock
+          ? { ...c, stockQuantity: Math.max(0, c.stockQuantity - sale.quantity) }
+          : c,
+      );
+      const { foodItems, products, sales } = deriveLegacyFromCatalog(catalogItems, itemSales);
+      return {
+        ...prev,
+        itemSales,
+        catalogItems,
+        foodItems,
+        products,
+        sales,
+        activityFeed: [entry, ...prev.activityFeed].slice(0, 100),
+      };
+    });
+  }, [setState]);
+
+  const cancelItemSale = useCallback((id: string) => {
+    setState((prev) => {
+      const now = new Date().toISOString();
+      const itemSales = prev.itemSales.map((s) =>
+        s.id === id ? { ...s, cancelledAt: s.cancelledAt ?? now } : s,
+      );
+      const { sales } = deriveLegacyFromCatalog(prev.catalogItems, itemSales);
+      return { ...prev, itemSales, sales };
+    });
+  }, [setState]);
+
+  const addCatalogItem = useCallback(
+    async (draft: CatalogItemDraft): Promise<{ error?: string }> => {
+      if (!user) return { error: "يجب تسجيل الدخول." };
+      const r = await persistCatalogItemInsert({
+        user: { id: user.id, displayName: user.displayName },
+        name: draft.name,
+        category: draft.category,
+        itemType: draft.itemType,
+        sellCurrency: draft.sellCurrency,
+        sellPrice: draft.sellPrice,
+        costCurrency: draft.costCurrency ?? null,
+        costPrice: draft.costPrice ?? null,
+        stockQuantity: draft.stockQuantity,
+        trackStock: draft.trackStock,
+        lowStockThreshold: draft.lowStockThreshold,
+        sortOrder: draft.sortOrder,
+        isActive: draft.isActive,
+      });
+      if (r.error || !r.data) return { error: r.error ?? "فشل إضافة الصنف" };
+      const next = rowToCatalogItem(r.data as CatalogRow);
+      setState((prev) => {
+        const catalogItems = [...prev.catalogItems, next].sort(catalogItemSort);
+        const { foodItems, products } = deriveLegacyFromCatalog(catalogItems, prev.itemSales);
+        return { ...prev, catalogItems, foodItems, products };
+      });
+      return {};
+    },
+    [setState, user],
+  );
+
+  const updateCatalogItem = useCallback(
+    async (id: string, updates: Partial<CatalogItemDraft>): Promise<{ error?: string }> => {
+      if (!user) return { error: "يجب تسجيل الدخول." };
+      const prev = stateRef.current.catalogItems.find((c) => c.id === id);
+      // Optimistic patch
+      setState((s) => {
+        const catalogItems = s.catalogItems.map((c) =>
+          c.id === id
+            ? {
+                ...c,
+                ...(updates.name !== undefined && { name: updates.name }),
+                ...(updates.category !== undefined && { category: updates.category }),
+                ...(updates.itemType !== undefined && { itemType: updates.itemType }),
+                ...(updates.sellCurrency !== undefined && { sellCurrency: updates.sellCurrency }),
+                ...(updates.sellPrice !== undefined && { sellPrice: updates.sellPrice }),
+                ...(updates.costCurrency !== undefined && { costCurrency: updates.costCurrency ?? null }),
+                ...(updates.costPrice !== undefined && { costPrice: updates.costPrice ?? null }),
+                ...(updates.stockQuantity !== undefined && { stockQuantity: updates.stockQuantity }),
+                ...(updates.trackStock !== undefined && { trackStock: updates.trackStock }),
+                ...(updates.lowStockThreshold !== undefined && { lowStockThreshold: updates.lowStockThreshold }),
+                ...(updates.sortOrder !== undefined && { sortOrder: updates.sortOrder }),
+                ...(updates.isActive !== undefined && { isActive: updates.isActive }),
+              }
+            : c,
+        );
+        const { foodItems, products } = deriveLegacyFromCatalog(catalogItems, s.itemSales);
+        return { ...s, catalogItems, foodItems, products };
+      });
+      const r = await persistCatalogItemUpdate({
+        user: { id: user.id, displayName: user.displayName },
+        id,
+        fields: updates,
+      });
+      if (r.error) {
+        // Roll back optimistic change
+        if (prev) {
+          setState((s) => {
+            const catalogItems = s.catalogItems.map((c) => (c.id === id ? prev : c));
+            const { foodItems, products } = deriveLegacyFromCatalog(catalogItems, s.itemSales);
+            return { ...s, catalogItems, foodItems, products };
+          });
+        }
+        return { error: r.error };
+      }
+      return {};
+    },
+    [setState, user],
+  );
+
+  const removeCatalogItem = useCallback(
+    async (id: string): Promise<{ error?: string }> => {
+      if (!user) return { error: "يجب تسجيل الدخول." };
+      const prev = stateRef.current.catalogItems.find((c) => c.id === id);
+      // Optimistic remove
+      setState((s) => {
+        const catalogItems = s.catalogItems.filter((c) => c.id !== id);
+        const { foodItems, products } = deriveLegacyFromCatalog(catalogItems, s.itemSales);
+        return { ...s, catalogItems, foodItems, products };
+      });
+      const r = await persistCatalogItemDelete({
+        user: { id: user.id, displayName: user.displayName },
+        id,
+      });
+      if (r.error) {
+        if (prev) {
+          setState((s) => {
+            const catalogItems = [...s.catalogItems, prev].sort(catalogItemSort);
+            const { foodItems, products } = deriveLegacyFromCatalog(catalogItems, s.itemSales);
+            return { ...s, catalogItems, foodItems, products };
+          });
+        }
+        return { error: r.error };
+      }
+      return {};
+    },
+    [setState, user],
+  );
+
   const updateProductCost = useCallback((productId: string, cost: number) => {
     setState((prev) => ({
       ...prev,
@@ -466,154 +775,134 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [setState]);
 
   const updateProductPrice = useCallback(async (productId: string, cost: number, price: number): Promise<{ error?: string }> => {
+    // Route price+cost edits through the unified catalog API. The trigger
+    // from migration 0030 enforces that reception can only change
+    // sell_price/stock_quantity/low_stock_threshold; managers can change
+    // both price and cost. The error surface is the same as before.
     const entry: ActivityEntry = {
       id: generateId(),
       type: "price_edit",
-      description: `تعديل سعر المنتج — تكلفة: $${cost}، بيع: $${price}`,
+      description: `تعديل سعر — تكلفة: ${cost}، بيع: ${price}`,
       amountUSD: price,
       userId: "manager",
       userName: "المدير",
       timestamp: new Date().toISOString(),
     };
-    // Snapshot the prior product so we can roll back on RLS / network failure.
-    const prevProduct = stateRef.current.products.find((p) => p.id === productId);
     setState((prev) => ({
       ...prev,
-      products: prev.products.map((p) => (p.id === productId ? { ...p, cost, price } : p)),
       activityFeed: [entry, ...prev.activityFeed].slice(0, 100),
     }));
-    if (!user) return { error: "يجب تسجيل الدخول" };
-    const r = await persistProductPrice(productId, price, { id: user.id, displayName: user.displayName });
-    if (r.error) {
-      // Roll back local optimistic update.
-      if (prevProduct) {
-        setState((prev) => ({
-          ...prev,
-          products: prev.products.map((p) => (p.id === productId ? prevProduct : p)),
-        }));
-      }
-      return { error: r.error };
-    }
-    return {};
-  }, [setState, user]);
+    return updateCatalogItem(productId, {
+      sellPrice: price,
+      costPrice: Number.isFinite(cost) ? cost : null,
+    });
+  }, [setState, updateCatalogItem]);
 
   const adjustStock = useCallback((productId: string, delta: number) => {
-    setState((prev) => ({
-      ...prev,
-      products: prev.products.map((p) =>
-        p.id === productId ? { ...p, stock: Math.max(0, p.stock + delta) } : p
-      ),
-    }));
-  }, [setState]);
+    setState((prev) => {
+      const catalogItems = prev.catalogItems.map((c) =>
+        c.id === productId ? { ...c, stockQuantity: Math.max(0, c.stockQuantity + delta) } : c,
+      );
+      const { products } = deriveLegacyFromCatalog(catalogItems, prev.itemSales);
+      return { ...prev, catalogItems, products };
+    });
+    // Best-effort write-through. Persist the new absolute stock to the DB
+    // via the catalog API so realtime listeners on other clients update too.
+    if (user) {
+      const current = stateRef.current.catalogItems.find((c) => c.id === productId);
+      if (current) {
+        void updateCatalogItem(productId, {
+          stockQuantity: Math.max(0, current.stockQuantity + delta),
+        });
+      }
+    }
+  }, [setState, updateCatalogItem, user]);
+
+  // Legacy write paths now delegate to the unified catalog API. The
+  // store/kitchen tabs in the manager dashboard call these functions; we
+  // route them into catalog_items so old UI keeps working while the
+  // single canonical table is the only thing being mutated.
 
   const addProduct = useCallback(async (product: Omit<Product, "id" | "createdAt">): Promise<{ error?: string }> => {
-    if (!user) return { error: "يجب تسجيل الدخول" };
-    const r = await persistProductInsert({
-      user: { id: user.id, displayName: user.displayName },
+    return addCatalogItem({
       name: product.name,
-      category: product.category,
-      price: product.price,
-      priceCurrency: product.priceCurrency,
-      cost: product.cost,
-      costCurrency: product.costCurrency,
-      stock: product.stock,
+      // Legacy ProductCategory → flat catalog category. Most rows will be
+      // 'supplements'; accessory becomes 'accessories'; drink/water becomes
+      // 'drinks'; everything else falls back to 'other'.
+      category:
+        product.category === "accessory" ? "accessories" :
+        product.category === "drink"     ? "drinks"      :
+        product.category === "water"     ? "drinks"      :
+        product.category === "other"     ? "other"       :
+        "supplements",
+      itemType:
+        product.category === "water"     ? "water" :
+        product.category === "drink"     ? "drink" :
+        product.category === "accessory" ? "product" :
+        "supplement",
+      sellCurrency: product.priceCurrency ?? "usd",
+      sellPrice: product.price,
+      costCurrency: product.cost == null ? null : (product.costCurrency ?? "usd"),
+      costPrice: product.cost,
+      stockQuantity: product.stock,
+      trackStock: true,
       lowStockThreshold: product.lowStockThreshold,
+      sortOrder: 0,
+      isActive: true,
     });
-    if (r.error || !r.data) return { error: r.error ?? "تعذّر حفظ المنتج" };
-    const row = r.data;
-    const rowCost = row.cost == null ? null : Number(row.cost);
-    const full: Product = {
-      id: String(row.id),
-      name: String(row.name ?? product.name),
-      category: String(row.category ?? product.category) as Product["category"],
-      cost: rowCost ?? product.cost ?? null,
-      costCurrency: String(row.cost_currency ?? product.costCurrency ?? "usd") as Currency,
-      price: Number(row.price ?? product.price),
-      priceCurrency: String(row.price_currency ?? product.priceCurrency ?? "usd") as Currency,
-      stock: Number(row.stock ?? product.stock ?? 0),
-      lowStockThreshold: Number(row.low_stock_threshold ?? product.lowStockThreshold ?? 3),
-      createdAt: String(row.created_at ?? new Date().toISOString().split("T")[0]),
-    };
-    setState((prev) => ({ ...prev, products: [...prev.products, full] }));
-    return {};
-  }, [setState, user]);
+  }, [addCatalogItem]);
 
   const addFoodItem = useCallback(async (item: Omit<FoodItem, "id">): Promise<{ error?: string }> => {
-    if (!user) return { error: "يجب تسجيل الدخول" };
-    const r = await persistFoodItemInsert({
-      user: { id: user.id, displayName: user.displayName },
+    // Legacy FoodItemCategory uses 'meals' / 'drinks' / etc. Most kitchen
+    // items map cleanly into the new flat enum; 'food' (the default in
+    // pre-0023 seed data) becomes 'meals' or 'drinks' based on item type.
+    const isWater  = /ماء/.test(item.name);
+    const isDrinkName = ["قهوة", "شاي", "مشروب طاقة", "BCAA", "Pre-workout"].includes(item.name)
+      || isWater;
+    const newCategory: CatalogItemCategory =
+      item.category === "meals"  ? "meals"  :
+      item.category === "drinks" ? "drinks" :
+      isDrinkName                ? "drinks" :
+      "meals";
+    const newItemType: CatalogItemType =
+      isWater                    ? "water" :
+      isDrinkName                ? "drink" :
+      "meal";
+    return addCatalogItem({
       name: item.name,
-      category: item.category,
-      priceSYP: item.price_syp,
-      costSYP: item.cost_syp ?? (item.cost ?? null),
-      costUSD: item.cost_usd ?? null,
-      description: item.description ?? null,
+      category: newCategory,
+      itemType: newItemType,
+      sellCurrency: "syp",
+      sellPrice: item.price_syp,
+      costCurrency: item.cost_syp != null ? "syp" : item.cost_usd != null ? "usd" : null,
+      costPrice: item.cost_syp ?? item.cost_usd ?? null,
+      stockQuantity: 0,
+      trackStock: false,
+      lowStockThreshold: 3,
       sortOrder: item.sort_order ?? 0,
       isActive: item.is_active,
     });
-    if (r.error || !r.data) return { error: r.error ?? "تعذّر حفظ الصنف" };
-    const row = r.data;
-    const full: FoodItem = {
-      id: String(row.id),
-      name: String(row.name ?? item.name),
-      category: String(row.category ?? item.category) as FoodItem["category"],
-      cost_syp: row.cost_syp == null ? null : Number(row.cost_syp),
-      cost_usd: row.cost_usd == null ? null : Number(row.cost_usd),
-      price_syp: Number(row.price_syp ?? item.price_syp),
-      is_active: !!row.is_active,
-      description: row.description == null ? null : String(row.description),
-      sort_order: row.sort_order == null ? 0 : Number(row.sort_order),
-    };
-    setState((prev) => ({ ...prev, foodItems: [...prev.foodItems, full] }));
-    return {};
-  }, [setState, user]);
+  }, [addCatalogItem]);
 
   const updateFoodItem = useCallback(async (id: string, updates: Partial<FoodItem>): Promise<{ error?: string }> => {
-    if (!user) return { error: "يجب تسجيل الدخول" };
-    const prev = stateRef.current.foodItems.find((f) => f.id === id);
-    // Optimistic: apply the partial update locally first, roll back on RLS rejection.
-    setState((s) => ({
-      ...s,
-      foodItems: s.foodItems.map((f) => (f.id === id ? { ...f, ...updates } : f)),
-    }));
-    const r = await persistFoodItemUpdate({
-      user: { id: user.id, displayName: user.displayName },
-      id,
-      fields: {
-        name: updates.name,
-        category: updates.category,
-        priceSYP: updates.price_syp,
-        costSYP: updates.cost_syp,
-        costUSD: updates.cost_usd,
-        description: updates.description,
-        sortOrder: updates.sort_order,
-        isActive: updates.is_active,
-      },
-    });
-    if (r.error) {
-      if (prev) setState((s) => ({
-        ...s,
-        foodItems: s.foodItems.map((f) => (f.id === id ? prev : f)),
-      }));
-      return { error: r.error };
-    }
-    return {};
-  }, [setState, user]);
+    // Map FoodItem partial → catalog partial. Only fields the manager
+    // can change here actually move through; we don't try to derive
+    // category/item_type from a category change because the legacy
+    // category enum is wider than ours — manager edits the new fields
+    // directly via the catalog dashboard for those.
+    const fields: Partial<CatalogItemDraft> = {};
+    if (updates.name !== undefined)        fields.name              = updates.name;
+    if (updates.price_syp !== undefined) { fields.sellPrice         = updates.price_syp; fields.sellCurrency = "syp"; }
+    if (updates.cost_syp !== undefined)  { fields.costPrice         = updates.cost_syp ?? null; fields.costCurrency = updates.cost_syp == null ? null : "syp"; }
+    if (updates.cost_usd !== undefined)  { fields.costPrice         = updates.cost_usd ?? null; fields.costCurrency = updates.cost_usd == null ? null : "usd"; }
+    if (updates.is_active !== undefined)   fields.isActive          = updates.is_active;
+    if (updates.sort_order !== undefined)  fields.sortOrder         = updates.sort_order;
+    return updateCatalogItem(id, fields);
+  }, [updateCatalogItem]);
 
   const removeFoodItem = useCallback(async (id: string): Promise<{ error?: string }> => {
-    if (!user) return { error: "يجب تسجيل الدخول" };
-    const prev = stateRef.current.foodItems.find((f) => f.id === id);
-    setState((s) => ({ ...s, foodItems: s.foodItems.filter((f) => f.id !== id) }));
-    const r = await persistFoodItemDelete({
-      user: { id: user.id, displayName: user.displayName },
-      id,
-    });
-    if (r.error) {
-      if (prev) setState((s) => ({ ...s, foodItems: [...s.foodItems, prev] }));
-      return { error: r.error };
-    }
-    return {};
-  }, [setState, user]);
+    return removeCatalogItem(id);
+  }, [removeCatalogItem]);
 
   const addInBodySession = useCallback((session: InBodySession) => {
     const entry: ActivityEntry = {
@@ -752,6 +1041,35 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => { void supabase.removeChannel(channel); };
   }, [state.localSession?.id, state.localSession?.status, refreshIncome]);
 
+  // ── Catalog realtime: keep catalog_items in sync across roles ─────
+  // When the manager edits a price/cost/stock, every reception session must
+  // see the new value without a hard refresh. Subscribe to catalog_items and
+  // refetch on any insert/update/delete. Legacy compat fields (foodItems,
+  // products) are re-derived from the catalogItems result.
+  // Depend on user?.id (not the full user object) so the channel is only
+  // re-created on actual sign-in/out, never on incidental useAuth re-renders.
+  const userId = user?.id ?? null;
+  useEffect(() => {
+    if (!userId) return;
+    const supabase = supabaseBrowser();
+
+    async function refetchCatalog() {
+      const { data } = await supabase.from("catalog_items").select("*");
+      const rows = (data ?? []) as CatalogRow[];
+      const catalogItems = rows.map(rowToCatalogItem).sort(catalogItemSort);
+      setState((prev) => {
+        const { foodItems, products } = deriveLegacyFromCatalog(catalogItems, prev.itemSales);
+        return { ...prev, catalogItems, foodItems, products };
+      });
+    }
+
+    const channel = supabase
+      .channel(`catalog-items-${userId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "catalog_items" }, () => void refetchCatalog())
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [userId, setState]);
+
   // ── Local session ──────────────────────────────────────────────────────────
 
   const setLocalSession = useCallback((session: LocalSession | null) => {
@@ -802,6 +1120,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const value: StoreContextType = {
     ...state,
+    addCatalogItem,
+    updateCatalogItem,
+    removeCatalogItem,
+    addItemSale,
+    cancelItemSale,
     addSale,
     reverseSale,
     cancelSale,

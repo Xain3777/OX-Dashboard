@@ -30,7 +30,8 @@ import { STAFF } from "@/lib/mock-data";
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
 import { useCurrency } from "@/lib/currency-context";
-import { pushSale, cancelTransaction, persistProductStockAdjustment } from "@/lib/supabase/intake";
+import { pushItemSale, cancelTransaction, persistProductStockAdjustment } from "@/lib/supabase/intake";
+import type { ItemSale, PaymentMethod } from "@/lib/types";
 import BarcodeScanner, { type CatalogItem } from "@/components/BarcodeScanner";
 
 const PRODUCT_CATEGORY_OPTIONS: ProductCategory[] = [
@@ -254,8 +255,9 @@ export default function StoreBlock() {
   const {
     products,
     sales,
-    addSale,
-    cancelSale,
+    catalogItems,
+    addItemSale,
+    cancelItemSale,
     reverseSale,
     updateProductPrice,
     adjustStock,
@@ -263,10 +265,10 @@ export default function StoreBlock() {
     activityFeed,
   } = useStore();
 
-  // Quick-sale form state
+  // Quick-sale form state. Currency is no longer chosen by the cashier —
+  // it's read from the catalog row's sellCurrency at sale time.
   const [saleProductId, setSaleProductId] = useState<string>(products[0]?.id ?? "");
   const [saleQty,       setSaleQty]       = useState<number>(1);
-  const [saleCurrency,  setSaleCurrency]  = useState<Currency>("usd");
   const [saleError,     setSaleError]     = useState<string>("");
   const [saleSuccess,   setSaleSuccess]   = useState<boolean>(false);
 
@@ -325,40 +327,63 @@ export default function StoreBlock() {
     if (!saleProductId) { setSaleError("اختر منتجاً."); return; }
     if (!saleQty || saleQty < 1) { setSaleError("يجب أن تكون الكمية 1 على الأقل."); return; }
 
-    const product = products.find(p => p.id === saleProductId);
-    if (!product) { setSaleError("المنتج غير موجود."); return; }
-    if (saleQty > product.stock) {
-      setSaleError(`مخزون غير كافٍ. المتاح: ${product.stock} وحدة.`);
+    // Resolve the canonical catalog row — that's where currency lives.
+    const catalogRow = catalogItems.find((c) => c.id === saleProductId);
+    if (!catalogRow) { setSaleError("الصنف غير موجود في الكتالوج."); return; }
+    if (catalogRow.trackStock && saleQty > catalogRow.stockQuantity) {
+      setSaleError(`مخزون غير كافٍ. المتاح: ${catalogRow.stockQuantity} وحدة.`);
+      return;
+    }
+    if (!exchangeRate || exchangeRate <= 0) {
+      setSaleError("سعر الصرف غير صالح — حدّثه من أعلى الصفحة.");
       return;
     }
 
-    const r = await pushSale({
+    const paymentMethod: PaymentMethod =
+      catalogRow.sellCurrency === "syp" ? "cash" : "transfer";
+
+    const r = await pushItemSale({
       user: { id: user.id, displayName: user.displayName },
-      productName: product.name,
+      catalogItem: {
+        id: catalogRow.id,
+        name: catalogRow.name,
+        category: catalogRow.category,
+        itemType: catalogRow.itemType,
+        sellCurrency: catalogRow.sellCurrency,
+        sellPrice: Number(catalogRow.sellPrice),
+      },
       quantity: saleQty,
-      unitPrice: product.price,
-      total: product.price * saleQty,
-      currency: saleCurrency,
       exchangeRate,
+      paymentMethod,
       source: "store",
     });
     if (r.error) { setSaleError(r.error); return; }
 
     const row = r.data!;
-    addSale({
-      id:            String(row.id),
-      productId:     product.id,
-      productName:   product.name,
-      quantity:      saleQty,
-      unitPrice:     product.price,
-      total:         product.price * saleQty,
-      paymentMethod: saleCurrency === "syp" ? "cash" : "transfer",
-      currency:      saleCurrency,
-      source:        "store",
-      createdAt:     String(row.created_at ?? new Date().toISOString()),
-      createdBy:     user.id,
-      isReversal:    false,
-    });
+    const sale: ItemSale = {
+      id: String(row.id),
+      catalogItemId: catalogRow.id,
+      itemNameSnapshot: catalogRow.name,
+      categorySnapshot: catalogRow.category,
+      itemTypeSnapshot: catalogRow.itemType,
+      quantity: saleQty,
+      unitPrice: Number(catalogRow.sellPrice),
+      originalCurrency: catalogRow.sellCurrency,
+      originalTotal: Number(catalogRow.sellPrice) * saleQty,
+      exchangeRateToSyp: exchangeRate,
+      amountSyp: row.amount_syp == null ? null : Number(row.amount_syp),
+      amountUsd: row.amount_usd == null ? null : Number(row.amount_usd),
+      source: "store",
+      paymentMethod,
+      cashSessionId: row.cash_session_id == null ? null : String(row.cash_session_id),
+      createdBy: user.id,
+      createdByName: user.displayName,
+      createdAt: String(row.created_at ?? new Date().toISOString()),
+      cancelledAt: null,
+      cancelledBy: null,
+      cancelledReason: null,
+    };
+    addItemSale(sale);
 
     setSaleQty(1);
     setSaleSuccess(true);
@@ -483,28 +508,22 @@ export default function StoreBlock() {
             />
           </div>
 
-          {/* Currency */}
-          <div className="flex flex-col gap-1 w-32">
-            <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">العملة</label>
-            <select
-              value={saleCurrency}
-              onChange={e => setSaleCurrency(e.target.value as Currency)}
-              className="bg-[#111111] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] font-body focus:outline-none focus:border-[#F5C100]/50 transition-colors"
-            >
-              <option value="usd">دولار</option>
-              <option value="syp">ليرة سورية</option>
-            </select>
-          </div>
-
-          {/* Total preview */}
-          {selectedProduct && saleQty > 0 && (
-            <div className="flex flex-col gap-1">
-              <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">الإجمالي</label>
-              <div className="px-3 py-2 bg-[#0A0A0A] border border-[#252525]/60 rounded-sm font-mono tabular-nums text-xs text-[#F5C100] whitespace-nowrap">
-                {formatCurrency(selectedProduct.price * saleQty)}$
+          {/* Total preview — currency comes from the catalog row */}
+          {selectedProduct && saleQty > 0 && (() => {
+            const catalogRow = catalogItems.find((c) => c.id === selectedProduct.id);
+            const cur = catalogRow?.sellCurrency ?? "usd";
+            const total = (catalogRow?.sellPrice ?? selectedProduct.price) * saleQty;
+            return (
+              <div className="flex flex-col gap-1">
+                <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">الإجمالي</label>
+                <div className="px-3 py-2 bg-[#0A0A0A] border border-[#252525]/60 rounded-sm font-mono tabular-nums text-xs text-[#F5C100] whitespace-nowrap" dir="ltr">
+                  {cur === "syp"
+                    ? `${Math.round(total).toLocaleString("en-US")} ل.س`
+                    : `$${total.toFixed(2)}`}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Submit */}
           <button
@@ -880,10 +899,10 @@ export default function StoreBlock() {
                             if (!user) return;
                             const r = await cancelTransaction({
                               user: { id: user.id, displayName: user.displayName },
-                              table: "sales",
+                              table: "item_sales",
                               id: sale.id,
                             });
-                            if (!r.error) cancelSale(sale.id);
+                            if (!r.error) cancelItemSale(sale.id);
                           }}
                           className="p-1 text-[#555555] hover:text-[#FF3333] transition-colors cursor-pointer"
                           title="إلغاء"

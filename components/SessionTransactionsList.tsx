@@ -64,30 +64,24 @@ export default function SessionTransactionsList() {
         return (data ?? []) as T[];
       };
 
-      type SaleRow   = { id: string; product_name: string; quantity: number; total: number; currency: string | null; exchange_rate: number | null; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
+      type ItemSaleRow = { id: string; item_name_snapshot: string; quantity: number; amount_usd: number | null; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
       type SubRow    = { id: string; member_name: string; plan_type: string; paid_amount: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
       type InBodyRow = { id: string; member_name: string; session_type: string; amount: number; created_at: string; cancelled_at: string|null; cancelled_reason: string|null };
 
       const [sales, subs, inbody] = await Promise.all([
-        fetchTable<SaleRow>("sales",            "id, product_name, quantity, total, currency, exchange_rate, created_at, cancelled_at, cancelled_reason"),
+        fetchTable<ItemSaleRow>("item_sales", "id, item_name_snapshot, quantity, amount_usd, created_at, cancelled_at, cancelled_reason"),
         fetchTable<SubRow>("gym_subscriptions", "id, member_name, plan_type, paid_amount, created_at, cancelled_at, cancelled_reason", true),
         fetchTable<InBodyRow>("inbody_sessions","id, member_name, session_type, amount, created_at, cancelled_at, cancelled_reason", true),
       ]);
 
       const all: Row[] = [
         ...sales.map((s): Row => {
-          // Kitchen sales are stored as currency='syp'; the displayed amount
-          // must be converted to USD using the row's snapshot exchange_rate.
-          // Without this, a 14,000 SYP sale rendered as "$14,000.00" and
-          // inflated the session "دخل" total by ~rate× — see ultrareview.
-          const total = Number(s.total);
-          const cur   = String(s.currency ?? "usd");
-          const rate  = Number(s.exchange_rate ?? 1) || 1;
-          const amountUSD = cur === "syp" ? total / rate : total;
+          // amount_usd is a GENERATED column on item_sales — already
+          // converted from the row's snapshot exchange_rate at insert time.
           return {
-            id: s.id, kind: "sale", table: "sales",
-            label: `${s.quantity}× ${s.product_name}`,
-            amount: amountUSD,
+            id: s.id, kind: "sale", table: "item_sales",
+            label: `${s.quantity}× ${s.item_name_snapshot}`,
+            amount: Number(s.amount_usd ?? 0),
             createdAt: s.created_at, cancelledAt: s.cancelled_at, cancelledReason: s.cancelled_reason,
           };
         }),
@@ -117,7 +111,7 @@ export default function SessionTransactionsList() {
     if (!sessionId) return;
     const channel = supabase
       .channel(`session-txns-${sessionId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "sales",           filter: `cash_session_id=eq.${sessionId}` }, () => void load())
+      .on("postgres_changes", { event: "*", schema: "public", table: "item_sales",      filter: `cash_session_id=eq.${sessionId}` }, () => void load())
       .on("postgres_changes", { event: "*", schema: "public", table: "gym_subscriptions", filter: `cash_session_id=eq.${sessionId}` }, () => void load())
       .on("postgres_changes", { event: "*", schema: "public", table: "inbody_sessions", filter: `cash_session_id=eq.${sessionId}` }, () => void load())
       .subscribe();

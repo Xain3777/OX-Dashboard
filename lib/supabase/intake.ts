@@ -6,6 +6,7 @@
 
 import { supabaseBrowser } from "./client";
 import { getActiveSession, getLastClosedSession } from "./session";
+import type { PaymentMethod } from "../types";
 
 export type Currency = "syp" | "usd";
 export type DbRow = Record<string, unknown>;
@@ -303,11 +304,22 @@ export async function pushSubscription(opts: {
     if (!data) { logError("gym_subscriptions", "insert", "no row returned"); return { error: "لم يتم حفظ الاشتراك — تحقق من RLS" }; }
     logSuccess("gym_subscriptions", "insert", data);
 
+    const subLabel =
+      currency === "syp"
+        ? `${Math.round(opts.paidAmount).toLocaleString("en-US")} ل.س`
+        : `$${opts.paidAmount}`;
+    const subUSD =
+      currency === "usd"
+        ? opts.paidAmount
+        : opts.exchangeRate > 0
+          ? opts.paidAmount / opts.exchangeRate
+          : undefined;
     await pushActivity({
       user: opts.user,
       action: "subscription_create",
-      description: `اشتراك جديد — ${opts.memberName} (${opts.planType}) — $${opts.paidAmount}`,
-      amountUSD: currency === "usd" ? opts.paidAmount : undefined,
+      description: `اشتراك جديد — ${opts.memberName} (${opts.planType}) — ${subLabel}`,
+      amountUSD: subUSD,
+      amountSYP: currency === "syp" ? opts.paidAmount : amountSYP,
       entityType: "subscription",
       entityId: (data as DbRow).id as string,
     });
@@ -451,11 +463,23 @@ export async function pushSale(opts: {
     if (!data) { logError("sales", "insert", "no row returned"); return { error: "لم يتم حفظ البيع — تحقق من RLS" }; }
     logSuccess("sales", "insert", data);
 
+    const saleLabel =
+      currency === "syp"
+        ? `${Math.round(opts.total).toLocaleString("en-US")} ل.س`
+        : `$${opts.total}`;
+    const saleUSD =
+      currency === "usd"
+        ? opts.total
+        : opts.exchangeRate > 0
+          ? opts.total / opts.exchangeRate
+          : undefined;
+    const saleSYP = currency === "syp" ? opts.total : amountSYP;
     await pushActivity({
       user: opts.user,
       action: "sale_create",
-      description: `بيع ${opts.quantity}× ${opts.productName} — $${opts.total}`,
-      amountUSD: currency === "usd" ? opts.total : undefined,
+      description: `بيع ${opts.quantity}× ${opts.productName} — ${saleLabel}`,
+      amountUSD: saleUSD,
+      amountSYP: saleSYP,
       entityType: "sale",
       entityId: (data as DbRow).id as string,
     });
@@ -534,21 +558,40 @@ export async function pushExpense(opts: {
   amount: number;
   currency: Currency;
   category: string;
+  /** Live USD→SYP rate at the moment the expense is created. Snapshotted onto
+   *  the row so closeCashSession / fetchExpensesBreakdown can convert SYP
+   *  expenses to USD using the rate that was active at write time, never the
+   *  current rate. Required for SYP expenses; optional for USD-native ones
+   *  (where the rate isn't used to compute USD) but stored anyway for audit. */
+  exchangeRate?: number;
 }): Promise<{ data?: DbRow; error?: string }> {
   try {
     assertUser(opts.user);
     if (opts.amount <= 0) return { error: "المبلغ يجب أن يكون أكبر من صفر" };
+    if (opts.currency === "syp" && (!opts.exchangeRate || opts.exchangeRate <= 0)) {
+      return { error: "سعر الصرف مطلوب لإدخال مصروف بالليرة السورية" };
+    }
 
     const session = await getActiveSession();
     if (!session) return { error: "لا توجد جلسة نقدية مفتوحة — افتح جلسة أولاً" };
     const supabase = supabaseBrowser();
     const cashSessionId = session.id;
 
+    const rate = opts.exchangeRate && opts.exchangeRate > 0 ? opts.exchangeRate : null;
+    const amountSYP =
+      opts.currency === "syp"
+        ? Math.round(opts.amount)
+        : rate != null
+          ? Math.round(opts.amount * rate)
+          : null;
+
     const payload = {
       description: opts.description,
       amount: opts.amount,
       currency: opts.currency,
       category: opts.category,
+      exchange_rate: rate,
+      amount_syp: amountSYP,
       cash_session_id: cashSessionId,
       created_by: opts.user.id,
     };
@@ -579,9 +622,326 @@ export async function pushExpense(opts: {
   }
 }
 
+// ── Unified catalog: catalog_items + item_sales (post-0030 schema) ──
+//
+// New write paths that target the unified catalog tables introduced by
+// migrations 0030/0031. The legacy pushSale / persistFoodItem* /
+// persistProduct* functions above remain callable for backward compat
+// during the cutover but are no longer invoked from the UI.
+//
+// Currency comes from the catalog row (sell_currency), never from the
+// cashier. amount_syp / amount_usd are GENERATED STORED columns on the
+// item_sales table — we never write them and the dashboard sums them
+// directly with no per-row conversion math.
+
+export interface CatalogItemDb {
+  id: string;
+  name: string;
+  category: string;
+  item_type: string;
+  sell_currency: "syp" | "usd";
+  sell_price: number;
+  cost_currency: "syp" | "usd" | null;
+  cost_price: number | null;
+  stock_quantity: number;
+  track_stock: boolean;
+  low_stock_threshold: number;
+  sort_order: number;
+  is_active: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function pushItemSale(opts: {
+  user: CurrentUser;
+  catalogItem: {
+    id: string;
+    name: string;
+    category: string;
+    itemType: string;
+    sellCurrency: "syp" | "usd";
+    sellPrice: number;
+  };
+  quantity: number;
+  /** Live USD↔SYP rate at sale time. Required for SYP items; for USD
+   *  items it's stored too (audit trail) but the math doesn't depend on it. */
+  exchangeRate: number;
+  paymentMethod?: PaymentMethod;
+  source: "kitchen" | "store";
+}): Promise<{ data?: DbRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (opts.quantity <= 0) return { error: "الكمية يجب أن تكون أكبر من صفر" };
+    if (!opts.exchangeRate || opts.exchangeRate <= 0) return { error: "سعر الصرف غير صالح" };
+    if (opts.catalogItem.sellPrice < 0) return { error: "السعر غير صالح" };
+
+    const session = await getActiveSession();
+    if (!session) return { error: "لا توجد جلسة نقدية مفتوحة — افتح جلسة أولاً" };
+
+    const supabase = supabaseBrowser();
+    const unitPrice = Number(opts.catalogItem.sellPrice);
+    const originalTotal = Number((unitPrice * opts.quantity).toFixed(4));
+
+    const payload = {
+      catalog_item_id: opts.catalogItem.id,
+      item_name_snapshot: opts.catalogItem.name,
+      category_snapshot: opts.catalogItem.category,
+      item_type_snapshot: opts.catalogItem.itemType,
+      quantity: opts.quantity,
+      unit_price: unitPrice,
+      original_currency: opts.catalogItem.sellCurrency,
+      original_total: originalTotal,
+      exchange_rate_to_syp: opts.exchangeRate,
+      source: opts.source,
+      payment_method: opts.paymentMethod ?? "cash",
+      cash_session_id: session.id,
+      created_by: opts.user.id,
+      created_by_name: opts.user.displayName,
+    };
+    console.log("Supabase insert payload:", { table: "item_sales", payload });
+
+    const { data, error } = await supabase
+      .from("item_sales")
+      .insert(payload)
+      .select()
+      .single();
+
+    if (error) { logError("item_sales", "insert", error); return { error: error.message }; }
+    if (!data) { logError("item_sales", "insert", "no row returned"); return { error: "لم يتم حفظ البيع — تحقق من RLS" }; }
+    logSuccess("item_sales", "insert", data);
+
+    // Decrement stock when the catalog item tracks inventory. We don't
+    // gate this on currency or item_type — the catalog row's track_stock
+    // is the source of truth. Failure here is logged but not surfaced
+    // to the cashier (the sale already landed; stock can be reconciled).
+    void supabase
+      .from("catalog_items")
+      .select("track_stock, stock_quantity")
+      .eq("id", opts.catalogItem.id)
+      .maybeSingle()
+      .then(async ({ data: rowData }) => {
+        const row = rowData as { track_stock?: boolean; stock_quantity?: number } | null;
+        if (!row?.track_stock) return;
+        const next = Math.max(0, Number(row.stock_quantity ?? 0) - opts.quantity);
+        const { error: stockErr } = await supabase
+          .from("catalog_items")
+          .update({ stock_quantity: next })
+          .eq("id", opts.catalogItem.id);
+        if (stockErr) logError("catalog_items", "stock-decrement", stockErr);
+      });
+
+    const rowAny = data as DbRow & { amount_usd?: number; amount_syp?: number };
+    const usd = Number(rowAny.amount_usd ?? 0);
+    const syp = Number(rowAny.amount_syp ?? 0);
+    const label = opts.catalogItem.sellCurrency === "syp"
+      ? `${Math.round(originalTotal).toLocaleString("en-US")} ل.س`
+      : `$${originalTotal}`;
+    await pushActivity({
+      user: opts.user,
+      action: "sale_create",
+      description: `بيع ${opts.quantity}× ${opts.catalogItem.name} — ${label}`,
+      amountUSD: usd > 0 ? usd : undefined,
+      amountSYP: syp > 0 ? syp : undefined,
+      entityType: "item_sale",
+      entityId: rowAny.id as string,
+    });
+    return { data: rowAny };
+  } catch (e) {
+    logError("item_sales", "insert", e);
+    return { error: String(e) };
+  }
+}
+
+// ── catalog_items management (manager-only INSERT/DELETE; reception
+// can only edit sell_price / stock_quantity / low_stock_threshold,
+// enforced by the BEFORE UPDATE trigger from migration 0030) ──
+
+export async function persistCatalogItemInsert(opts: {
+  user: CurrentUser;
+  name: string;
+  category: string;
+  itemType: string;
+  sellCurrency: "syp" | "usd";
+  sellPrice: number;
+  costCurrency?: "syp" | "usd" | null;
+  costPrice?: number | null;
+  stockQuantity?: number;
+  trackStock?: boolean;
+  lowStockThreshold?: number;
+  sortOrder?: number;
+  isActive?: boolean;
+}): Promise<{ data?: DbRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    const trimmedName = opts.name.trim();
+    if (!trimmedName) return { error: "أدخل اسم الصنف" };
+    if (!Number.isFinite(opts.sellPrice) || opts.sellPrice < 0) return { error: "سعر البيع غير صالح" };
+
+    const supabase = supabaseBrowser();
+    const payload = {
+      name: trimmedName,
+      category: opts.category,
+      item_type: opts.itemType,
+      sell_currency: opts.sellCurrency,
+      sell_price: opts.sellPrice,
+      cost_currency: opts.costCurrency ?? null,
+      cost_price: opts.costPrice == null || !Number.isFinite(opts.costPrice) ? null : opts.costPrice,
+      stock_quantity: Number.isInteger(opts.stockQuantity) && (opts.stockQuantity ?? 0) >= 0 ? opts.stockQuantity : 0,
+      track_stock: opts.trackStock ?? false,
+      low_stock_threshold:
+        Number.isInteger(opts.lowStockThreshold) && (opts.lowStockThreshold ?? 0) >= 0
+          ? opts.lowStockThreshold
+          : 3,
+      sort_order: Number.isInteger(opts.sortOrder) ? opts.sortOrder : 0,
+      is_active: opts.isActive ?? true,
+      created_by: opts.user.id,
+    };
+    console.log("Supabase insert payload:", { table: "catalog_items", payload });
+
+    const { data, error } = await supabase
+      .from("catalog_items")
+      .insert(payload)
+      .select()
+      .single();
+    if (error) { logError("catalog_items", "insert", error); return { error: error.message }; }
+    if (!data) { logError("catalog_items", "insert", "no row returned"); return { error: "لم يتم إضافة الصنف — تحقق من صلاحيات المدير" }; }
+    logSuccess("catalog_items", "insert", data);
+
+    await pushActivity({
+      user: opts.user,
+      action: "catalog_item_create",
+      description: `صنف جديد — ${trimmedName} (${opts.sellPrice} ${opts.sellCurrency === "syp" ? "ل.س" : "$"})`,
+      entityType: "catalog_item",
+      entityId: (data as DbRow).id as string,
+    });
+    return { data: data as DbRow };
+  } catch (e) {
+    logError("catalog_items", "insert", e);
+    return { error: String(e) };
+  }
+}
+
+export async function persistCatalogItemUpdate(opts: {
+  user: CurrentUser;
+  id: string;
+  fields: {
+    name?: string;
+    category?: string;
+    itemType?: string;
+    sellCurrency?: "syp" | "usd";
+    sellPrice?: number;
+    costCurrency?: "syp" | "usd" | null;
+    costPrice?: number | null;
+    stockQuantity?: number;
+    trackStock?: boolean;
+    lowStockThreshold?: number;
+    sortOrder?: number;
+    isActive?: boolean;
+  };
+}): Promise<{ data?: DbRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.id) return { error: "معرّف الصنف مفقود" };
+
+    const mapped: Record<string, unknown> = {};
+    if (opts.fields.name !== undefined)            mapped.name             = opts.fields.name.trim();
+    if (opts.fields.category !== undefined)        mapped.category         = opts.fields.category;
+    if (opts.fields.itemType !== undefined)        mapped.item_type        = opts.fields.itemType;
+    if (opts.fields.sellCurrency !== undefined)    mapped.sell_currency    = opts.fields.sellCurrency;
+    if (opts.fields.sellPrice !== undefined) {
+      if (!Number.isFinite(opts.fields.sellPrice) || opts.fields.sellPrice < 0) return { error: "سعر البيع غير صالح" };
+      mapped.sell_price = opts.fields.sellPrice;
+    }
+    if (opts.fields.costCurrency !== undefined)    mapped.cost_currency    = opts.fields.costCurrency ?? null;
+    if (opts.fields.costPrice !== undefined)
+      mapped.cost_price = opts.fields.costPrice == null || !Number.isFinite(opts.fields.costPrice) ? null : opts.fields.costPrice;
+    if (opts.fields.stockQuantity !== undefined && Number.isInteger(opts.fields.stockQuantity) && opts.fields.stockQuantity >= 0)
+      mapped.stock_quantity = opts.fields.stockQuantity;
+    if (opts.fields.trackStock !== undefined)      mapped.track_stock      = opts.fields.trackStock;
+    if (opts.fields.lowStockThreshold !== undefined && Number.isInteger(opts.fields.lowStockThreshold) && opts.fields.lowStockThreshold >= 0)
+      mapped.low_stock_threshold = opts.fields.lowStockThreshold;
+    if (opts.fields.sortOrder !== undefined && Number.isInteger(opts.fields.sortOrder))
+      mapped.sort_order = opts.fields.sortOrder;
+    if (opts.fields.isActive !== undefined)        mapped.is_active        = opts.fields.isActive;
+    if (Object.keys(mapped).length === 0) return { error: "لا توجد تغييرات" };
+
+    const supabase = supabaseBrowser();
+    console.log("Supabase update payload:", { table: "catalog_items", id: opts.id, payload: mapped });
+    const { data, error } = await supabase
+      .from("catalog_items")
+      .update(mapped)
+      .eq("id", opts.id)
+      .select()
+      .single();
+    if (error) {
+      // The reception_locked_column trigger raises this when a non-manager
+      // tries to change a column outside (sell_price, stock_quantity,
+      // low_stock_threshold). Surface a localized error.
+      const msg = (error as { message?: string }).message ?? String(error);
+      if (msg.includes("reception_locked_column")) {
+        logError("catalog_items", "update-locked", error);
+        return { error: "لا يمكن للاستقبال تعديل هذا الحقل — المدير فقط" };
+      }
+      logError("catalog_items", "update", error);
+      return { error: msg };
+    }
+    if (!data) { logError("catalog_items", "update", "no row returned"); return { error: "لم يتم تعديل الصنف — تحقق من صلاحيات RLS" }; }
+    logSuccess("catalog_items", "update", data);
+
+    await pushActivity({
+      user: opts.user,
+      action: "catalog_item_update",
+      description: `تعديل صنف — ${(data as DbRow).name as string} (${Object.keys(mapped).join(", ")})`,
+      entityType: "catalog_item",
+      entityId: opts.id,
+    });
+    return { data: data as DbRow };
+  } catch (e) {
+    logError("catalog_items", "update", e);
+    return { error: String(e) };
+  }
+}
+
+export async function persistCatalogItemDelete(opts: {
+  user: CurrentUser;
+  id: string;
+}): Promise<{ error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.id) return { error: "معرّف الصنف مفقود" };
+
+    const supabase = supabaseBrowser();
+    const { data, error } = await supabase
+      .from("catalog_items")
+      .delete()
+      .eq("id", opts.id)
+      .select();
+    if (error) { logError("catalog_items", "delete", error); return { error: error.message }; }
+    if (!data || (data as unknown[]).length === 0) {
+      logError("catalog_items", "delete", "no rows deleted — RLS may be blocking");
+      return { error: "لم يتم حذف الصنف — تحقق من صلاحيات المدير" };
+    }
+    logSuccess("catalog_items", "delete", data);
+
+    const row = (data as DbRow[])[0];
+    await pushActivity({
+      user: opts.user,
+      action: "catalog_item_delete",
+      description: `حذف صنف — ${(row.name as string) ?? opts.id}`,
+      entityType: "catalog_item",
+      entityId: opts.id,
+    });
+    return {};
+  } catch (e) {
+    logError("catalog_items", "delete", e);
+    return { error: String(e) };
+  }
+}
+
 // ── Cancellation (soft-delete) ────────────────────────────────
 
-export type CancellableTable = "sales" | "gym_subscriptions" | "inbody_sessions";
+export type CancellableTable = "sales" | "gym_subscriptions" | "inbody_sessions" | "item_sales";
 
 export async function cancelTransaction(opts: {
   user: CurrentUser;
@@ -665,29 +1025,26 @@ export async function computeSessionIncome(sessionId: string): Promise<{
     );
   };
 
-  // Kitchen sales may be in SYP (post-conversion). Sum them as USD
-  // by dividing each row's total by its exchange_rate when currency='syp'.
-  const sumKitchenAsUSD = async (): Promise<number> => {
+  // item_sales has GENERATED amount_usd — read it directly. The DB has
+  // already done the per-row currency math at write time.
+  const sumItemSalesUSD = async (source: "kitchen" | "store"): Promise<number> => {
     const { data } = await supabase
-      .from("sales")
-      .select("total, currency, exchange_rate")
+      .from("item_sales")
+      .select("amount_usd")
       .eq("cash_session_id", sessionId)
-      .eq("source", "kitchen")
+      .eq("source", source)
       .is("cancelled_at", null);
-    return (data ?? []).reduce((a: number, r: unknown) => {
-      const row = r as Record<string, unknown>;
-      const total = Number(row.total ?? 0);
-      const cur   = String(row.currency ?? "usd");
-      const rate  = Number(row.exchange_rate ?? 1) || 1;
-      return a + (cur === "syp" ? total / rate : total);
-    }, 0);
+    return (data ?? []).reduce(
+      (a: number, r: unknown) => a + Number((r as Record<string, unknown>).amount_usd ?? 0),
+      0,
+    );
   };
 
   const [subsTotal, inbodyTotal, storeTotal, mealsTotal] = await Promise.all([
     sumUSD("gym_subscriptions", "paid_amount"),
     sumUSD("inbody_sessions", "amount"),
-    sumUSD("sales", "total", { col: "source", val: "store" }),
-    sumKitchenAsUSD(),
+    sumItemSalesUSD("store"),
+    sumItemSalesUSD("kitchen"),
   ]);
 
   return {
@@ -831,27 +1188,24 @@ export async function closeCashSession(
       }, 0);
     };
 
-    // Kitchen sales are in SYP — convert each row to USD via its exchange_rate.
-    const sumKitchenAsUSD = async (): Promise<number> => {
+    // item_sales has GENERATED amount_usd — read it directly per source.
+    const sumItemSalesUSD = async (source: "kitchen" | "store"): Promise<number> => {
       const { data } = await supabase
-        .from("sales")
-        .select("total, currency, exchange_rate")
+        .from("item_sales")
+        .select("amount_usd")
         .eq("cash_session_id", sessionId)
-        .eq("source", "kitchen")
+        .eq("source", source)
         .is("cancelled_at", null);
-      return (data ?? []).reduce((a: number, r: unknown) => {
-        const row = r as Record<string, unknown>;
-        const total = Number(row.total ?? 0);
-        const cur   = String(row.currency ?? "usd");
-        const rate  = Number(row.exchange_rate ?? 1) || 1;
-        return a + (cur === "syp" ? total / rate : total);
-      }, 0);
+      return (data ?? []).reduce(
+        (a: number, r: unknown) => a + Number((r as Record<string, unknown>).amount_usd ?? 0),
+        0,
+      );
     };
 
     const [subsTotal, storeTotal, mealsTotal, inbodyTotal, expensesTotal] = await Promise.all([
       sumCol("gym_subscriptions", "paid_amount"),
-      sumCol("sales",           "total", { col: "source", val: "store" }),
-      sumKitchenAsUSD(),
+      sumItemSalesUSD("store"),
+      sumItemSalesUSD("kitchen"),
       sumCol("inbody_sessions", "amount"),
       sumExpenses(),
     ]);

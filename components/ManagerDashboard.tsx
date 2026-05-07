@@ -855,6 +855,7 @@ function KitchenDashboard() {
 function ExpensesManager() {
   const { expenses, addExpense } = useStore();
   const { user } = useAuth();
+  const { exchangeRate } = useCurrency();
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState<ExpenseCategory>("salaries");
   const [amount, setAmount] = useState("");
@@ -880,6 +881,7 @@ function ExpensesManager() {
       amount: a,
       currency: "usd",
       category,
+      exchangeRate,
     });
     if (r.error) { setError(r.error); return; }
     const row = r.data!;

@@ -32,15 +32,17 @@ function MemberSearch({
 
   const results = useMemo(() => {
     if (!query.trim()) return members.slice(0, 8);
-    const q = query.toLowerCase();
-    // Match by name OR phone substring — phone is not displayed in the
-    // dropdown to keep it clean, but receptionists can search by either.
+    // Arabic-friendly normalization to match the SubscriptionsBlock search
+    // (locale-aware lowercase + trim) so receptionists can find members by
+    // name or phone in either Arabic or Latin script.
+    const needle = query.toLocaleLowerCase("ar-SY").trim();
     return members
-      .filter(
-        (m) =>
-          m.name.toLowerCase().includes(q) ||
-          (m.phone ?? "").toLowerCase().includes(q)
-      )
+      .filter((m) => {
+        const haystack = [m.name, m.phone ?? ""]
+          .map((s) => s.toLocaleLowerCase("ar-SY"))
+          .join(" | ");
+        return haystack.includes(needle);
+      })
       .slice(0, 8);
   }, [query, members]);
 
@@ -71,8 +73,14 @@ function MemberSearch({
             <button key={m.id} type="button"
               className="w-full text-right px-3 py-2 text-xs text-[#F0EDE6] hover:bg-[#252525] font-body transition-colors"
               onClick={() => { onChange(m.id, m.name); setQuery(""); setOpen(false); }}>
-              <span className="flex items-center gap-2">
-                <Users size={10} className="text-[#555555]" />{m.name}
+              <span className="flex items-center justify-between gap-2">
+                <span className="flex items-center gap-2 min-w-0">
+                  <Users size={10} className="text-[#555555] shrink-0" />
+                  <span className="truncate">{m.name}</span>
+                </span>
+                {m.phone && (
+                  <span className="font-mono text-[10px] text-[#777777] shrink-0" dir="ltr">{m.phone}</span>
+                )}
               </span>
             </button>
           ))}
@@ -96,6 +104,7 @@ export default function InBodyBlock() {
   const [guestName,  setGuestName]  = useState("");
   const [error,      setError]      = useState("");
   const [success,    setSuccess]    = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
     const supabase = supabaseBrowser();
@@ -132,6 +141,26 @@ export default function InBodyBlock() {
     () => todaySessions.filter(s => !s.cancelled).reduce((sum, s) => sum + s.priceUSD, 0),
     [todaySessions]
   );
+
+  // Search across name, member type label, and (when known) phone — mirrors
+  // the SubscriptionsBlock search bar so receptionists have the same UX in
+  // both sections. Phone is looked up via the in-memory `members` cache.
+  const filteredSessions = useMemo(() => {
+    if (!searchQuery.trim()) return todaySessions;
+    const needle = searchQuery.toLocaleLowerCase("ar-SY").trim();
+    const phoneById = new Map(members.map((m) => [m.id, m.phone ?? ""]));
+    return todaySessions.filter((s) => {
+      const haystack = [
+        s.memberName,
+        s.memberType === "gym_member" ? "عضو النادي عضو" : "زيارة خارجية زائر",
+        s.memberId ? phoneById.get(s.memberId) ?? "" : "",
+        s.createdByName ?? "",
+      ]
+        .map((x) => x.toLocaleLowerCase("ar-SY"))
+        .join(" | ");
+      return haystack.includes(needle);
+    });
+  }, [todaySessions, searchQuery, members]);
 
   async function handleRecord() {
     setError(""); setSuccess(false);
@@ -206,8 +235,30 @@ export default function InBodyBlock() {
       </div>
 
       {/* Today's sessions */}
-      <div className="px-5 pt-3 pb-2">
+      <div className="px-5 pt-3 pb-2 flex items-center justify-between gap-3">
         <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">جلسات اليوم</p>
+        <div className="flex items-center gap-2 bg-[#111111] border border-[#252525] rounded px-2 py-1 min-w-[260px]">
+          <svg width="12" height="12" viewBox="0 0 14 14" fill="none" className="text-[#555555] shrink-0">
+            <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.4" />
+            <path d="M9.5 9.5L12 12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+          </svg>
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="بحث بالاسم، الهاتف، نوع الزيارة، الموظف…"
+            className="flex-1 bg-transparent border-0 text-[#F0EDE6] font-body text-xs focus:outline-none placeholder:text-[#555555]"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              className="px-1.5 font-mono text-[10px] text-[#777777] hover:text-[#F0EDE6] transition-colors cursor-pointer"
+            >
+              مسح
+            </button>
+          )}
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
@@ -219,10 +270,12 @@ export default function InBodyBlock() {
             </tr>
           </thead>
           <tbody>
-            {todaySessions.length === 0 ? (
-              <tr><td colSpan={5} className="px-4 py-6 text-center font-mono text-[10px] text-[#555555] uppercase tracking-widest">لا توجد جلسات اليوم</td></tr>
+            {filteredSessions.length === 0 ? (
+              <tr><td colSpan={5} className="px-4 py-6 text-center font-mono text-[10px] text-[#555555] uppercase tracking-widest">
+                {todaySessions.length === 0 ? "لا توجد جلسات اليوم" : "لا توجد نتائج للبحث"}
+              </td></tr>
             ) : (
-              todaySessions.map((s) => (
+              filteredSessions.map((s) => (
                 <tr key={s.id} className={`border-b border-[#252525]/60 transition-colors ${s.cancelled ? "opacity-40 bg-[#1A0A0A]/30" : "hover:bg-[#252525]/30"}`}>
                   <td className="px-4 py-2.5 text-[#F0EDE6] whitespace-nowrap">
                     <div className={`flex items-center gap-1.5 ${s.cancelled ? "line-through text-[#777777]" : ""}`}>
