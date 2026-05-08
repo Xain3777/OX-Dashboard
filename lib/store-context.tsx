@@ -220,7 +220,12 @@ function rowToCatalogItem(row: CatalogRow): CatalogItem {
     name: String(row.name ?? ""),
     category: String(row.category ?? "other") as CatalogItemCategory,
     itemType: String(row.item_type ?? "other") as CatalogItemType,
-    sellCurrency: String(row.sell_currency ?? "usd") as Currency,
+    // Default to "syp" — this gym is SYP-priced for the vast majority of
+    // catalog items. A NULL sell_currency would mean a bad row (every catalog
+    // INSERT path supplies it), but defaulting to "syp" is the safer
+    // misrecord: a SYP-priced item recorded as SYP at 7000 is fine, while
+    // recording it as USD inflates downstream amount_syp by ~exchangeRate×.
+    sellCurrency: String(row.sell_currency ?? "syp") as Currency,
     sellPrice: Number(row.sell_price ?? 0),
     costCurrency: row.cost_currency == null ? null : (String(row.cost_currency) as Currency),
     costPrice: row.cost_price == null ? null : Number(row.cost_price),
@@ -244,7 +249,10 @@ function rowToItemSale(row: CatalogRow): ItemSale {
     itemTypeSnapshot: String(row.item_type_snapshot ?? "other") as CatalogItemType,
     quantity: Number(row.quantity ?? 0),
     unitPrice: Number(row.unit_price ?? 0),
-    originalCurrency: String(row.original_currency ?? "usd") as Currency,
+    // Default "syp" for the same reason as sellCurrency above — recording
+    // a SYP-priced sale as SYP is the safe misclassification; recording
+    // it as USD blows up amount_syp by a 4-figure factor.
+    originalCurrency: String(row.original_currency ?? "syp") as Currency,
     originalTotal: Number(row.original_total ?? 0),
     exchangeRateToSyp: row.exchange_rate_to_syp == null ? null : Number(row.exchange_rate_to_syp),
     amountSyp: row.amount_syp == null ? null : Number(row.amount_syp),
