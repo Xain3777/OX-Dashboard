@@ -30,7 +30,7 @@ import { STAFF } from "@/lib/mock-data";
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
 import { useCurrency } from "@/lib/currency-context";
-import { pushItemSale, cancelTransaction, persistProductStockAdjustment } from "@/lib/supabase/intake";
+import { pushItemSale, cancelTransaction } from "@/lib/supabase/intake";
 import type { ItemSale, PaymentMethod } from "@/lib/types";
 import BarcodeScanner, { type CatalogItem } from "@/components/BarcodeScanner";
 
@@ -258,7 +258,6 @@ export default function StoreBlock() {
     catalogItems,
     addItemSale,
     cancelItemSale,
-    reverseSale,
     updateProductPrice,
     adjustStock,
     addProduct,
@@ -792,10 +791,9 @@ export default function StoreBlock() {
                               if (!Number.isInteger(n) || n <= 0) { setStockAddError("كمية غير صالحة"); return; }
                               setStockAddBusy(true);
                               setStockAddError("");
-                              const r = await persistProductStockAdjustment(product.id, n, { id: user.id, displayName: user.displayName });
+                              const r = await adjustStock(product.id, n);
                               setStockAddBusy(false);
                               if (r.error) { setStockAddError(r.error); return; }
-                              adjustStock(product.id, n);
                               setStockAddingId(null);
                               setStockAddQty("");
                               setProductToast(`تمت إضافة ${n} وحدة`);

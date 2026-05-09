@@ -456,7 +456,7 @@ function StoreDashboard() {
       const r = await updateProductPrice(p.id, c, pr);
       if (r.error) console.error("updateProductPrice failed:", r.error);
     }
-    if (!isNaN(ns) && ns >= 0) adjustStock(p.id, ns - p.stock);
+    if (!isNaN(ns) && ns >= 0) void adjustStock(p.id, ns - p.stock);
     cancelEdit(p.id);
   }
 

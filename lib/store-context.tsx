@@ -157,7 +157,7 @@ export interface StoreContextType extends StoreState {
   cancelSale: (id: string) => void;
   updateProductCost: (productId: string, cost: number) => void;
   updateProductPrice: (productId: string, cost: number, price: number) => Promise<{ error?: string }>;
-  adjustStock: (productId: string, delta: number) => void;
+  adjustStock: (productId: string, delta: number) => Promise<{ error?: string }>;
   addProduct: (product: Omit<Product, "id" | "createdAt">) => Promise<{ error?: string }>;
   addFoodItem: (item: Omit<FoodItem, "id">) => Promise<{ error?: string }>;
   updateFoodItem: (id: string, updates: Partial<FoodItem>) => Promise<{ error?: string }>;
@@ -505,7 +505,7 @@ const StoreContext = createContext<StoreContextType>({
   cancelSale: () => {},
   updateProductCost: () => {},
   updateProductPrice: async () => ({}),
-  adjustStock: () => {},
+  adjustStock: async () => ({}),
   addProduct: async () => ({}),
   addFoodItem: async () => ({}),
   updateFoodItem: async () => ({}),
@@ -524,7 +524,7 @@ const StoreContext = createContext<StoreContextType>({
   pushActivity: () => {},
   setLocalSession: () => {},
   openLocalSession: () => {},
-  closeLocalSession: (_a: number, _s: SessionIncome, _n?: string) => {},
+  closeLocalSession: () => {},
   storeIncome: 0,
   mealsIncome: 0,
   subsIncome: 0,
@@ -806,25 +806,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     });
   }, [setState, updateCatalogItem]);
 
-  const adjustStock = useCallback((productId: string, delta: number) => {
-    setState((prev) => {
-      const catalogItems = prev.catalogItems.map((c) =>
-        c.id === productId ? { ...c, stockQuantity: Math.max(0, c.stockQuantity + delta) } : c,
-      );
-      const { products } = deriveLegacyFromCatalog(catalogItems, prev.itemSales);
-      return { ...prev, catalogItems, products };
-    });
-    // Best-effort write-through. Persist the new absolute stock to the DB
-    // via the catalog API so realtime listeners on other clients update too.
-    if (user) {
-      const current = stateRef.current.catalogItems.find((c) => c.id === productId);
-      if (current) {
-        void updateCatalogItem(productId, {
-          stockQuantity: Math.max(0, current.stockQuantity + delta),
-        });
-      }
-    }
-  }, [setState, updateCatalogItem, user]);
+  const adjustStock = useCallback(async (productId: string, delta: number): Promise<{ error?: string }> => {
+    const current = stateRef.current.catalogItems.find((c) => c.id === productId);
+    if (!current) return { error: "المنتج غير موجود" };
+    const nextStock = Math.max(0, current.stockQuantity + delta);
+    return updateCatalogItem(productId, { stockQuantity: nextStock });
+  }, [updateCatalogItem]);
 
   // Legacy write paths now delegate to the unified catalog API. The
   // store/kitchen tabs in the manager dashboard call these functions; we
