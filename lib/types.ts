@@ -26,15 +26,15 @@ export type PlanType =
 
 export type OfferType =
   | "none"
-  | "referral_4"          // bring 4+ friends → 1 month free
-  | "referral_9"          // bring 9+ friends → 2 months free
+  | "referral_4"          // legacy label for group_5
+  | "referral_9"          // legacy label for group_9
   | "couple"              // 2 people on 1-month → $60 flat
   | "corporate"           // 15% discount on any plan
   | "college"             // 20% discount for university students
   | "owner_family"        // owner family — $20 × months
   | "custom_registration" // free / custom registration with manual amount + note
-  | "group_5"             // legacy — 5 people pay for 4 (kept for backward compat with old DB rows)
-  | "group_9";            // legacy — 9 people pay for 7 (kept for backward compat with old DB rows)
+  | "group_5"             // 5 people pay for 4
+  | "group_9";            // 9 people pay for 7
 
 export type PaymentStatus = "paid" | "partial" | "unpaid";
 export type SubStatus = "active" | "expired" | "frozen" | "cancelled";

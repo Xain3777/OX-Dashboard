@@ -26,8 +26,8 @@ export const PLAN_PRICES: Record<PlanType, number> = {
 
 const OFFER_BONUS_DAYS: Record<OfferType, number> = {
   none: 0,
-  referral_4: 30,
-  referral_9: 60,
+  referral_4: 0,
+  referral_9: 0,
   couple: 0,
   corporate: 0,
   college: 0,
@@ -46,8 +46,8 @@ const OFFER_DISCOUNT_PERCENT: Record<OfferType, number> = {
   college: 20,
   owner_family: 0,  // owner family priced separately ($20 × months)
   custom_registration: 0,  // amount entered manually by reception
-  group_5: 0,  // legacy
-  group_9: 0,  // legacy
+  group_5: 0,
+  group_9: 0,
 };
 
 export function calculateEndDate(
@@ -107,8 +107,8 @@ export function getPlanLabel(plan: PlanType): string {
 export function getOfferLabel(offer: OfferType): string {
   const labels: Record<OfferType, string> = {
     none: "بدون عرض",
-    referral_4: "إحالة ٤ أصدقاء (شهر مجاناً)",
-    referral_9: "إحالة ٩ أصدقاء (شهرين مجاناً)",
+    referral_4: "مجموعة ٥ (٥ يدفعون ثمن ٤)",
+    referral_9: "مجموعة ٩ (٩ يدفعون ثمن ٧)",
     couple: "عرض الزوجين ($60 لاثنين — شهر فقط)",
     corporate: "شركات / بنك (خصم ١٥٪)",
     college: "خصم طلاب ٢٠٪",

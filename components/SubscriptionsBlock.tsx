@@ -17,9 +17,7 @@ import {
   calculateEndDate,
   calculateRemainingDays,
   calculateDiscountedPrice,
-  calcGroupPerMember,
 } from "@/lib/business-logic";
-import PriceTag from "@/components/PriceTag";
 import { useStore } from "@/lib/store-context";
 import { useAuth } from "@/lib/auth-context";
 import { useCurrency } from "@/lib/currency-context";
@@ -44,6 +42,21 @@ const PLAN_BASE_PRICES: Record<PlanType, number> = {
   "9_months":  235,
   "12_months": 300,
 };
+
+function groupOfferPaidShares(groupSize: 5 | 9): 4 | 7 {
+  return groupSize === 9 ? 7 : 4;
+}
+
+function groupOfferTotal(plan: PlanType, groupSize: 5 | 9): number {
+  return PLAN_BASE_PRICES[plan] * groupOfferPaidShares(groupSize);
+}
+
+function splitGroupAmount(total: number, groupSize: number, index: number): number {
+  const share = Number((total / groupSize).toFixed(2));
+  return index === groupSize - 1
+    ? Number((total - share * (groupSize - 1)).toFixed(2))
+    : share;
+}
 
 // Owner-family offer pricing: $20 × months. Sub-month plans aren't eligible
 // for the owner_family discount, so we map them to 0 (the form can be locked
@@ -291,15 +304,13 @@ export default function SubscriptionsBlock() {
   const [coupleBusy,       setCoupleBusy]       = useState(false);
   const [coupleError,      setCoupleError]      = useState<string | null>(null);
 
-  // Referral offer
-  const [refMain,         setRefMain]         = useState("");
-  const [refMainPhone,    setRefMainPhone]    = useState("");
+  // Group offer: 5 members pay for 4, or 9 members pay for 7.
   const [refFriends,      setRefFriends]      = useState<string[]>(["", "", "", "", ""]);
   const [refFriendPhones, setRefFriendPhones] = useState<string[]>(["", "", "", "", ""]);
   const [refPlan,         setRefPlan]         = useState<PlanType>("1_month");
   const [refStart,        setRefStart]        = useState(new Date().toISOString().split("T")[0]);
-  const [refTotal,        setRefTotal]        = useState(String(PLAN_BASE_PRICES["1_month"]));
-  const [refPaid,         setRefPaid]         = useState(String(PLAN_BASE_PRICES["1_month"]));
+  const [refTotal,        setRefTotal]        = useState(String(groupOfferTotal("1_month", 5)));
+  const [refPaid,         setRefPaid]         = useState(String(groupOfferTotal("1_month", 5)));
   const [refBusy,         setRefBusy]         = useState(false);
   const [refError,        setRefError]        = useState<string | null>(null);
 
@@ -396,10 +407,10 @@ export default function SubscriptionsBlock() {
   // Auto-sync totals for offers that derive total from plan.
   const handleRefPlanChange = useCallback((p: PlanType) => {
     setRefPlan(p);
-    const t = String(PLAN_BASE_PRICES[p]);
+    const t = String(groupOfferTotal(p, refFriends.length >= 9 ? 9 : 5));
     setRefTotal(t);
     setRefPaid(t);
-  }, []);
+  }, [refFriends.length]);
   const handleCorpPlanChange = useCallback((p: PlanType) => {
     setCorpPlan(p);
     const t = String(Math.round(PLAN_BASE_PRICES[p] * 0.85));
@@ -650,80 +661,89 @@ export default function SubscriptionsBlock() {
     setToastMessage(`تم تسجيل عرض الزوجين — حالة الدفع: ${pay.status}`);
   };
 
-  // ── Referral offer submit ──────────────────────────────────────────────────
+  // ── Group offer submit ─────────────────────────────────────────────────────
   const handleReferralSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
     setRefError(null);
-    const validFriends = refFriends
+    const members = refFriends
       .map((n, i) => ({ name: n.trim(), phone: (refFriendPhones[i] ?? "").trim() }))
       .filter((f) => f.name);
-    const count = validFriends.length;
-    if (count < 5) { setRefError("يجب إدخال 5 أسماء على الأقل للتأهل للعرض"); return; }
-    const pay = computePayment(refTotal, refPaid);
+    const count = members.length;
+    if (count !== 5 && count !== 9) { setRefError("يجب إدخال 5 أو 9 أشخاص بالضبط للتأهل للعرض"); return; }
+    const groupSize = count as 5 | 9;
+    const offerType: OfferType = groupSize === 9 ? "group_9" : "group_5";
+    const expectedTotal = groupOfferTotal(refPlan, groupSize);
+    setRefTotal(String(expectedTotal));
+    const pay = computePayment(String(expectedTotal), refPaid);
     if (pay.overpaid) { setRefError("المبلغ المدفوع لا يمكن أن يتجاوز المبلغ الإجمالي"); return; }
     setRefBusy(true);
 
-    const offerType: OfferType = count >= 9 ? "referral_9" : "referral_4";
     const groupId  = crypto.randomUUID();
     const endDate  = calculateEndDate(refStart, refPlan, offerType);
-    console.log("Referral submit:", { groupId, refMain, refMainPhone, friendsCount: count, offerType, total: pay.totalNum, paid: pay.paidNum, status: pay.status });
+    const perMemberTotal = members.map((_, i) => splitGroupAmount(pay.totalNum, groupSize, i));
+    const perMemberPaid  = members.map((_, i) => splitGroupAmount(pay.paidNum, groupSize, i));
+    console.log("Group offer submit:", { groupId, count, offerType, total: pay.totalNum, paid: pay.paidNum, status: pay.status });
 
-    const m = await findOrCreateMember({ user: { id: user.id, displayName: user.displayName }, name: refMain, phone: refMainPhone });
-    if (m.error) { setRefError(m.error); setRefBusy(false); return; }
+    const rows: { row: Record<string, unknown>; member: { id: string; name: string; phone: string }; index: number }[] = [];
 
-    // Create member rows for each friend so they exist in the members table.
-    for (const f of validFriends) {
-      const fr = await findOrCreateMember({ user: { id: user.id, displayName: user.displayName }, name: f.name, phone: f.phone });
-      if (fr.error) { setRefError(fr.error); setRefBusy(false); return; }
+    for (const [index, member] of members.entries()) {
+      const m = await findOrCreateMember({ user: { id: user.id, displayName: user.displayName }, name: member.name, phone: member.phone });
+      if (m.error) { setRefError(m.error); setRefBusy(false); return; }
+
+      const r = await pushSubscription({
+        user: { id: user.id, displayName: user.displayName },
+        memberName: member.name,
+        memberId: m.data?.id,
+        phone: member.phone,
+        planType: refPlan, offer: offerType,
+        startDate: refStart, endDate,
+        amount: perMemberTotal[index], paidAmount: perMemberPaid[index],
+        paymentStatus: pay.status,
+        currency: "usd", exchangeRate, groupId,
+      });
+      if (r.error) { setRefError(r.error); setRefBusy(false); return; }
+      rows.push({
+        row: r.data!,
+        member: { id: String(m.data?.id ?? ""), name: member.name, phone: member.phone },
+        index,
+      });
     }
-
-    const r = await pushSubscription({
-      user: { id: user.id, displayName: user.displayName },
-      memberName: refMain.trim(),
-      memberId: m.data?.id,
-      phone: refMainPhone,
-      planType: refPlan, offer: offerType,
-      startDate: refStart, endDate,
-      amount: pay.totalNum, paidAmount: pay.paidNum,
-      paymentStatus: pay.status,
-      currency: "usd", exchangeRate, groupId,
-    });
-    if (r.error) { setRefError(r.error); setRefBusy(false); return; }
 
     await pushGroupOffer({
       user: { id: user.id, displayName: user.displayName },
-      groupId, offerType: "referral",
-      members: [{ name: refMain.trim() }, ...validFriends.map((f) => ({ name: f.name }))],
+      groupId, offerType: groupSize === 9 ? "group_9" : "group_5",
+      members: members.map((m) => ({ name: m.name })),
       referralCount: count,
-      rewardType: "free_months",
-      rewardValue: count >= 9 ? 2 : 1,
+      priceApplied: pay.totalNum,
     });
 
     const rem = calculateRemainingDays(endDate);
-    addSubscription({
-      id: String(r.data!.id),
-      memberId: String(r.data!.created_by ?? user.id),
-      memberName: refMain.trim(),
-      planType: refPlan, offer: offerType,
-      startDate: refStart, endDate,
-      remainingDays: rem, amount: pay.totalNum, paidAmount: pay.paidNum,
-      paymentStatus: pay.status, paymentMethod: "cash",
-      currency: "usd",
-      status: rem > 0 ? "active" : "expired",
-      createdAt: String(r.data!.created_at ?? new Date().toISOString()),
-      createdBy: user.id,
-      lockedAt: String(r.data!.created_at ?? new Date().toISOString()),
+    rows.forEach(({ row, member, index }) => {
+      addSubscription({
+        id: String(row.id),
+        memberId: member.id,
+        memberName: member.name,
+        phone: member.phone || null,
+        planType: refPlan, offer: offerType,
+        startDate: refStart, endDate,
+        remainingDays: rem, amount: perMemberTotal[index], paidAmount: perMemberPaid[index],
+        paymentStatus: pay.status, paymentMethod: "cash",
+        currency: "usd",
+        status: rem > 0 ? "active" : "expired",
+        createdAt: String(row.created_at ?? new Date().toISOString()),
+        createdBy: user.id,
+        lockedAt: String(row.created_at ?? new Date().toISOString()),
+      });
     });
 
     setRefBusy(false);
-    setRefMain(""); setRefMainPhone("");
     setRefFriends(["", "", "", "", ""]); setRefFriendPhones(["", "", "", "", ""]);
     setRefPlan("1_month");
     setRefStart(new Date().toISOString().split("T")[0]);
-    setRefTotal(String(PLAN_BASE_PRICES["1_month"]));
-    setRefPaid(String(PLAN_BASE_PRICES["1_month"]));
-    setToastMessage(count >= 9 ? "إحالة مسجّلة — شهران مجاناً" : "إحالة مسجّلة — شهر مجاناً");
+    setRefTotal(String(groupOfferTotal("1_month", 5)));
+    setRefPaid(String(groupOfferTotal("1_month", 5)));
+    setToastMessage(groupSize === 9 ? "تم تسجيل عرض ٩ أشخاص — الدفع عن ٧" : "تم تسجيل عرض ٥ أشخاص — الدفع عن ٤");
   };
 
   // ── Owner family offer submit ($20 × months) ───────────────────────────────
@@ -1401,7 +1421,7 @@ export default function SubscriptionsBlock() {
                     offerTab === tab ? "border-gold text-gold" : "border-transparent text-secondary hover:text-ghost"
                   }`}>
                   {tab === "couple" ? "عرض الزوجين"
-                    : tab === "referral" ? "الإحالة"
+                    : tab === "referral" ? "مجموعات"
                     : tab === "corporate" ? "شركات / بنوك"
                     : tab === "college" ? "طلاب جامعات"
                     : tab === "owner_family" ? "عائلة المالك"
@@ -1470,40 +1490,25 @@ export default function SubscriptionsBlock() {
               </div>
             )}
 
-            {/* ── Referral form ────────────────────────────────────────────── */}
+            {/* ── Group offer form ─────────────────────────────────────────── */}
             {offerTab === "referral" && (
               <div className="border border-gunmetal bg-charcoal rounded clip-corner p-5">
                 <div className="mb-4">
-                  <p className="font-mono text-[10px] text-secondary uppercase tracking-widest">عرض الإحالة</p>
-                  <p className="font-mono text-[9px] text-slate mt-0.5">٥ إحالات → شهر مجاناً · ٩ إحالات → شهرين مجاناً</p>
+                  <p className="font-mono text-[10px] text-secondary uppercase tracking-widest">عرض المجموعات</p>
+                  <p className="font-mono text-[9px] text-slate mt-0.5">٥ أشخاص يدفعون ثمن ٤ · ٩ أشخاص يدفعون ثمن ٧</p>
                 </div>
                 <form onSubmit={handleReferralSubmit} className="space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className={labelCls}>اسم العضو (المُحيل)</label>
-                      <input required type="text" className={inputCls} placeholder="الاسم الكامل"
-                        value={refMain} onChange={(e) => setRefMain(e.target.value)} />
-                    </div>
-                    <div>
-                      <label className={labelCls}>هاتف العضو</label>
-                      <input type="tel" className={inputCls} placeholder="+963 9x xxx xxxx"
-                        value={refMainPhone} onChange={(e) => setRefMainPhone(e.target.value)} />
-                    </div>
-                  </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className={labelCls}>نوع الخطة</label>
                       <div className="relative">
                         <select className={selectCls} value={refPlan}
                           onChange={(e) => handleRefPlanChange(e.target.value as PlanType)}>
-                          {MONTHLY_PLAN_TYPES.map((p) => {
-                            const disc = PLAN_DISCOUNTS[p];
-                            return (
-                              <option key={p} value={p}>
-                                {getPlanLabel(p)} — {PLAN_BASE_PRICES[p]} ${disc > 0 ? ` (خصم ${disc}٪)` : ""}
-                              </option>
-                            );
-                          })}
+                          {MONTHLY_PLAN_TYPES.map((p) => (
+                            <option key={p} value={p}>
+                              {getPlanLabel(p)} — {PLAN_BASE_PRICES[p]}$
+                            </option>
+                          ))}
                         </select>
                         <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-secondary"><ChevronIcon open={false} /></span>
                       </div>
@@ -1516,28 +1521,34 @@ export default function SubscriptionsBlock() {
                   </div>
                   <div>
                     <div className="flex items-center justify-between mb-1.5">
-                      <label className={labelCls}>أسماء الأصدقاء المُحالين</label>
+                      <label className={labelCls}>أسماء المشتركين في المجموعة</label>
                       <span className={`font-mono text-[10px] ${
-                        refValidCount >= 9 ? "text-gold-bright" : refValidCount >= 5 ? "text-gold" : "text-slate"
+                        refValidCount === 9 ? "text-gold-bright" : refValidCount === 5 ? "text-gold" : "text-slate"
                       }`}>
-                        {refValidCount >= 9 ? "✓ شهرين مجاناً" : refValidCount >= 5 ? "✓ شهر مجاناً" : `${refValidCount}/5 مطلوب`}
+                        {refValidCount === 9 ? "٩ يدفعون ثمن ٧" : refValidCount === 5 ? "٥ يدفعون ثمن ٤" : `${refValidCount}/5 أو 9 مطلوب`}
                       </span>
                     </div>
                     <div className="space-y-2">
                       {refFriends.map((name, i) => (
                         <div key={i} className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-center">
-                          <input type="text" className={inputCls} placeholder={`صديق ${i + 1}`}
+                          <input type="text" className={inputCls} placeholder={`مشترك ${i + 1}`}
                             value={name}
                             onChange={(e) => { const next = [...refFriends]; next[i] = e.target.value; setRefFriends(next); }} />
                           <div className="flex items-center gap-2">
-                            <input type="tel" className={inputCls} placeholder={`هاتف صديق ${i + 1}`}
+                            <input type="tel" className={inputCls} placeholder={`هاتف مشترك ${i + 1}`}
                               value={refFriendPhones[i] ?? ""}
                               onChange={(e) => { const next = [...refFriendPhones]; next[i] = e.target.value; setRefFriendPhones(next); }} />
                             {i >= 5 && (
                               <button type="button"
                                 onClick={() => {
-                                  setRefFriends(refFriends.filter((_, j) => j !== i));
-                                  setRefFriendPhones(refFriendPhones.filter((_, j) => j !== i));
+                                  const nextFriends = refFriends.filter((_, j) => j !== i);
+                                  const nextPhones = refFriendPhones.filter((_, j) => j !== i);
+                                  const groupSize = nextFriends.length >= 9 ? 9 : 5;
+                                  const t = String(groupOfferTotal(refPlan, groupSize));
+                                  setRefFriends(nextFriends);
+                                  setRefFriendPhones(nextPhones);
+                                  setRefTotal(t);
+                                  setRefPaid(t);
                                 }}
                                 className="p-1 text-secondary hover:text-red transition-colors shrink-0">
                                 <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
@@ -1549,9 +1560,19 @@ export default function SubscriptionsBlock() {
                         </div>
                       ))}
                       <button type="button"
-                        onClick={() => { setRefFriends([...refFriends, ""]); setRefFriendPhones([...refFriendPhones, ""]); }}
+                        onClick={() => {
+                          const nextFriends = [...refFriends, ""];
+                          const nextPhones = [...refFriendPhones, ""];
+                          const groupSize = nextFriends.length >= 9 ? 9 : 5;
+                          const t = String(groupOfferTotal(refPlan, groupSize));
+                          setRefFriends(nextFriends);
+                          setRefFriendPhones(nextPhones);
+                          setRefTotal(t);
+                          setRefPaid(t);
+                        }}
+                        disabled={refFriends.length >= 9}
                         className="w-full py-1.5 border border-dashed border-gunmetal text-secondary hover:text-ghost font-mono text-[10px] uppercase tracking-wider transition-colors rounded">
-                        + إضافة صديق
+                        + إضافة مشترك
                       </button>
                     </div>
                   </div>
@@ -1562,11 +1583,13 @@ export default function SubscriptionsBlock() {
                     onPaidChange={setRefPaid}
                     inputCls={inputCls}
                     labelCls={labelCls}
+                    totalLocked
+                    totalLabel="المبلغ الكامل للمجموعة"
                     error={refError}
                   />
                   <button type="submit" disabled={refBusy}
                     className="inline-flex items-center gap-2 px-5 py-2.5 bg-gold hover:bg-gold-bright text-void font-display text-sm tracking-widest uppercase clip-corner-sm transition-colors disabled:opacity-40">
-                    <LockIcon size={13} />{refBusy ? "جاري الحفظ…" : "تسجيل اشتراك الإحالة"}
+                    <LockIcon size={13} />{refBusy ? "جاري الحفظ…" : "تسجيل عرض المجموعة"}
                   </button>
                 </form>
               </div>
@@ -1938,8 +1961,8 @@ export default function SubscriptionsBlock() {
                         onChange={(e) => setEditForm({ ...editForm, offer: e.target.value as OfferType })}>
                         <option value="none">بدون</option>
                         <option value="couple">زوجين</option>
-                        <option value="referral_4">إحالة ٤</option>
-                        <option value="referral_9">إحالة ٩</option>
+                        <option value="group_5">مجموعة ٥</option>
+                        <option value="group_9">مجموعة ٩</option>
                         <option value="corporate">شركات</option>
                         <option value="college">طلاب</option>
                         <option value="owner_family">عائلة المالك</option>
