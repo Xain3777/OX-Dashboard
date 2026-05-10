@@ -551,11 +551,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!user) {
+      stateRef.current = INITIAL_STATE;
       setStateRaw(INITIAL_STATE);
       return;
     }
     hydrateFromSupabase().then((partial) => {
-      setStateRaw((prev) => ({ ...prev, ...partial }));
+      setStateRaw((prev) => {
+        const next = { ...prev, ...partial };
+        stateRef.current = next;
+        return next;
+      });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
@@ -1030,11 +1035,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const channel = supabase
       .channel(`store-income-${sid}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "sales",           filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
+      .on("postgres_changes", { event: "*", schema: "public", table: "item_sales",      filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
       .on("postgres_changes", { event: "*", schema: "public", table: "gym_subscriptions", filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
       .on("postgres_changes", { event: "*", schema: "public", table: "inbody_sessions", filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
-  }, [state.localSession?.id, state.localSession?.status, refreshIncome]);
+  }, [state.localSession?.id, state.localSession?.status, state.itemSales.length, refreshIncome]);
 
   // ── Catalog realtime: keep catalog_items in sync across roles ─────
   // When the manager edits a price/cost/stock, every reception session must

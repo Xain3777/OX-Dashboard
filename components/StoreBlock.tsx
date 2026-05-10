@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useState, useMemo } from "react";
+import { Fragment, useEffect, useState, useMemo } from "react";
 import {
   AlertTriangle,
   ShoppingCart,
@@ -273,7 +273,7 @@ export default function StoreBlock() {
 
   // Inline price editing (manager: cost+price, reception: price only)
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
-  // Inline stock-add (all roles)
+  // Inline stock edit (all roles)
   const [stockAddingId,    setStockAddingId]    = useState<string | null>(null);
   const [stockAddQty,      setStockAddQty]      = useState<string>("");
   const [stockAddBusy,     setStockAddBusy]     = useState(false);
@@ -309,6 +309,18 @@ export default function StoreBlock() {
   );
 
   const selectedProduct = products.find(p => p.id === saleProductId);
+
+  useEffect(() => {
+    if (products.length === 0) {
+      if (saleProductId) setSaleProductId("");
+      return;
+    }
+    if (!products.some((p) => p.id === saleProductId)) {
+      setSaleProductId(products[0].id);
+      setSaleQty(1);
+      setSaleError("");
+    }
+  }, [products, saleProductId]);
 
   // Activity feed: sales only
   const saleFeed = useMemo(
@@ -724,15 +736,16 @@ export default function StoreBlock() {
                         )}
                         <button
                           onClick={() => {
-                            setStockAddingId(stockAddingId === product.id ? null : product.id);
-                            setStockAddQty("");
+                            const opening = stockAddingId !== product.id;
+                            setStockAddingId(opening ? product.id : null);
+                            setStockAddQty(opening ? String(product.stock) : "");
                             setStockAddError("");
                             if (editingProductId === product.id) setEditingProductId(null);
                           }}
                           className="font-mono text-[10px] px-2 py-0.5 rounded border border-[#5CC45C]/30 text-[#5CC45C] hover:bg-[#5CC45C]/10 transition-colors cursor-pointer whitespace-nowrap"
-                          title="إضافة مخزون"
+                          title="تعديل المخزون"
                         >
-                          إضافة مخزون
+                          تعديل المخزون
                         </button>
                       </div>
                     </td>
@@ -769,34 +782,34 @@ export default function StoreBlock() {
                       </td>
                     </tr>
                   )}
-                  {/* Inline stock-add row */}
+                  {/* Inline stock-edit row */}
                   {stockAddingId === product.id && (
                     <tr key={`stock-${product.id}`} className="bg-[#111111] border-b border-[#252525]/60">
                       <td colSpan={isManager ? 7 : 5} className="px-4 py-2">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">إضافة مخزون لـ {product.name}</span>
+                          <span className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">تعديل المخزون لـ {product.name}</span>
                           <input
                             type="number"
-                            min="1"
+                            min="0"
                             step="1"
                             value={stockAddQty}
                             onChange={(e) => setStockAddQty(e.target.value)}
-                            placeholder="الكمية"
+                            placeholder="المخزون"
                             className="w-24 bg-[#0A0A0A] border border-[#252525] rounded-sm px-2 py-1 text-xs text-[#F0EDE6] focus:outline-none focus:border-[#F5C100]/40"
                           />
                           <button
                             onClick={async () => {
                               if (!user) { setStockAddError("يجب تسجيل الدخول"); return; }
                               const n = parseInt(stockAddQty, 10);
-                              if (!Number.isInteger(n) || n <= 0) { setStockAddError("كمية غير صالحة"); return; }
+                              if (!Number.isInteger(n) || n < 0) { setStockAddError("كمية غير صالحة"); return; }
                               setStockAddBusy(true);
                               setStockAddError("");
-                              const r = await adjustStock(product.id, n);
+                              const r = await adjustStock(product.id, n - product.stock);
                               setStockAddBusy(false);
                               if (r.error) { setStockAddError(r.error); return; }
                               setStockAddingId(null);
                               setStockAddQty("");
-                              setProductToast(`تمت إضافة ${n} وحدة`);
+                              setProductToast(`تم تعديل المخزون إلى ${n} وحدة`);
                               setTimeout(() => setProductToast(""), 2000);
                             }}
                             disabled={stockAddBusy}

@@ -821,7 +821,7 @@ INSERT INTO public.profiles (id, display_name, role, active)
 SELECT u.id, s.display_name, s.role_name, true
 FROM auth.users u
 JOIN (VALUES
-  ('adham@ox.local',      'كوتش احمد',  'manager'),
+  ('adham@ox.local',      'كوتش احمد - كوتش ادهم',  'manager'),
   ('reception1@ox.local', 'reception1', 'reception'),
   ('reception2@ox.local', 'reception2', 'reception'),
   ('reception3@ox.local', 'reception3', 'reception'),
