@@ -68,6 +68,7 @@ export interface Subscription {
 // the row, not chosen by the cashier at sale time.
 export type CatalogItemCategory =
   | "meals"
+  | "meal_addons"
   | "drinks"
   | "supplements"
   | "accessories"
@@ -95,6 +96,7 @@ export interface CatalogItem {
   lowStockThreshold: number;
   sortOrder: number;
   isActive: boolean;
+  description: string | null;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
@@ -133,7 +135,7 @@ export interface ItemSale {
 // --- LEGACY KITCHEN / FOOD ITEMS (food_items table) ---
 // Retained for the legacy hydration path while the catalog cutover is
 // stabilising. New code should use CatalogItem.
-export type FoodItemCategory = "meals" | "breakfast" | "salads" | "drinks" | "snacks" | "other" | "food";
+export type FoodItemCategory = "meals" | "meal_addons" | "breakfast" | "salads" | "drinks" | "snacks" | "other" | "food";
 
 export interface FoodItem {
   id: string;

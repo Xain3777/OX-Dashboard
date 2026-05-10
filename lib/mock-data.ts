@@ -60,26 +60,31 @@ export const SUBSCRIPTIONS: Subscription[] = [
   },
 ];
 
-// First-boot fallback only — the canonical menu lives in food_items
-// (see 0023_food_items_costs_and_catalog_update.sql). Hydration in
-// store-context overwrites this list as soon as the user logs in.
+// First-boot fallback only — the canonical menu lives in food_items /
+// catalog_items (see 0035_kitchen_v2.sql + 0036_kitchen_subaddons.sql).
+// Hydration in store-context overwrites this list as soon as the user
+// logs in.
 export const FOOD_ITEMS: FoodItem[] = [
-  // Main meals (rice + chicken + salad)
-  { id: "food-meal-150", name: "وجبة 150غ", category: "meals", price_syp: 29000, cost_syp: 19000, sort_order:  10, description: "رز 250غ + جاج 150غ + سلطة", is_active: true },
-  { id: "food-meal-200", name: "وجبة 200غ", category: "meals", price_syp: 34000, cost_syp: 23800, sort_order:  20, description: "رز 300غ + جاج 200غ + سلطة", is_active: true },
-  { id: "food-meal-250", name: "وجبة 250غ", category: "meals", price_syp: 38000, cost_syp: 26225, sort_order:  30, description: "رز 300غ + جاج 250غ + سلطة", is_active: true },
-  { id: "food-meal-300", name: "وجبة 300غ", category: "meals", price_syp: 42000, cost_syp: 29050, sort_order:  40, description: "رز 300غ + جاج 300غ + سلطة", is_active: true },
-  // Add-ons
-  { id: "food-rice-200", name: "رز 200غ",        category: "meals", price_syp: 10000, cost_syp: null, sort_order: 110, is_active: true },
-  { id: "food-rice-300", name: "رز 300غ",        category: "meals", price_syp: 15000, cost_syp:  8100, sort_order: 120, is_active: true },
-  { id: "food-chk-150",  name: "إضافة جاج 150غ", category: "meals", price_syp: 20000, cost_syp:  8500, sort_order: 210, is_active: true },
-  { id: "food-chk-200",  name: "إضافة جاج 200غ", category: "meals", price_syp: 25000, cost_syp: 11300, sort_order: 220, is_active: true },
-  { id: "food-chk-250",  name: "إضافة جاج 250غ", category: "meals", price_syp: 30000, cost_syp: 14125, sort_order: 230, is_active: true },
-  { id: "food-chk-300",  name: "إضافة جاج 300غ", category: "meals", price_syp: 35000, cost_syp: 16950, sort_order: 240, is_active: true },
-  { id: "food-salad",    name: "سلطة",           category: "meals", price_syp: 12000, cost_syp:  8000, sort_order: 300, is_active: true },
-  // Drinks
-  { id: "food-water-s",  name: "ماء صغير", category: "drinks", price_syp: 5000, cost_syp: 2437, sort_order: 410, is_active: true },
-  { id: "food-water-l",  name: "ماء كبير", category: "drinks", price_syp: 7000, cost_syp: 4875, sort_order: 420, is_active: true },
+  // Main meals
+  { id: "food-meal-150", name: "وجبة 150غ دجاج", category: "meals", price_syp: 38000, cost_syp: 29000, sort_order: 10, description: "رز 250غ بعد الطبخ + دجاج 150غ بعد الطبخ + سلطة", is_active: true },
+  { id: "food-meal-200", name: "وجبة 200غ دجاج", category: "meals", price_syp: 42000, cost_syp: 32625, sort_order: 20, description: "رز 300غ بعد الطبخ + دجاج 200غ بعد الطبخ + سلطة", is_active: true },
+  // Meal add-ons
+  { id: "food-rice-200",     name: "رز 200غ",         category: "meal_addons", price_syp: 10000, cost_syp: null, sort_order: 110, is_active: true },
+  { id: "food-rice-300",     name: "رز 300غ",         category: "meal_addons", price_syp: 15000, cost_syp:  8100, sort_order: 120, is_active: true },
+  { id: "food-salad",        name: "سلطة",            category: "meal_addons", price_syp: 12000, cost_syp:  8000, sort_order: 130, is_active: true },
+  { id: "food-chk-150",      name: "إضافة جاج 150غ",  category: "meal_addons", price_syp: 20000, cost_syp:  8500, sort_order: 210, is_active: true },
+  { id: "food-chk-200",      name: "إضافة جاج 200غ",  category: "meal_addons", price_syp: 25000, cost_syp: 11300, sort_order: 220, is_active: true },
+  { id: "food-chk-250",      name: "إضافة جاج 250غ",  category: "meal_addons", price_syp: 30000, cost_syp: 14125, sort_order: 230, is_active: true },
+  { id: "food-chk-300",      name: "إضافة جاج 300غ",  category: "meal_addons", price_syp: 35000, cost_syp: 16950, sort_order: 240, is_active: true },
+  { id: "food-rice-50",      name: "إضافة رز 50غ",    category: "meal_addons", price_syp:     0, cost_syp:   425, sort_order: 250, description: "50غ رز بعد الطبخ",   is_active: true },
+  { id: "food-rice-100",     name: "إضافة رز 100غ",   category: "meal_addons", price_syp:     0, cost_syp:   850, sort_order: 260, description: "100غ رز بعد الطبخ",  is_active: true },
+  { id: "food-chk-50",       name: "إضافة دجاج 50غ",  category: "meal_addons", price_syp:     0, cost_syp:  3200, sort_order: 270, description: "50غ دجاج بعد الطبخ", is_active: true },
+  // Other (water + drinks)
+  { id: "food-water-s",      name: "ماء صغير",   category: "other", price_syp:  5000, cost_syp: 2437, sort_order: 410, is_active: true },
+  { id: "food-water-l",      name: "ماء كبير",   category: "other", price_syp:  7000, cost_syp: 4875, sort_order: 420, is_active: true },
+  { id: "food-energy",       name: "مشروب طاقة", category: "other", price_syp: 15000, cost_syp: null, sort_order: 415, is_active: true },
+  { id: "food-bcaa",         name: "BCAA",        category: "other", price_syp: 20000, cost_syp: null, sort_order: 430, is_active: true },
+  { id: "food-preworkout",   name: "Pre-workout", category: "other", price_syp: 20000, cost_syp: null, sort_order: 440, is_active: true },
 ];
 
 export const PRODUCTS: Product[] = [

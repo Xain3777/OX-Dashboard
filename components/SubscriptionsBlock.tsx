@@ -573,6 +573,7 @@ export default function SubscriptionsBlock() {
       id: String(row.id),
       memberId: String(row.member_id ?? m.data?.id ?? ""),
       memberName: form.memberName.trim(),
+      phone: form.phone.trim() || null,
       planType: form.planType,
       offer: "none",
       startDate: form.startDate,
@@ -786,6 +787,7 @@ export default function SubscriptionsBlock() {
         id: String(row.id),
         memberId: String(row.member_id ?? (i === 0 ? m1.data?.id : m2.data?.id) ?? ""),
         memberName: coupleNames[i].trim(),
+        phone: (couplePhones[i] ?? "").trim() || null,
         planType: "1_month", offer: "couple",
         startDate: coupleStart, endDate,
         remainingDays: rem, amount: halfTotal, paidAmount: halfPaid,
@@ -926,6 +928,7 @@ export default function SubscriptionsBlock() {
       id: String(r.data!.id),
       memberId: String(r.data!.member_id ?? m.data?.id ?? ""),
       memberName: ofName.trim(),
+      phone: ofPhone.trim() || null,
       planType: ofPlan, offer: "owner_family",
       startDate: ofStart, endDate,
       remainingDays: rem, amount: pay.totalNum, paidAmount: pay.paidNum,
@@ -987,6 +990,7 @@ export default function SubscriptionsBlock() {
       id: String(r.data!.id),
       memberId: String(r.data!.member_id ?? m.data?.id ?? ""),
       memberName: corpName.trim(),
+      phone: corpPhone.trim() || null,
       planType: corpPlan, offer: "corporate",
       startDate: corpStart, endDate,
       remainingDays: rem, amount: pay.totalNum, paidAmount: pay.paidNum,
@@ -1038,6 +1042,7 @@ export default function SubscriptionsBlock() {
       id: String(r.data!.id),
       memberId: String(r.data!.member_id ?? m.data?.id ?? ""),
       memberName: collegeName.trim(),
+      phone: collegePhone.trim() || null,
       planType: collegePlan, offer: "college",
       startDate: collegeStart, endDate,
       remainingDays: rem, amount: pay.totalNum, paidAmount: pay.paidNum,
@@ -1090,6 +1095,7 @@ export default function SubscriptionsBlock() {
       id: String(r.data!.id),
       memberId: String(r.data!.member_id ?? m.data?.id ?? ""),
       memberName: customName.trim(),
+      phone: customPhone.trim() || null,
       planType: customPlan, offer: "custom_registration",
       startDate: customStart, endDate,
       remainingDays: rem, amount: pay.totalNum, paidAmount: pay.paidNum,
@@ -1610,6 +1616,7 @@ export default function SubscriptionsBlock() {
                             <button
                               onClick={async () => {
                                 if (!user) return;
+                                if (!window.confirm(`هل أنت متأكد من إلغاء اشتراك ${sub.memberName}؟`)) return;
                                 const r = await cancelTransaction({
                                   user: { id: user.id, displayName: user.displayName },
                                   table: "gym_subscriptions",

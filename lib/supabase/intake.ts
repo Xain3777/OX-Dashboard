@@ -837,6 +837,7 @@ export async function persistCatalogItemInsert(opts: {
   lowStockThreshold?: number;
   sortOrder?: number;
   isActive?: boolean;
+  description?: string | null;
 }): Promise<{ data?: DbRow; error?: string }> {
   try {
     assertUser(opts.user);
@@ -861,6 +862,7 @@ export async function persistCatalogItemInsert(opts: {
           : 3,
       sort_order: Number.isInteger(opts.sortOrder) ? opts.sortOrder : 0,
       is_active: opts.isActive ?? true,
+      description: opts.description == null ? null : String(opts.description).trim() || null,
       created_by: opts.user.id,
     };
     console.log("Supabase insert payload:", { table: "catalog_items", payload });
@@ -904,6 +906,7 @@ export async function persistCatalogItemUpdate(opts: {
     lowStockThreshold?: number;
     sortOrder?: number;
     isActive?: boolean;
+    description?: string | null;
   };
 }): Promise<{ data?: DbRow; error?: string }> {
   try {
@@ -930,6 +933,8 @@ export async function persistCatalogItemUpdate(opts: {
     if (opts.fields.sortOrder !== undefined && Number.isInteger(opts.fields.sortOrder))
       mapped.sort_order = opts.fields.sortOrder;
     if (opts.fields.isActive !== undefined)        mapped.is_active        = opts.fields.isActive;
+    if (opts.fields.description !== undefined)
+      mapped.description = opts.fields.description == null ? null : String(opts.fields.description).trim() || null;
     if (Object.keys(mapped).length === 0) return { error: "لا توجد تغييرات" };
 
     const supabase = supabaseBrowser();

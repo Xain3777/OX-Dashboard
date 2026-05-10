@@ -38,10 +38,11 @@ import {
 
 type ManagerSection = "sessions" | "subscriptions" | "inbody" | "store" | "kitchen" | "expenses";
 
-const FOOD_CATEGORIES: FoodItemCategory[] = ["meals", "breakfast", "salads", "drinks", "snacks", "food", "other"];
+const FOOD_CATEGORIES: FoodItemCategory[] = ["meals", "meal_addons", "other", "breakfast", "salads", "drinks", "snacks", "food"];
 const FOOD_CAT_LABELS: Record<FoodItemCategory, string> = {
-  meals: "وجبات", breakfast: "فطور", salads: "سلطات",
-  drinks: "مشروبات", snacks: "وجبات خفيفة", food: "مطبخ عام", other: "أخرى",
+  meals: "وجبات رئيسية", meal_addons: "إضافات وجبة", other: "أصناف أخرى",
+  breakfast: "فطور", salads: "سلطات",
+  drinks: "مشروبات", snacks: "وجبات خفيفة", food: "مطبخ عام",
 };
 
 // Effective cost in SYP. Prefers cost_syp; falls back to cost_usd × rate;

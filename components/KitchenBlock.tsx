@@ -13,6 +13,29 @@ interface QtyMap { [id: string]: number }
 
 const KITCHEN_TYPES = new Set(["meal", "water", "drink"]);
 
+type KitchenGroupKey = "meals" | "meal_addons" | "other";
+
+const KITCHEN_GROUP_ORDER: KitchenGroupKey[] = ["meals", "meal_addons", "other"];
+
+const KITCHEN_GROUP_TITLE: Record<KitchenGroupKey, string> = {
+  meals: "وجبات رئيسية",
+  meal_addons: "إضافات على الوجبة",
+  other: "أصناف أخرى",
+};
+
+const KITCHEN_GROUP_UNIT: Record<KitchenGroupKey, [string, string]> = {
+  // [singular, plural] — Arabic uses plural for ≥3
+  meals: ["صنف", "أصناف"],
+  meal_addons: ["صنف", "أصناف"],
+  other: ["صنف", "أصناف"],
+};
+
+function kitchenGroupOf(category: string): KitchenGroupKey {
+  if (category === "meals") return "meals";
+  if (category === "meal_addons") return "meal_addons";
+  return "other";
+}
+
 export default function KitchenBlock() {
   const { user } = useAuth();
   const { catalogItems, addItemSale, cancelItemSale, itemSales } = useStore();
@@ -25,17 +48,32 @@ export default function KitchenBlock() {
 
   const today = new Date().toISOString().slice(0, 10);
 
-  // Kitchen UI shows catalog items whose item_type is meal / water / drink
-  // and whose sell_price is positive. Currency comes from the catalog row
-  // (sellCurrency); the cashier never picks it.
+  // Kitchen UI shows catalog items whose item_type is meal / water / drink.
+  // Currency comes from the catalog row (sellCurrency); the cashier never
+  // picks it. Zero-priced rows still render — they're sub-portion add-ons
+  // tracked for cost reporting that the cashier can mark on a meal even
+  // when free.
   const activeItems = useMemo(
     () =>
       catalogItems
-        .filter((c) => c.isActive && KITCHEN_TYPES.has(c.itemType) && Number(c.sellPrice) > 0)
+        .filter((c) => c.isActive && KITCHEN_TYPES.has(c.itemType))
         .slice()
         .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name)),
     [catalogItems]
   );
+
+  // Three visual groups: main meals, meal add-ons, everything else (drinks
+  // / water / supplements sold from the kitchen). Order in render is fixed
+  // by KITCHEN_GROUP_ORDER so the layout stays stable as items are toggled.
+  const groupedItems = useMemo(() => {
+    const map: Record<KitchenGroupKey, typeof activeItems> = {
+      meals: [],
+      meal_addons: [],
+      other: [],
+    };
+    for (const it of activeItems) map[kitchenGroupOf(it.category)].push(it);
+    return map;
+  }, [activeItems]);
 
   const todayKitchenSales = useMemo(
     () => itemSales
@@ -152,53 +190,74 @@ export default function KitchenBlock() {
         </div>
       </div>
 
-      {/* Items grid */}
-      <div className="px-5 py-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-        {activeItems.length === 0 ? (
-          <div className="col-span-full text-center font-mono text-[10px] text-[#555555] uppercase tracking-widest py-6">
-            لا توجد أصناف — يضيفها المدير من لوحة الإدارة
-          </div>
-        ) : (
-          activeItems.map((it) => {
-            const q         = qty[it.id] ?? 0;
-            const lineTotal = q * Number(it.sellPrice);
+      {/* Grouped item sections */}
+      {activeItems.length === 0 ? (
+        <div className="px-5 py-6 text-center font-mono text-[10px] text-[#555555] uppercase tracking-widest">
+          لا توجد أصناف — يضيفها المدير من لوحة الإدارة
+        </div>
+      ) : (
+        <div className="px-5 py-4 space-y-6">
+          {KITCHEN_GROUP_ORDER.map((g) => {
+            const items = groupedItems[g];
+            if (items.length === 0) return null;
+            const [singular, plural] = KITCHEN_GROUP_UNIT[g];
+            const unit = items.length >= 3 ? plural : singular;
             return (
-              <div
-                key={it.id}
-                className={`p-3 border rounded-sm transition-colors ${q > 0 ? "border-[#F5C100]/50 bg-[#F5C100]/5" : "border-[#252525] bg-[#111111]"}`}
-              >
-                <p className="font-body text-xs text-[#F0EDE6] mb-1.5">{it.name}</p>
-                <p className="font-display text-base text-[#F5C100] tracking-wider" dir="ltr">
-                  {fmtPrice(Number(it.sellPrice), it.sellCurrency)}
-                </p>
-                <div className="mt-2.5 flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={() => dec(it.id)}
-                      disabled={q === 0}
-                      className="w-6 h-6 rounded-sm border border-[#252525] bg-[#111111] hover:border-[#555555] disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center text-[#AAAAAA]"
-                    >
-                      <Minus size={11} />
-                    </button>
-                    <span className="font-mono tabular-nums text-xs text-[#F0EDE6] w-6 text-center">{q}</span>
-                    <button
-                      onClick={() => inc(it.id)}
-                      className="w-6 h-6 rounded-sm border border-[#F5C100]/40 bg-[#F5C100]/10 hover:bg-[#F5C100]/20 flex items-center justify-center text-[#F5C100]"
-                    >
-                      <Plus size={11} />
-                    </button>
-                  </div>
-                  {q > 0 && (
-                    <span className="font-mono tabular-nums text-[10px] text-[#5CC45C]" dir="ltr">
-                      {fmtPrice(lineTotal, it.sellCurrency)}
-                    </span>
-                  )}
+              <section key={g}>
+                <div className="flex items-center justify-between border-b border-[#252525] pb-2 mb-3">
+                  <h3 className="font-display text-[#F0EDE6] tracking-widest text-xs uppercase">
+                    {KITCHEN_GROUP_TITLE[g]}
+                  </h3>
+                  <span className="font-mono text-[10px] text-[#777777]">{items.length} {unit}</span>
                 </div>
-              </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                  {items.map((it) => {
+                    const q         = qty[it.id] ?? 0;
+                    const lineTotal = q * Number(it.sellPrice);
+                    return (
+                      <div
+                        key={it.id}
+                        className={`p-3 border rounded-sm transition-colors ${q > 0 ? "border-[#F5C100]/50 bg-[#F5C100]/5" : "border-[#252525] bg-[#111111]"}`}
+                      >
+                        <p className="font-body text-xs text-[#F0EDE6] mb-1">{it.name}</p>
+                        {it.description && (
+                          <p className="font-mono text-[9px] text-[#777777] leading-snug mb-1.5">{it.description}</p>
+                        )}
+                        <p className="font-display text-base text-[#F5C100] tracking-wider" dir="ltr">
+                          {fmtPrice(Number(it.sellPrice), it.sellCurrency)}
+                        </p>
+                        <div className="mt-2.5 flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => dec(it.id)}
+                              disabled={q === 0}
+                              className="w-6 h-6 rounded-sm border border-[#252525] bg-[#111111] hover:border-[#555555] disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center text-[#AAAAAA]"
+                            >
+                              <Minus size={11} />
+                            </button>
+                            <span className="font-mono tabular-nums text-xs text-[#F0EDE6] w-6 text-center">{q}</span>
+                            <button
+                              onClick={() => inc(it.id)}
+                              className="w-6 h-6 rounded-sm border border-[#F5C100]/40 bg-[#F5C100]/10 hover:bg-[#F5C100]/20 flex items-center justify-center text-[#F5C100]"
+                            >
+                              <Plus size={11} />
+                            </button>
+                          </div>
+                          {q > 0 && (
+                            <span className="font-mono tabular-nums text-[10px] text-[#5CC45C]" dir="ltr">
+                              {fmtPrice(lineTotal, it.sellCurrency)}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
             );
-          })
-        )}
-      </div>
+          })}
+        </div>
+      )}
 
       {/* Total + submit */}
       <div className="border-t border-[#252525] px-5 py-3.5 flex flex-wrap items-center justify-between gap-3 bg-[#111111]/60">

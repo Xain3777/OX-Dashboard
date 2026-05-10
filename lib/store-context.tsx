@@ -141,6 +141,7 @@ export interface CatalogItemDraft {
   lowStockThreshold?: number;
   sortOrder?: number;
   isActive?: boolean;
+  description?: string | null;
 }
 
 export interface StoreContextType extends StoreState {
@@ -236,6 +237,7 @@ function rowToCatalogItem(row: CatalogRow): CatalogItem {
     lowStockThreshold: Number(row.low_stock_threshold ?? 3),
     sortOrder: Number(row.sort_order ?? 0),
     isActive: !!row.is_active,
+    description: row.description == null ? null : String(row.description),
     createdBy: row.created_by == null ? null : String(row.created_by),
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
@@ -286,15 +288,17 @@ function catalogToFoodItem(c: CatalogItem): FoodItem {
     id: c.id,
     name: c.name,
     category: (
-      c.category === "meals"  ? "meals"  :
-      c.category === "drinks" ? "drinks" :
+      c.category === "meals"       ? "meals"       :
+      c.category === "meal_addons" ? "meal_addons" :
+      c.category === "drinks"      ? "drinks"      :
+      c.category === "other"       ? "other"       :
       "food"
     ) as FoodItemCategory,
     cost_syp: c.costCurrency === "syp" ? c.costPrice : null,
     cost_usd: c.costCurrency === "usd" ? c.costPrice : null,
     price_syp: c.sellCurrency === "syp" ? c.sellPrice : 0,
     is_active: c.isActive,
-    description: null,
+    description: c.description,
     sort_order: c.sortOrder,
   };
 }
@@ -714,6 +718,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         lowStockThreshold: draft.lowStockThreshold,
         sortOrder: draft.sortOrder,
         isActive: draft.isActive,
+        description: draft.description ?? null,
       });
       if (r.error || !r.data) return { error: r.error ?? "فشل إضافة الصنف" };
       const next = rowToCatalogItem(r.data as CatalogRow);
@@ -749,6 +754,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 ...(updates.lowStockThreshold !== undefined && { lowStockThreshold: updates.lowStockThreshold }),
                 ...(updates.sortOrder !== undefined && { sortOrder: updates.sortOrder }),
                 ...(updates.isActive !== undefined && { isActive: updates.isActive }),
+                ...(updates.description !== undefined && { description: updates.description ?? null }),
               }
             : c,
         );
@@ -878,16 +884,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [addCatalogItem]);
 
   const addFoodItem = useCallback(async (item: Omit<FoodItem, "id">): Promise<{ error?: string }> => {
-    // Legacy FoodItemCategory uses 'meals' / 'drinks' / etc. Most kitchen
-    // items map cleanly into the new flat enum; 'food' (the default in
-    // pre-0023 seed data) becomes 'meals' or 'drinks' based on item type.
+    // Legacy FoodItemCategory uses 'meals' / 'meal_addons' / 'drinks' etc.
+    // Map cleanly into the new flat catalog enum; 'food' (default in the
+    // pre-0023 seed) becomes 'meals' or 'other' based on item type.
     const isWater  = /ماء/.test(item.name);
     const isDrinkName = ["قهوة", "شاي", "مشروب طاقة", "BCAA", "Pre-workout"].includes(item.name)
       || isWater;
     const newCategory: CatalogItemCategory =
-      item.category === "meals"  ? "meals"  :
-      item.category === "drinks" ? "drinks" :
-      isDrinkName                ? "drinks" :
+      item.category === "meals"       ? "meals"       :
+      item.category === "meal_addons" ? "meal_addons" :
+      item.category === "drinks"      ? "other"       :
+      item.category === "other"       ? "other"       :
+      isDrinkName                     ? "other"       :
       "meals";
     const newItemType: CatalogItemType =
       isWater                    ? "water" :
@@ -906,6 +914,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       lowStockThreshold: 3,
       sortOrder: item.sort_order ?? 0,
       isActive: item.is_active,
+      description: item.description ?? null,
     });
   }, [addCatalogItem]);
 
@@ -922,6 +931,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (updates.cost_usd !== undefined)  { fields.costPrice         = updates.cost_usd ?? null; fields.costCurrency = updates.cost_usd == null ? null : "usd"; }
     if (updates.is_active !== undefined)   fields.isActive          = updates.is_active;
     if (updates.sort_order !== undefined)  fields.sortOrder         = updates.sort_order;
+    if (updates.description !== undefined) fields.description       = updates.description ?? null;
     return updateCatalogItem(id, fields);
   }, [updateCatalogItem]);
 
