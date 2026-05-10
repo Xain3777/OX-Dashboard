@@ -624,6 +624,70 @@ export async function pushExpense(opts: {
   }
 }
 
+export async function updateExpense(opts: {
+  user: CurrentUser;
+  id: string;
+  description: string;
+  amount: number;
+  currency: Currency;
+  category: string;
+  exchangeRate?: number;
+}): Promise<{ data?: DbRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.id) return { error: "معرّف المصروف مفقود" };
+    if (!opts.description.trim()) return { error: "أدخل وصف المصروف" };
+    if (opts.amount <= 0) return { error: "المبلغ يجب أن يكون أكبر من صفر" };
+    if (opts.currency === "syp" && (!opts.exchangeRate || opts.exchangeRate <= 0)) {
+      return { error: "سعر الصرف مطلوب لإدخال مصروف بالليرة السورية" };
+    }
+
+    const rate = opts.exchangeRate && opts.exchangeRate > 0 ? opts.exchangeRate : null;
+    const amountSYP =
+      opts.currency === "syp"
+        ? Math.round(opts.amount)
+        : rate != null
+          ? Math.round(opts.amount * rate)
+          : null;
+
+    const supabase = supabaseBrowser();
+    const payload = {
+      description: opts.description.trim(),
+      amount: opts.amount,
+      currency: opts.currency,
+      category: opts.category,
+      exchange_rate: rate,
+      amount_syp: amountSYP,
+    };
+
+    const { data, error } = await supabase
+      .from("expenses")
+      .update(payload)
+      .eq("id", opts.id)
+      .is("cancelled_at", null)
+      .select()
+      .single();
+
+    if (error) { logError("expenses", "update", error); return { error: error.message }; }
+    if (!data) { logError("expenses", "update", "no row returned"); return { error: "لم يتم تحديث المصروف — تحقق من RLS" }; }
+    logSuccess("expenses", "update", data);
+
+    await pushActivity({
+      user: opts.user,
+      action: "expense_update",
+      description: `تعديل مصروف — ${opts.description.trim()} — ${opts.currency === "usd" ? "$" : ""}${opts.amount}`,
+      amountUSD: opts.currency === "usd" ? opts.amount : undefined,
+      amountSYP: amountSYP ?? undefined,
+      entityType: "expense",
+      entityId: opts.id,
+    });
+    return { data: data as DbRow };
+  } catch (e) {
+    logError("expenses", "update", e);
+    return { error: String(e) };
+  }
+}
+
 // ── Unified catalog: catalog_items + item_sales (post-0030 schema) ──
 //
 // New write paths that target the unified catalog tables introduced by
@@ -943,7 +1007,7 @@ export async function persistCatalogItemDelete(opts: {
 
 // ── Cancellation (soft-delete) ────────────────────────────────
 
-export type CancellableTable = "sales" | "gym_subscriptions" | "inbody_sessions" | "item_sales";
+export type CancellableTable = "sales" | "gym_subscriptions" | "inbody_sessions" | "item_sales" | "expenses";
 
 export async function cancelTransaction(opts: {
   user: CurrentUser;
@@ -1270,6 +1334,8 @@ export async function pushPrivateSession(opts: {
   /** Override the computed price (trainerFee + groupPrice). Useful when
    *  reception negotiates a custom rate. */
   totalPriceOverride?: number;
+  baseTrainerFeeOverride?: number;
+  groupPriceOverride?: number;
   paidAmount?: number;
   paymentStatus?: "paid" | "partial" | "unpaid";
 }): Promise<{ data?: DbRow; error?: string }> {
@@ -1279,8 +1345,13 @@ export async function pushPrivateSession(opts: {
     if (opts.numberOfPlayers <= 0) return { error: "عدد اللاعبين يجب أن يكون أكبر من صفر" };
 
     const BASE_TRAINER_FEE = 18;
-    const groupPrice = ptGroupPrice(opts.numberOfPlayers);
-    const computedTotal = BASE_TRAINER_FEE + groupPrice;
+    const trainerFee = opts.baseTrainerFeeOverride != null && opts.baseTrainerFeeOverride >= 0
+      ? opts.baseTrainerFeeOverride
+      : BASE_TRAINER_FEE;
+    const groupPrice = opts.groupPriceOverride != null && opts.groupPriceOverride >= 0
+      ? opts.groupPriceOverride
+      : ptGroupPrice(opts.numberOfPlayers);
+    const computedTotal = trainerFee + groupPrice;
     const totalPrice = opts.totalPriceOverride != null && opts.totalPriceOverride >= 0
       ? opts.totalPriceOverride
       : computedTotal;
@@ -1301,7 +1372,7 @@ export async function pushPrivateSession(opts: {
       .insert({
         number_of_players: opts.numberOfPlayers,
         player_names: opts.playerNames.filter((n) => n.trim()),
-        base_trainer_fee: BASE_TRAINER_FEE,
+        base_trainer_fee: trainerFee,
         group_price: groupPrice,
         total_price: totalPrice,
         paid_amount: paidAmount,

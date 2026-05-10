@@ -76,7 +76,7 @@ export const FOOD_ITEMS: FoodItem[] = [
   { id: "food-chk-200",  name: "إضافة جاج 200غ", category: "meals", price_syp: 25000, cost_syp: 11300, sort_order: 220, is_active: true },
   { id: "food-chk-250",  name: "إضافة جاج 250غ", category: "meals", price_syp: 30000, cost_syp: 14125, sort_order: 230, is_active: true },
   { id: "food-chk-300",  name: "إضافة جاج 300غ", category: "meals", price_syp: 35000, cost_syp: 16950, sort_order: 240, is_active: true },
-  { id: "food-salad",    name: "سلطة",           category: "meals", price_syp: 0,     cost_syp:  4000, sort_order: 300, is_active: false },
+  { id: "food-salad",    name: "سلطة",           category: "meals", price_syp: 12000, cost_syp:  8000, sort_order: 300, is_active: true },
   // Drinks
   { id: "food-water-s",  name: "ماء صغير", category: "drinks", price_syp: 5000, cost_syp: 2437, sort_order: 410, is_active: true },
   { id: "food-water-l",  name: "ماء كبير", category: "drinks", price_syp: 7000, cost_syp: 4875, sort_order: 420, is_active: true },

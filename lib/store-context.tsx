@@ -10,7 +10,7 @@ import {
   ReactNode,
 } from "react";
 import {
-  Product, Sale, Expense, PaymentMethod, Subscription, FoodItem, FoodItemCategory,
+  Product, Sale, Expense, ExpenseCategory, ExpenseFrequency, PaymentMethod, Subscription, FoodItem, FoodItemCategory,
   CatalogItem, CatalogItemCategory, CatalogItemType, ItemSale,
   PlanType, OfferType, PaymentStatus, SubStatus, Currency,
 } from "./types";
@@ -169,6 +169,8 @@ export interface StoreContextType extends StoreState {
   cancelInBodySession: (id: string) => void;
   updateInBodyPrices: (member: number, nonMember: number) => void;
   addExpense: (expense: Expense) => void;
+  updateExpenseLocal: (id: string, updates: Partial<Expense>) => void;
+  removeExpenseLocal: (id: string) => void;
   updateExpenseRate: (id: string, amount: number) => void;
   addExpenseRate: (rate: Omit<ExpenseRate, "id" | "lastUpdated">) => void;
   toggleExpenseRate: (id: string) => void;
@@ -361,7 +363,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
     const supabase = supabaseBrowser();
     const today = new Date().toISOString().slice(0, 10);
 
-    const [subsRes, salesRes, inbodyRes, catalogRes, rateRes, activeSession, lastClosed] = await Promise.all([
+    const [subsRes, salesRes, inbodyRes, expensesRes, catalogRes, rateRes, activeSession, lastClosed] = await Promise.all([
       supabase
         .from("gym_subscriptions")
         .select("*")
@@ -378,6 +380,11 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
         .select("*")
         .gte("created_at", today + "T00:00:00")
         .not("member_name", "ilike", "%test%"),
+      supabase
+        .from("expenses")
+        .select("*")
+        .is("cancelled_at", null)
+        .order("created_at", { ascending: false }),
       supabase.from("catalog_items").select("*"),
       supabase
         .from("app_settings")
@@ -392,7 +399,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
 
     const subscriptions: Subscription[] = (subsRes.data ?? []).map((row: Row) => ({
       id: String(row.id),
-      memberId: String(row.created_by ?? ""),
+      memberId: String(row.member_id ?? ""),
       memberName: String(row.member_name ?? ""),
       phone: row.phone == null ? null : String(row.phone),
       planType: String(row.plan_type ?? "1_month") as PlanType,
@@ -438,6 +445,20 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       };
     });
 
+    const expenses: Expense[] = (expensesRes.data ?? []).map((row: Row) => ({
+      id: String(row.id),
+      description: String(row.description ?? ""),
+      category: String(row.category ?? "miscellaneous") as ExpenseCategory,
+      amount: Number(row.amount ?? 0),
+      paymentMethod: "cash" as PaymentMethod,
+      currency: String(row.currency ?? "usd") as Currency,
+      frequency: "one_time" as ExpenseFrequency,
+      date: String(row.created_at ?? new Date().toISOString()).slice(0, 10),
+      createdAt: String(row.created_at ?? ""),
+      createdBy: String(row.created_by ?? ""),
+      lockedAt: String(row.created_at ?? ""),
+    }));
+
     let localSession: LocalSession | null = null;
     if (activeSession) {
       localSession = {
@@ -466,6 +487,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       subscriptions: subscriptions.length,
       itemSales: itemSales.length,
       inBodySessions: inBodySessions.length,
+      expenses: expenses.length,
       hasOpenSession: !!localSession,
       catalogItems: catalogItems.length,
       exchangeRate,
@@ -476,6 +498,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       itemSales,
       subscriptions,
       inBodySessions,
+      expenses,
       localSession,
       exchangeRate,
       lastClosingCash,
@@ -517,6 +540,8 @@ const StoreContext = createContext<StoreContextType>({
   cancelInBodySession: () => {},
   updateInBodyPrices: () => {},
   addExpense: () => {},
+  updateExpenseLocal: () => {},
+  removeExpenseLocal: () => {},
   updateExpenseRate: () => {},
   addExpenseRate: () => {},
   toggleExpenseRate: () => {},
@@ -938,6 +963,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, expenses: [...prev.expenses, expense] }));
   }, [setState]);
 
+  const updateExpenseLocal = useCallback((id: string, updates: Partial<Expense>) => {
+    setState((prev) => ({
+      ...prev,
+      expenses: prev.expenses.map((expense) =>
+        expense.id === id ? { ...expense, ...updates } : expense
+      ),
+    }));
+  }, [setState]);
+
+  const removeExpenseLocal = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      expenses: prev.expenses.filter((expense) => expense.id !== id),
+    }));
+  }, [setState]);
+
   const updateExpenseRate = useCallback((id: string, amount: number) => {
     setState((prev) => ({
       ...prev,
@@ -1143,6 +1184,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     cancelInBodySession,
     updateInBodyPrices,
     addExpense,
+    updateExpenseLocal,
+    removeExpenseLocal,
     updateExpenseRate,
     addExpenseRate,
     toggleExpenseRate,

@@ -683,6 +683,8 @@ export interface ManagerSummary {
     /** Subscription rows whose member_id was null — counted via name fallback. */
     unattached: number;
   };
+  /** Same raw subscription row count shown in the reception subscriptions header. */
+  totalMembers: number;
   partiallyPaid: {
     count: number;
     remainingSYP: number;
@@ -709,7 +711,7 @@ const ITEM_SALE_SELECT =
 const INBODY_SELECT =
   "id, member_id, member_name, session_type, amount, currency, exchange_rate, amount_syp, cancelled_at, created_at";
 const PRIVATE_SELECT =
-  "id, paid_amount, total_price, payment_status, currency, exchange_rate, amount_syp, cancelled_at, created_at";
+  "id, paid_amount, total_price, base_trainer_fee, group_price, payment_status, currency, exchange_rate, amount_syp, cancelled_at, created_at";
 const EXPENSE_SELECT =
   "id, category, amount, currency, exchange_rate, amount_syp, cancelled_at, created_at";
 
@@ -753,6 +755,23 @@ function bucketSubtract(a: CurrencyBucket, b: CurrencyBucket): CurrencyBucket {
   };
 }
 
+function bucketPrivateSessionShare(rows: Row[], shareCol: "group_price" | "base_trainer_fee"): CurrencyBucket {
+  const out: CurrencyBucket = { syp: 0, usd: 0, skippedUSD: 0 };
+  for (const r of rows) {
+    const paid = Number(r.paid_amount ?? 0);
+    const total = Number(r.total_price ?? 0);
+    const share = Number(r[shareCol] ?? 0);
+    if (!Number.isFinite(paid) || !Number.isFinite(total) || !Number.isFinite(share) || paid <= 0 || total <= 0 || share <= 0) continue;
+    const native = Math.min(paid, total) * (share / total);
+    const syp = rowSYP(r as AmountRow, native);
+    if (syp != null) out.syp += syp;
+    const usd = rowUSD(r as AmountRow, native);
+    if (usd != null) out.usd += usd;
+    else out.skippedUSD += 1;
+  }
+  return out;
+}
+
 function bucketSum(...xs: CurrencyBucket[]): CurrencyBucket {
   return xs.reduce(
     (acc, x) => ({
@@ -777,6 +796,7 @@ export async function fetchManagerDashboardSummary(
     privateRes,
     expensesRes,
     activeSubsRes,
+    totalMembersRes,
     partialSubsRes,
     openSessionRes,
   ] = await Promise.all([
@@ -818,6 +838,11 @@ export async function fetchManagerDashboardSummary(
       .eq("status", "active")
       .is("cancelled_at", null)
       .gte("end_date", today)
+      .not("member_name", "ilike", "%test%"),
+    supabase
+      .from("gym_subscriptions")
+      .select("id", { count: "exact", head: true })
+      .is("cancelled_at", null)
       .not("member_name", "ilike", "%test%"),
     supabase
       .from("gym_subscriptions")
@@ -934,6 +959,7 @@ export async function fetchManagerDashboardSummary(
     totalRevenue,
     netIncome,
     activeMembers: { distinct: idents.size, unattached },
+    totalMembers: totalMembersRes.count ?? 0,
     partiallyPaid: {
       count: partialRows.length,
       remainingSYP: partialRemainingSYP,
@@ -1211,7 +1237,12 @@ export interface OtherIncomeBreakdown {
   };
   kitchen: { bucket: CurrencyBucket; orderCount: number };
   store:   { bucket: CurrencyBucket; saleCount: number };
-  privateSessions: { bucket: CurrencyBucket; sessionCount: number };
+  privateSessions: {
+    bucket: CurrencyBucket;
+    sessionCount: number;
+    gymShare: CurrencyBucket;
+    coachShare: CurrencyBucket;
+  };
 }
 
 export async function fetchOtherIncomeBreakdown(
@@ -1263,7 +1294,12 @@ export async function fetchOtherIncomeBreakdown(
     },
     kitchen: { bucket: bucketiseItemSales(kitchenRows), orderCount: kitchenRows.length },
     store:   { bucket: bucketiseItemSales(storeRows),   saleCount:  storeRows.length },
-    privateSessions: { bucket: bucketise(privateRows, "paid_amount"), sessionCount: privateRows.length },
+    privateSessions: {
+      bucket: bucketise(privateRows, "paid_amount"),
+      sessionCount: privateRows.length,
+      gymShare: bucketPrivateSessionShare(privateRows, "group_price"),
+      coachShare: bucketPrivateSessionShare(privateRows, "base_trainer_fee"),
+    },
   };
 }
 

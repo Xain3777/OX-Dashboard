@@ -50,5 +50,18 @@
     "unit": "meal",
     "stock": 0,
     "lowStockThreshold": 0
+  },
+  {
+    "id": "meal-salad",
+    "barcode": "6281000003400",
+    "name": "سلطة",
+    "nameEn": "Salad Add-on",
+    "brand": "OX Kitchen",
+    "category": "meals",
+    "cost": 8000,
+    "price": 12000,
+    "unit": "addon",
+    "stock": 0,
+    "lowStockThreshold": 0
   }
 ]

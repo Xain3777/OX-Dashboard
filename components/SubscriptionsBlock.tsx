@@ -106,6 +106,34 @@ const MONTHLY_PLAN_TYPES: PlanType[] = [
 ];
 
 const OWNER_FAMILY_PLAN_TYPES = MONTHLY_PLAN_TYPES;
+const COACH_PRIVATE_PLAN_TYPES = MONTHLY_PLAN_TYPES;
+const COACH_PRIVATE_MONTHLY_SUBSCRIPTION = 35;
+const COACH_PRIVATE_ADDON_PRICE = 100;
+const COACH_PRIVATE_GYM_SHARE = 50;
+const COACH_PRIVATE_COACH_SHARE = 50;
+
+const PLAN_MONTHS: Record<PlanType, number> = {
+  daily: 0,
+  "15_days": 0,
+  "1_month": 1,
+  "3_months": 3,
+  "6_months": 6,
+  "9_months": 9,
+  "12_months": 12,
+};
+
+function coachPrivateSubscriptionAmount(plan: PlanType): number {
+  return COACH_PRIVATE_MONTHLY_SUBSCRIPTION * PLAN_MONTHS[plan];
+}
+
+function coachPrivateTotal(plan: PlanType): number {
+  return coachPrivateSubscriptionAmount(plan) + COACH_PRIVATE_ADDON_PRICE;
+}
+
+function splitPaidAmount(paid: number, total: number, part: number): number {
+  if (total <= 0 || part <= 0 || paid <= 0) return 0;
+  return Number(((paid * part) / total).toFixed(2));
+}
 
 
 function ptCalc(n: number) {
@@ -116,7 +144,7 @@ function ptCalc(n: number) {
 // ─── Local types ──────────────────────────────────────────────────────────────
 
 type MainTab  = "subscriptions" | "offers";
-type SubType  = "normal" | "private";
+type SubType  = "normal" | "private" | "coach_private";
 type OfferTab = "couple" | "referral" | "corporate" | "college" | "owner_family" | "custom_registration";
 type SortMode = "alpha" | "date";
 type FilterTab = "all" | "active" | "expiring" | "unpaid" | "expired" | "partial";
@@ -292,6 +320,17 @@ export default function SubscriptionsBlock() {
   const [ptBusy, setPtBusy]     = useState(false);
   const [ptError, setPtError]   = useState<string | null>(null);
 
+  // Our gym coach private: membership + fixed private add-on.
+  const [coachPrivateName,  setCoachPrivateName]  = useState("");
+  const [coachPrivatePhone, setCoachPrivatePhone] = useState("");
+  const [coachPrivateCoach, setCoachPrivateCoach] = useState("");
+  const [coachPrivatePlan,  setCoachPrivatePlan]  = useState<PlanType>("1_month");
+  const [coachPrivateStart, setCoachPrivateStart] = useState(new Date().toISOString().split("T")[0]);
+  const [coachPrivateTotalAmount, setCoachPrivateTotalAmount] = useState(String(coachPrivateTotal("1_month")));
+  const [coachPrivatePaid,  setCoachPrivatePaid]  = useState(String(coachPrivateTotal("1_month")));
+  const [coachPrivateBusy,  setCoachPrivateBusy]  = useState(false);
+  const [coachPrivateError, setCoachPrivateError] = useState<string | null>(null);
+
   // ── Offers tab state ───────────────────────────────────────────────────────
   const [offerTab, setOfferTab] = useState<OfferTab>("couple");
 
@@ -429,6 +468,12 @@ export default function SubscriptionsBlock() {
     setOfTotal(t);
     setOfPaid(t);
   }, []);
+  const handleCoachPrivatePlanChange = useCallback((p: PlanType) => {
+    setCoachPrivatePlan(p);
+    const t = String(coachPrivateTotal(p));
+    setCoachPrivateTotalAmount(t);
+    setCoachPrivatePaid(t);
+  }, []);
   const handlePtCountChange = useCallback((n: number) => {
     const safe = Math.max(1, n);
     setPtCount(safe);
@@ -526,7 +571,7 @@ export default function SubscriptionsBlock() {
     const row = r.data!;
     addSubscription({
       id: String(row.id),
-      memberId: String(row.created_by ?? user.id),
+      memberId: String(row.member_id ?? m.data?.id ?? ""),
       memberName: form.memberName.trim(),
       planType: form.planType,
       offer: "none",
@@ -577,6 +622,106 @@ export default function SubscriptionsBlock() {
     setPtPaid(String(ptCalc(1).total));
     setFormOpen(false);
     setToastMessage(`تم حفظ جلسة التدريب الخاص — ${ptCount} لاعبين — حالة: ${pay.status}`);
+  };
+
+  // ── Our gym coach private submit ──────────────────────────────────────────
+  const handleCoachPrivateSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    setCoachPrivateError(null);
+    if (!coachPrivateName.trim()) { setCoachPrivateError("أدخل اسم المشترك"); return; }
+    if (!coachPrivateCoach.trim()) { setCoachPrivateError("أدخل اسم الكوتش"); return; }
+    const pay = computePayment(coachPrivateTotalAmount, coachPrivatePaid);
+    if (pay.overpaid) { setCoachPrivateError("المبلغ المدفوع لا يمكن أن يتجاوز المبلغ الإجمالي"); return; }
+
+    const expectedTotal = coachPrivateTotal(coachPrivatePlan);
+    const subscriptionAmount = coachPrivateSubscriptionAmount(coachPrivatePlan);
+    const subscriptionPaid = splitPaidAmount(pay.paidNum, pay.totalNum || expectedTotal, subscriptionAmount);
+    const privatePaid = Math.max(0, Number((pay.paidNum - subscriptionPaid).toFixed(2)));
+    const subscriptionStatus = subscriptionPaid <= 0 ? "unpaid" : subscriptionPaid >= subscriptionAmount ? "paid" : "partial";
+    const privateStatus = privatePaid <= 0 ? "unpaid" : privatePaid >= COACH_PRIVATE_ADDON_PRICE ? "paid" : "partial";
+    const endDate = calculateEndDate(coachPrivateStart, coachPrivatePlan, "none");
+    const remaining = calculateRemainingDays(endDate);
+    const groupId = crypto.randomUUID();
+
+    setCoachPrivateBusy(true);
+    const member = await findOrCreateMember({
+      user: { id: user.id, displayName: user.displayName },
+      name: coachPrivateName,
+      phone: coachPrivatePhone,
+    });
+    if (member.error) { setCoachPrivateError(member.error); setCoachPrivateBusy(false); return; }
+
+    const subRow = await pushSubscription({
+      user: { id: user.id, displayName: user.displayName },
+      memberName: coachPrivateName.trim(),
+      memberId: member.data?.id,
+      phone: coachPrivatePhone,
+      planType: coachPrivatePlan,
+      offer: "none",
+      startDate: coachPrivateStart,
+      endDate,
+      amount: subscriptionAmount,
+      paidAmount: subscriptionPaid,
+      paymentStatus: subscriptionStatus,
+      currency: "usd",
+      exchangeRate,
+      groupId,
+      privateCoachName: coachPrivateCoach.trim(),
+      note: "Our gym coach private",
+    });
+    if (subRow.error) { setCoachPrivateError(subRow.error); setCoachPrivateBusy(false); return; }
+
+    const privateRow = await pushPrivateSession({
+      user: { id: user.id, displayName: user.displayName },
+      numberOfPlayers: 1,
+      playerNames: [coachPrivateName.trim()],
+      groupId,
+      notes: `Our gym coach private — ${getPlanLabel(coachPrivatePlan)}`,
+      exchangeRate,
+      privateCoachName: coachPrivateCoach.trim(),
+      totalPriceOverride: COACH_PRIVATE_ADDON_PRICE,
+      baseTrainerFeeOverride: COACH_PRIVATE_COACH_SHARE,
+      groupPriceOverride: COACH_PRIVATE_GYM_SHARE,
+      paidAmount: privatePaid,
+      paymentStatus: privateStatus,
+    });
+    if (privateRow.error) { setCoachPrivateError(privateRow.error); setCoachPrivateBusy(false); return; }
+
+    const row = subRow.data!;
+    addSubscription({
+      id: String(row.id),
+      memberId: String(row.member_id ?? member.data?.id ?? ""),
+      memberName: coachPrivateName.trim(),
+      phone: coachPrivatePhone || null,
+      planType: coachPrivatePlan,
+      offer: "none",
+      startDate: coachPrivateStart,
+      endDate,
+      remainingDays: remaining,
+      amount: subscriptionAmount,
+      paidAmount: subscriptionPaid,
+      paymentStatus: subscriptionStatus,
+      paymentMethod: "cash",
+      currency: "usd",
+      status: remaining > 0 ? "active" : "expired",
+      privateCoachName: coachPrivateCoach.trim(),
+      note: "Our gym coach private",
+      createdAt: String(row.created_at ?? new Date().toISOString()),
+      createdBy: user.id,
+      lockedAt: String(row.created_at ?? new Date().toISOString()),
+    });
+
+    setCoachPrivateBusy(false);
+    setCoachPrivateName("");
+    setCoachPrivatePhone("");
+    setCoachPrivateCoach("");
+    setCoachPrivatePlan("1_month");
+    setCoachPrivateStart(new Date().toISOString().split("T")[0]);
+    setCoachPrivateTotalAmount(String(coachPrivateTotal("1_month")));
+    setCoachPrivatePaid(String(coachPrivateTotal("1_month")));
+    setFormOpen(false);
+    setToastMessage("تم حفظ اشتراك Our Gym Coach Private");
   };
 
   // ── Couple offer submit ────────────────────────────────────────────────────
@@ -639,7 +784,7 @@ export default function SubscriptionsBlock() {
     [r1.data!, r2.data!].forEach((row, i) => {
       addSubscription({
         id: String(row.id),
-        memberId: String(row.created_by ?? user.id),
+        memberId: String(row.member_id ?? (i === 0 ? m1.data?.id : m2.data?.id) ?? ""),
         memberName: coupleNames[i].trim(),
         planType: "1_month", offer: "couple",
         startDate: coupleStart, endDate,
@@ -779,7 +924,7 @@ export default function SubscriptionsBlock() {
     const rem = calculateRemainingDays(endDate);
     addSubscription({
       id: String(r.data!.id),
-      memberId: String(r.data!.created_by ?? user.id),
+      memberId: String(r.data!.member_id ?? m.data?.id ?? ""),
       memberName: ofName.trim(),
       planType: ofPlan, offer: "owner_family",
       startDate: ofStart, endDate,
@@ -840,7 +985,7 @@ export default function SubscriptionsBlock() {
     const rem = calculateRemainingDays(endDate);
     addSubscription({
       id: String(r.data!.id),
-      memberId: String(r.data!.created_by ?? user.id),
+      memberId: String(r.data!.member_id ?? m.data?.id ?? ""),
       memberName: corpName.trim(),
       planType: corpPlan, offer: "corporate",
       startDate: corpStart, endDate,
@@ -891,7 +1036,7 @@ export default function SubscriptionsBlock() {
     const rem = calculateRemainingDays(endDate);
     addSubscription({
       id: String(r.data!.id),
-      memberId: String(r.data!.created_by ?? user.id),
+      memberId: String(r.data!.member_id ?? m.data?.id ?? ""),
       memberName: collegeName.trim(),
       planType: collegePlan, offer: "college",
       startDate: collegeStart, endDate,
@@ -943,7 +1088,7 @@ export default function SubscriptionsBlock() {
     const rem = calculateRemainingDays(endDate);
     addSubscription({
       id: String(r.data!.id),
-      memberId: String(r.data!.created_by ?? user.id),
+      memberId: String(r.data!.member_id ?? m.data?.id ?? ""),
       memberName: customName.trim(),
       planType: customPlan, offer: "custom_registration",
       startDate: customStart, endDate,
@@ -1051,7 +1196,7 @@ export default function SubscriptionsBlock() {
 
                 {/* Type toggle */}
                 <div className="flex gap-1 mb-4">
-                  {(["normal", "private"] as const).map((t) => (
+                  {(["normal", "private", "coach_private"] as const).map((t) => (
                     <button
                       key={t}
                       type="button"
@@ -1062,7 +1207,7 @@ export default function SubscriptionsBlock() {
                           : "bg-void border border-gunmetal text-secondary hover:text-ghost"
                       }`}
                     >
-                      {t === "normal" ? "عادي" : "تدريب خاص"}
+                      {t === "normal" ? "عادي" : t === "private" ? "تدريب خاص" : "تدريب برافيت مع مدربينا"}
                     </button>
                   ))}
                 </div>
@@ -1231,6 +1376,102 @@ export default function SubscriptionsBlock() {
                       </button>
                       <button type="button"
                         onClick={() => { setPtCount(1); setPtNames([""]); setPtNotes(""); setPtCoach(""); setFormOpen(false); }}
+                        className="px-4 py-2.5 border border-gunmetal text-secondary hover:text-ghost font-body text-sm rounded transition-colors">
+                        إلغاء
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {/* ── Our gym coach private form ─────────────────────── */}
+                {subType === "coach_private" && (
+                  <form onSubmit={handleCoachPrivateSubmit} className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className={labelCls}>اسم المشترك</label>
+                        <input required type="text" className={inputCls} placeholder="الاسم الكامل"
+                          value={coachPrivateName}
+                          onChange={(e) => setCoachPrivateName(e.target.value)} />
+                      </div>
+                      <div>
+                        <label className={labelCls}>رقم الهاتف</label>
+                        <input type="tel" className={inputCls} placeholder="+963 9x xxx xxxx"
+                          value={coachPrivatePhone}
+                          onChange={(e) => setCoachPrivatePhone(e.target.value)} />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className={labelCls}>اسم الكوتش</label>
+                        <input required type="text" className={inputCls} placeholder="اسم الكوتش"
+                          value={coachPrivateCoach}
+                          onChange={(e) => setCoachPrivateCoach(e.target.value)} />
+                      </div>
+                      <div>
+                        <label className={labelCls}>الخطة</label>
+                        <div className="relative">
+                          <select className={selectCls} value={coachPrivatePlan}
+                            onChange={(e) => handleCoachPrivatePlanChange(e.target.value as PlanType)}>
+                            {COACH_PRIVATE_PLAN_TYPES.map((p) => (
+                              <option key={p} value={p}>
+                                {getPlanLabel(p)}
+                              </option>
+                            ))}
+                          </select>
+                          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-secondary"><ChevronIcon open={false} /></span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className={labelCls}>تاريخ البدء</label>
+                      <input required type="date" className={inputCls} value={coachPrivateStart}
+                        onChange={(e) => setCoachPrivateStart(e.target.value)} />
+                    </div>
+
+                    <div className="flex items-start gap-4 p-3 bg-void border border-gunmetal rounded">
+                      <div>
+                        <p className="font-mono text-[9px] text-slate uppercase tracking-widest mb-0.5">البدء</p>
+                        <p className="font-mono text-sm text-ghost tabular-nums">{formatDate(coachPrivateStart)}</p>
+                      </div>
+                      <div className="self-center text-slate/40 font-mono text-xs">←</div>
+                      <div>
+                        <p className="font-mono text-[9px] text-slate uppercase tracking-widest mb-0.5">تاريخ الانتهاء</p>
+                        <p className="font-display text-xl tracking-wider text-gold-bright leading-none">
+                          {formatDate(calculateEndDate(coachPrivateStart, coachPrivatePlan, "none"))}
+                        </p>
+                      </div>
+                    </div>
+
+                    <PaymentFields
+                      totalAmount={coachPrivateTotalAmount}
+                      onTotalChange={setCoachPrivateTotalAmount}
+                      paidAmount={coachPrivatePaid}
+                      onPaidChange={setCoachPrivatePaid}
+                      inputCls={inputCls}
+                      labelCls={labelCls}
+                      totalLocked
+                    />
+
+                    {coachPrivateError && <div className="p-2.5 bg-red/10 border border-red/30 rounded font-mono text-xs text-red">{coachPrivateError}</div>}
+
+                    <div className="flex items-center gap-3 pt-1">
+                      <button type="submit" disabled={coachPrivateBusy}
+                        className="inline-flex items-center gap-2 px-5 py-2.5 bg-gold hover:bg-gold-bright text-void font-display text-sm tracking-widest uppercase clip-corner-sm transition-colors disabled:opacity-40">
+                        <LockIcon size={13} />{coachPrivateBusy ? "جاري الحفظ…" : "قفل وحفظ الاشتراك"}
+                      </button>
+                      <button type="button"
+                        onClick={() => {
+                          setCoachPrivateName("");
+                          setCoachPrivatePhone("");
+                          setCoachPrivateCoach("");
+                          setCoachPrivatePlan("1_month");
+                          setCoachPrivateStart(new Date().toISOString().split("T")[0]);
+                          setCoachPrivateTotalAmount(String(coachPrivateTotal("1_month")));
+                          setCoachPrivatePaid(String(coachPrivateTotal("1_month")));
+                          setFormOpen(false);
+                        }}
                         className="px-4 py-2.5 border border-gunmetal text-secondary hover:text-ghost font-body text-sm rounded transition-colors">
                         إلغاء
                       </button>

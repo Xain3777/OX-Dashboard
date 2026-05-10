@@ -19,7 +19,7 @@ import type { Product } from "@/lib/types";
 import {
   getPlanLabel, getOfferLabel, getProductCategoryLabel, getCategoryLabel,
 } from "@/lib/business-logic";
-import { pushExpense } from "@/lib/supabase/intake";
+import { cancelTransaction, pushExpense, updateExpense } from "@/lib/supabase/intake";
 import { formatTime, formatDate } from "@/lib/utils/time";
 import KPIStrip from "@/components/KPIStrip";
 import DailyExportButton from "@/components/DailyExportButton";
@@ -158,9 +158,9 @@ function Stat({ label, value, highlight }: { label: string; value: string; highl
   );
 }
 
-function THead({ cols }: { cols: string[] }) {
+function THead({ cols, className }: { cols: string[]; className?: string }) {
   return (
-    <thead>
+    <thead className={className}>
       <tr className="border-b border-[#252525] bg-[#111111]">
         {cols.map((h) => (
           <th key={h} className="px-4 py-2.5 text-right font-mono text-[10px] uppercase tracking-widest text-[#555555] whitespace-nowrap">{h}</th>
@@ -853,13 +853,18 @@ function KitchenDashboard() {
 // ─── Expenses manager ─────────────────────────────────────────────────────────
 
 function ExpensesManager() {
-  const { expenses, addExpense } = useStore();
+  const { expenses, addExpense, updateExpenseLocal, removeExpenseLocal } = useStore();
   const { user } = useAuth();
   const { exchangeRate } = useCurrency();
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState<ExpenseCategory>("salaries");
   const [amount, setAmount] = useState("");
   const [frequency, setFrequency] = useState<ExpenseFrequency>("monthly");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDescription, setEditDescription] = useState("");
+  const [editCategory, setEditCategory] = useState<ExpenseCategory>("salaries");
+  const [editAmount, setEditAmount] = useState("");
+  const [editFrequency, setEditFrequency] = useState<ExpenseFrequency>("one_time");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
@@ -902,6 +907,72 @@ function ExpensesManager() {
     setSuccess("تم تسجيل المصروف."); setTimeout(() => setSuccess(""), 2000);
   }
 
+  function startEdit(expense: Expense) {
+    setError("");
+    setSuccess("");
+    setEditingId(expense.id);
+    setEditDescription(expense.description);
+    setEditCategory(expense.category);
+    setEditAmount(String(expense.amount));
+    setEditFrequency(expense.frequency ?? "one_time");
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditDescription("");
+    setEditAmount("");
+    setEditFrequency("one_time");
+    setEditCategory("salaries");
+  }
+
+  async function handleSaveEdit(expense: Expense) {
+    setError("");
+    setSuccess("");
+    if (!user) return;
+    if (!window.confirm("Are you sure you want to edit this expense?")) return;
+    const nextDescription = editDescription.trim();
+    const nextAmount = parseFloat(editAmount);
+    if (!nextDescription) { setError("أدخل وصف المصروف."); return; }
+    if (isNaN(nextAmount) || nextAmount <= 0) { setError("المبلغ غير صحيح."); return; }
+    const r = await updateExpense({
+      user: { id: user.id, displayName: user.displayName },
+      id: expense.id,
+      description: nextDescription,
+      amount: nextAmount,
+      currency: expense.currency ?? "usd",
+      category: editCategory,
+      exchangeRate,
+    });
+    if (r.error) { setError(r.error); return; }
+    updateExpenseLocal(expense.id, {
+      description: nextDescription,
+      amount: nextAmount,
+      category: editCategory,
+      frequency: editFrequency,
+    });
+    cancelEdit();
+    setSuccess("تم تعديل المصروف.");
+    setTimeout(() => setSuccess(""), 2000);
+  }
+
+  async function handleDelete(expense: Expense) {
+    setError("");
+    setSuccess("");
+    if (!user) return;
+    if (!window.confirm("Are you sure you want to delete this expense?")) return;
+    const r = await cancelTransaction({
+      user: { id: user.id, displayName: user.displayName },
+      table: "expenses",
+      id: expense.id,
+      reason: "deleted from manager expenses tab",
+    });
+    if (r.error) { setError(r.error); return; }
+    removeExpenseLocal(expense.id);
+    if (editingId === expense.id) cancelEdit();
+    setSuccess("تم حذف المصروف.");
+    setTimeout(() => setSuccess(""), 2000);
+  }
+
   return (
     <div className="bg-[#1A1A1A] border border-[#252525] rounded-sm overflow-hidden">
       <div className="px-5 py-4 border-b border-[#252525] bg-[#111111]">
@@ -929,17 +1000,65 @@ function ExpensesManager() {
         <>
           <div className="overflow-x-auto max-h-64 overflow-y-auto">
             <table className="w-full text-xs">
-              <thead className="sticky top-0"><THead cols={["التاريخ", "الوصف", "الفئة", "المبلغ", "التكرار"]} /></thead>
+              <THead className="sticky top-0" cols={["التاريخ", "الوصف", "الفئة", "المبلغ", "التكرار", ""]} />
               <tbody className="divide-y divide-[#252525]/60">
-                {sorted.map((exp) => (
-                  <tr key={exp.id} className="hover:bg-[#252525]/20 transition-colors">
-                    <td className="px-4 py-2.5 font-mono text-[#777777] whitespace-nowrap">{formatDate(exp.createdAt)}</td>
-                    <td className="px-4 py-2.5 text-[#F0EDE6]">{exp.description}</td>
-                    <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA] whitespace-nowrap">{getCategoryLabel(exp.category)}</td>
-                    <td className="px-4 py-2.5 font-mono tabular-nums text-[#FF3333]">${exp.amount.toFixed(2)}</td>
-                    <td className="px-4 py-2.5 font-mono text-[10px] text-[#777777] whitespace-nowrap">{exp.frequency ? FREQ_LABELS[exp.frequency] : "مرة واحدة"}</td>
-                  </tr>
-                ))}
+                {sorted.map((exp) => {
+                  const editing = editingId === exp.id;
+                  return (
+                    <tr key={exp.id} className="hover:bg-[#252525]/20 transition-colors">
+                      <td className="px-4 py-2.5 font-mono text-[#777777] whitespace-nowrap">{formatDate(exp.createdAt)}</td>
+                      <td className="px-4 py-2.5 text-[#F0EDE6]">
+                        {editing ? (
+                          <input value={editDescription} onChange={(e) => setEditDescription(e.target.value)} className={`min-w-[160px] ${INPUT}`} />
+                        ) : exp.description}
+                      </td>
+                      <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA] whitespace-nowrap">
+                        {editing ? (
+                          <select value={editCategory} onChange={(e) => setEditCategory(e.target.value as ExpenseCategory)} className={SELECT}>
+                            {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{getCategoryLabel(c)}</option>)}
+                          </select>
+                        ) : getCategoryLabel(exp.category)}
+                      </td>
+                      <td className="px-4 py-2.5 font-mono tabular-nums text-[#FF3333]">
+                        {editing ? (
+                          <input value={editAmount} onChange={(e) => setEditAmount(e.target.value)} type="number" min="0" step="0.01" className={`w-28 ${INPUT}`} />
+                        ) : `$${exp.amount.toFixed(2)}`}
+                      </td>
+                      <td className="px-4 py-2.5 font-mono text-[10px] text-[#777777] whitespace-nowrap">
+                        {editing ? (
+                          <select value={editFrequency} onChange={(e) => setEditFrequency(e.target.value as ExpenseFrequency)} className={SELECT}>
+                            {(["monthly", "weekly", "daily", "one_time"] as ExpenseFrequency[]).map((f) => (
+                              <option key={f} value={f}>{FREQ_LABELS[f]}</option>
+                            ))}
+                          </select>
+                        ) : exp.frequency ? FREQ_LABELS[exp.frequency] : "مرة واحدة"}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center justify-center gap-1.5">
+                          {editing ? (
+                            <>
+                              <button onClick={() => void handleSaveEdit(exp)} className="p-1 text-[#5CC45C] hover:text-[#7DDE7D] cursor-pointer" title="حفظ التعديل">
+                                <Check size={12} />
+                              </button>
+                              <button onClick={cancelEdit} className="p-1 text-[#777777] hover:text-[#FF3333] cursor-pointer" title="إلغاء التعديل">
+                                <X size={12} />
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button onClick={() => startEdit(exp)} className="p-1 text-[#777777] hover:text-[#F5C100] cursor-pointer" title="تعديل">
+                                <Edit2 size={12} />
+                              </button>
+                              <button onClick={() => void handleDelete(exp)} className="p-1 text-[#777777] hover:text-[#FF3333] cursor-pointer" title="حذف">
+                                <Trash2 size={12} />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1126,7 +1245,7 @@ function RevenueSummaryCards({
   if (loading && !summary) {
     return (
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8 gap-2">
-        {Array.from({ length: 8 }).map((_, i) => (
+        {Array.from({ length: 9 }).map((_, i) => (
           <div key={i} className="bg-[#1A1A1A] border border-[#252525] rounded-sm p-3 h-[88px] animate-pulse" />
         ))}
       </div>
@@ -1169,6 +1288,11 @@ function RevenueSummaryCards({
         icon={<TrendingUp size={14} />}
         accent={s.netIncome.syp >= 0 ? "green" : "red"}
         skipped={bucketSkipped(s.netIncome)}
+      />
+      <CountCard
+        label="Total Members / إجمالي الأعضاء" value={s.totalMembers}
+        icon={<Users size={14} />}
+        subtitle="نفس رقم الاشتراكات في الاستقبال"
       />
       <CountCard
         label="أعضاء نشطون" value={s.activeMembers.distinct}
@@ -1391,6 +1515,14 @@ function OtherIncomeSection({
         <div>
           <span className="text-[#555555] uppercase tracking-widest text-[10px]">جلسات باقات (legacy)</span>
           <span className="mr-2 text-[#F0EDE6] tabular-nums">{o.inbody.packageSessions}</span>
+        </div>
+        <div>
+          <span className="text-[#555555] uppercase tracking-widest text-[10px]">حصة النادي من الخاص</span>
+          <span className="mr-2 text-[#5CC45C] tabular-nums" dir="ltr">{fmtUSD(o.privateSessions.gymShare.usd)}</span>
+        </div>
+        <div>
+          <span className="text-[#555555] uppercase tracking-widest text-[10px]">حصة الكوتش من الخاص</span>
+          <span className="mr-2 text-[#F5C100] tabular-nums" dir="ltr">{fmtUSD(o.privateSessions.coachShare.usd)}</span>
         </div>
       </div>
     </div>
