@@ -300,6 +300,9 @@ function catalogToFoodItem(c: CatalogItem): FoodItem {
     is_active: c.isActive,
     description: c.description,
     sort_order: c.sortOrder,
+    track_stock: c.trackStock,
+    stock_quantity: c.stockQuantity,
+    low_stock_threshold: c.lowStockThreshold,
   };
 }
 
@@ -932,6 +935,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (updates.is_active !== undefined)   fields.isActive          = updates.is_active;
     if (updates.sort_order !== undefined)  fields.sortOrder         = updates.sort_order;
     if (updates.description !== undefined) fields.description       = updates.description ?? null;
+    if (updates.stock_quantity !== undefined && Number.isFinite(updates.stock_quantity) && updates.stock_quantity >= 0) {
+      fields.stockQuantity = Math.floor(updates.stock_quantity);
+    }
     return updateCatalogItem(id, fields);
   }, [updateCatalogItem]);
 

@@ -175,6 +175,47 @@ function EmptyTable({ label }: { label: string }) {
   return <div className="px-5 py-8 text-center font-mono text-[10px] uppercase tracking-widest text-[#555555]">{label}</div>;
 }
 
+// Inline editor for the stock count of a tracked kitchen item. While the
+// input is focused, `draft` holds the user's typed value so realtime
+// sales (which mutate item.stock_quantity) don't yank the input from
+// under them. On blur we commit when the value actually changed and
+// fall back to the latest prop value. Non-tracked rows render a dash.
+function StockCell({
+  item,
+  onChange,
+}: {
+  item: FoodItem;
+  onChange: (next: number) => void;
+}) {
+  const current = item.stock_quantity ?? 0;
+  const [draft, setDraft] = useState<string | null>(null);
+
+  if (!item.track_stock) {
+    return <span className="font-mono text-[10px] text-[#555555]">—</span>;
+  }
+  const isLow = current <= (item.low_stock_threshold ?? 3);
+  const colour = isLow ? "text-[#FF3333]" : "text-[#5CC45C]";
+  const displayed = draft ?? String(current);
+  return (
+    <input
+      type="number"
+      min="0"
+      step="1"
+      value={displayed}
+      onFocus={() => setDraft(String(current))}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        if (draft === null) return;
+        const n = parseInt(draft, 10);
+        setDraft(null);
+        if (Number.isFinite(n) && n >= 0 && n !== current) onChange(n);
+      }}
+      onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+      className={`w-16 bg-[#0A0A0A] border border-[#252525] rounded-sm px-2 py-0.5 text-xs font-mono tabular-nums text-right ${colour} focus:outline-none focus:border-[#F5C100]/40`}
+    />
+  );
+}
+
 const INPUT = "bg-[#0A0A0A] border border-[#252525] rounded-sm px-3 py-1.5 text-xs text-[#F0EDE6] placeholder-[#555555] focus:outline-none focus:border-[#F5C100]/40";
 const SELECT = "bg-[#0A0A0A] border border-[#252525] rounded-sm px-3 py-1.5 text-xs text-[#AAAAAA] focus:outline-none focus:border-[#F5C100]/40";
 const BTN_ADD = "flex items-center gap-1.5 px-4 py-1.5 bg-[#F5C100] hover:bg-[#FFD740] text-[#0A0A0A] font-display text-xs tracking-widest uppercase rounded-sm transition-colors cursor-pointer";
@@ -680,7 +721,17 @@ function KitchenDashboard() {
     else { const c = parseFloat(row.costSyp); if (!isNaN(c)) updates.cost_syp = c; }
     if (row.costUsd === "") updates.cost_usd = null;
     else { const c = parseFloat(row.costUsd); if (!isNaN(c)) updates.cost_usd = c; }
-    if (Object.keys(updates).length) await updateFoodItem(f.id, updates);
+    if (Object.keys(updates).length) {
+      const r = await updateFoodItem(f.id, updates);
+      if (r.error) {
+        // Keep the edit row open so the manager can retry / correct, and
+        // surface the actual error instead of silently closing.
+        setAddErr(r.error);
+        return;
+      }
+      setAddOk("تم الحفظ.");
+      setTimeout(() => setAddOk(""), 2000);
+    }
     cancelFoodEdit(f.id);
   }
 
@@ -757,7 +808,7 @@ function KitchenDashboard() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
-              <THead cols={["الاسم", "تكلفة (ل.س)", "تكلفة ($)", "سعر البيع (ل.س)", "الربح", "الهامش", "الفئة", "الحالة", ""]} />
+              <THead cols={["الاسم", "تكلفة (ل.س)", "تكلفة ($)", "سعر البيع (ل.س)", "الربح", "الهامش", "الفئة", "المخزون", "الحالة", ""]} />
               <tbody className="divide-y divide-[#252525]/60">
                 {foodItems.map((item) => {
                   const editing = foodEdits[item.id];
@@ -799,6 +850,9 @@ function KitchenDashboard() {
                           </td>
                           <td className="px-4 py-2.5 font-mono tabular-nums text-[10px] text-[#777777]">—</td>
                           <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA]">{FOOD_CAT_LABELS[item.category]}</td>
+                          <td className="px-4 py-2.5">
+                            <StockCell item={item} onChange={(n) => void updateFoodItem(item.id, { stock_quantity: n })} />
+                          </td>
                           <td className="px-4 py-2.5" />
                           <td className="px-4 py-2.5">
                             <div className="flex items-center gap-1">
@@ -826,6 +880,9 @@ function KitchenDashboard() {
                           </td>
                           <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA]">{FOOD_CAT_LABELS[item.category]}</td>
                           <td className="px-4 py-2.5">
+                            <StockCell item={item} onChange={(n) => void updateFoodItem(item.id, { stock_quantity: n })} />
+                          </td>
+                          <td className="px-4 py-2.5">
                             <button onClick={() => void updateFoodItem(item.id, { is_active: !item.is_active })}
                               className={`font-mono text-[10px] px-2 py-0.5 rounded border cursor-pointer transition-colors ${item.is_active ? "text-[#5CC45C] border-[#5CC45C]/30 bg-[#5CC45C]/10" : "text-[#777777] border-[#555555]/30"}`}>
                               {item.is_active ? "مفعل" : "متوقف"}
@@ -834,7 +891,15 @@ function KitchenDashboard() {
                           <td className="px-4 py-2.5">
                             <div className="flex items-center gap-1">
                               <button onClick={() => startFoodEdit(item)} className="p-1 text-[#555555] hover:text-[#F5C100] transition-colors cursor-pointer"><Edit2 size={11} /></button>
-                              <button onClick={() => void removeFoodItem(item.id)} className="p-1 text-[#555555] hover:text-[#FF3333] transition-colors cursor-pointer"><Trash2 size={11} /></button>
+                              <button
+                                onClick={async () => {
+                                  if (!window.confirm(`هل أنت متأكد من حذف ${item.name}؟`)) return;
+                                  await removeFoodItem(item.id);
+                                }}
+                                className="p-1 text-[#555555] hover:text-[#FF3333] transition-colors cursor-pointer"
+                              >
+                                <Trash2 size={11} />
+                              </button>
                             </div>
                           </td>
                         </>

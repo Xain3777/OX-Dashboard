@@ -149,6 +149,12 @@ export interface FoodItem {
   is_active: boolean;
   description?: string | null;
   sort_order?: number;
+  /** Mirrored from catalog_items so the manager kitchen table can show
+   *  stock for tracked rows (e.g. bottled water). false for items that
+   *  don't deplete (meals, add-ons). */
+  track_stock?: boolean;
+  stock_quantity?: number;
+  low_stock_threshold?: number;
 }
 
 // --- LEGACY STORE / INVENTORY (products table) ---

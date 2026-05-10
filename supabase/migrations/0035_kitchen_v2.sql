@@ -20,6 +20,26 @@
 -- Apply manually via Supabase Dashboard → SQL Editor.
 -- ============================================================
 
+-- ── 0. food_items: backfill columns from 0023 (defensive) ─────
+-- Some prod databases never had 0023 applied (the column additions
+-- live there). Re-state them here with IF NOT EXISTS so this
+-- migration is self-bootstrapping. If 0023 already ran, these are
+-- no-ops.
+ALTER TABLE public.food_items
+  ADD COLUMN IF NOT EXISTS cost_syp    numeric(12,2);
+
+ALTER TABLE public.food_items
+  ADD COLUMN IF NOT EXISTS cost_usd    numeric(10,4);
+
+ALTER TABLE public.food_items
+  ADD COLUMN IF NOT EXISTS sort_order  integer NOT NULL DEFAULT 0;
+
+ALTER TABLE public.food_items
+  ADD COLUMN IF NOT EXISTS description text;
+
+ALTER TABLE public.food_items
+  ADD COLUMN IF NOT EXISTS metadata    jsonb NOT NULL DEFAULT '{}'::jsonb;
+
 -- ── 1. catalog_items.description ──────────────────────────────
 ALTER TABLE public.catalog_items
   ADD COLUMN IF NOT EXISTS description text;
