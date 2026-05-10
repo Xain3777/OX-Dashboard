@@ -576,10 +576,8 @@ export async function pushExpense(opts: {
       return { error: "سعر الصرف مطلوب لإدخال مصروف بالليرة السورية" };
     }
 
-    const session = await getActiveSession();
-    if (!session) return { error: "لا توجد جلسة نقدية مفتوحة — افتح جلسة أولاً" };
     const supabase = supabaseBrowser();
-    const cashSessionId = session.id;
+    const cashSessionId = (await getActiveSession())?.id ?? null;
 
     const rate = opts.exchangeRate && opts.exchangeRate > 0 ? opts.exchangeRate : null;
     const amountSYP =

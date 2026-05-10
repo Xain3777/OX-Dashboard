@@ -5,7 +5,7 @@ import {
 import { calculateRemainingDays } from "./business-logic";
 
 export const STAFF: StaffUser[] = [
-  { id: "s1", name: "كوتش ادهم", role: "owner", active: true },
+  { id: "s1", name: "كوتش احمد", role: "owner", active: true },
   { id: "s2", name: "محمد", role: "manager", active: true },
   { id: "s3", name: "لينا", role: "receptionist", active: true },
   { id: "s4", name: "يوسف", role: "receptionist", active: true },
