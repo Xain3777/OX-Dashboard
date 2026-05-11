@@ -76,7 +76,8 @@ function formatMoney(amount: number, currency: Currency): string {
 }
 
 function catalogSectionLabel(itemType: string): string {
-  if (itemType === "water" || itemType === "drink" || itemType === "meal") return "قسم المطبخ";
+  if (itemType === "water" || itemType === "drink") return "قائمة المخزون وقسم المطبخ";
+  if (itemType === "meal") return "قسم المطبخ";
   return "قائمة المتجر";
 }
 
@@ -625,7 +626,7 @@ export default function StoreBlock() {
               </select>
               {(newProductCat === "water" || newProductCat === "drink") && (
                 <span className="font-mono text-[9px] text-[#777777]">
-                  سيظهر هذا الصنف في قسم المطبخ.
+                  سيظهر هذا الصنف في المخزون وقسم المطبخ.
                 </span>
               )}
             </div>

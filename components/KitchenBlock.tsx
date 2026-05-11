@@ -38,14 +38,13 @@ function kitchenGroupOf(category: string): KitchenGroupKey {
 
 export default function KitchenBlock() {
   const { user } = useAuth();
-  const { catalogItems, addItemSale, cancelItemSale, itemSales, updateCatalogItem } = useStore();
+  const { catalogItems, addItemSale, cancelItemSale, itemSales } = useStore();
   const { exchangeRate } = useCurrency();
 
   const [qty,     setQty]     = useState<QtyMap>({});
   const [busy,    setBusy]    = useState(false);
   const [error,   setError]   = useState("");
   const [success, setSuccess] = useState("");
-  const [stockBusyId, setStockBusyId] = useState<string | null>(null);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -113,17 +112,6 @@ export default function KitchenBlock() {
     });
   };
   const dec = (id: string) => setQty((q) => ({ ...q, [id]: Math.max(0, (q[id] ?? 0) - 1) }));
-
-  async function adjustTrackedStock(item: (typeof activeItems)[number], delta: number) {
-    if (!user) { setError("يجب تسجيل الدخول."); return; }
-    if (!item.trackStock) return;
-    const next = Math.max(0, item.stockQuantity + delta);
-    setError("");
-    setStockBusyId(item.id);
-    const r = await updateCatalogItem(item.id, { stockQuantity: next });
-    setStockBusyId(null);
-    if (r.error) setError(r.error);
-  }
 
   async function handleOrder() {
     setError(""); setSuccess("");
@@ -246,26 +234,13 @@ export default function KitchenBlock() {
                         className={`relative p-3 border rounded-sm transition-colors ${q > 0 ? "border-[#F5C100]/50 bg-[#F5C100]/5" : out ? "border-[#D42B2B]/50 bg-[#1A0A0A]/25" : "border-[#252525] bg-[#111111]"}`}
                       >
                         {tracked && (
-                          <div className="absolute left-2 top-2 flex items-center gap-1 rounded-sm border border-[#252525] bg-[#0A0A0A] px-1 py-0.5">
-                            <button
-                              onClick={() => void adjustTrackedStock(it, -1)}
-                              disabled={stockBusyId === it.id || it.stockQuantity <= 0}
-                              className="h-5 w-5 rounded-sm text-[#777777] hover:text-[#F0EDE6] disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center"
-                              title="إنقاص المخزون"
-                            >
-                              <Minus size={10} />
-                            </button>
+                          <div
+                            className={`absolute left-2 top-2 min-w-10 rounded-sm border px-2 py-0.5 text-center font-mono tabular-nums text-[10px] ${out ? "border-[#D42B2B]/40 bg-[#D42B2B]/10 text-[#FF3333]" : "border-[#252525] bg-[#0A0A0A] text-[#5CC45C]"}`}
+                            title="المخزون"
+                          >
                             <span className={`min-w-5 text-center font-mono tabular-nums text-[10px] ${out ? "text-[#FF3333]" : "text-[#5CC45C]"}`}>
                               {it.stockQuantity}
                             </span>
-                            <button
-                              onClick={() => void adjustTrackedStock(it, 1)}
-                              disabled={stockBusyId === it.id}
-                              className="h-5 w-5 rounded-sm text-[#F5C100] hover:bg-[#F5C100]/10 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center"
-                              title="زيادة المخزون"
-                            >
-                              <Plus size={10} />
-                            </button>
                           </div>
                         )}
                         <p className={`font-body text-xs text-[#F0EDE6] mb-1 ${tracked ? "pl-20" : ""}`}>{it.name}</p>

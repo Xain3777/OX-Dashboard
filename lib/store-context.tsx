@@ -281,7 +281,7 @@ function rowToItemSale(row: CatalogRow): ItemSale {
 // the new write paths.
 
 const KITCHEN_TYPES = new Set(["meal", "water", "drink"]);
-const STORE_TYPES   = new Set(["supplement", "product", "other"]);
+const STORE_TYPES   = new Set(["supplement", "product", "other", "water", "drink"]);
 
 function catalogToFoodItem(c: CatalogItem): FoodItem {
   return {
