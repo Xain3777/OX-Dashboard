@@ -38,13 +38,14 @@ function kitchenGroupOf(category: string): KitchenGroupKey {
 
 export default function KitchenBlock() {
   const { user } = useAuth();
-  const { catalogItems, addItemSale, cancelItemSale, itemSales } = useStore();
+  const { catalogItems, addItemSale, cancelItemSale, itemSales, updateCatalogItem } = useStore();
   const { exchangeRate } = useCurrency();
 
   const [qty,     setQty]     = useState<QtyMap>({});
   const [busy,    setBusy]    = useState(false);
   const [error,   setError]   = useState("");
   const [success, setSuccess] = useState("");
+  const [stockBusyId, setStockBusyId] = useState<string | null>(null);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -104,8 +105,25 @@ export default function KitchenBlock() {
   const fmtUSD = (n: number) => `$${n.toFixed(2)}`;
   const fmtPrice = (n: number, cur: "syp" | "usd") => (cur === "syp" ? fmtSYP(n) : fmtUSD(n));
 
-  const inc = (id: string) => setQty((q) => ({ ...q, [id]: (q[id] ?? 0) + 1 }));
+  const inc = (item: (typeof activeItems)[number]) => {
+    setQty((q) => {
+      const current = q[item.id] ?? 0;
+      if (item.trackStock && current >= item.stockQuantity) return q;
+      return { ...q, [item.id]: current + 1 };
+    });
+  };
   const dec = (id: string) => setQty((q) => ({ ...q, [id]: Math.max(0, (q[id] ?? 0) - 1) }));
+
+  async function adjustTrackedStock(item: (typeof activeItems)[number], delta: number) {
+    if (!user) { setError("يجب تسجيل الدخول."); return; }
+    if (!item.trackStock) return;
+    const next = Math.max(0, item.stockQuantity + delta);
+    setError("");
+    setStockBusyId(item.id);
+    const r = await updateCatalogItem(item.id, { stockQuantity: next });
+    setStockBusyId(null);
+    if (r.error) setError(r.error);
+  }
 
   async function handleOrder() {
     setError(""); setSuccess("");
@@ -113,6 +131,11 @@ export default function KitchenBlock() {
     const lines = activeItems.map((it) => ({ it, q: qty[it.id] ?? 0 })).filter((l) => l.q > 0);
     if (lines.length === 0) { setError("اختر صنفاً واحداً على الأقل."); return; }
     if (!exchangeRate || exchangeRate <= 0) { setError("سعر الصرف غير صالح — حدّثه من أعلى الصفحة."); return; }
+    const short = lines.find(({ it, q }) => it.trackStock && q > it.stockQuantity);
+    if (short) {
+      setError(`مخزون غير كافٍ لـ ${short.it.name}. المتاح: ${short.it.stockQuantity}.`);
+      return;
+    }
 
     setBusy(true);
     const currentUser = { id: user.id, displayName: user.displayName };
@@ -214,12 +237,38 @@ export default function KitchenBlock() {
                   {items.map((it) => {
                     const q         = qty[it.id] ?? 0;
                     const lineTotal = q * Number(it.sellPrice);
+                    const tracked   = it.trackStock;
+                    const out       = tracked && it.stockQuantity <= 0;
+                    const maxed     = tracked && q >= it.stockQuantity;
                     return (
                       <div
                         key={it.id}
-                        className={`p-3 border rounded-sm transition-colors ${q > 0 ? "border-[#F5C100]/50 bg-[#F5C100]/5" : "border-[#252525] bg-[#111111]"}`}
+                        className={`relative p-3 border rounded-sm transition-colors ${q > 0 ? "border-[#F5C100]/50 bg-[#F5C100]/5" : out ? "border-[#D42B2B]/50 bg-[#1A0A0A]/25" : "border-[#252525] bg-[#111111]"}`}
                       >
-                        <p className="font-body text-xs text-[#F0EDE6] mb-1">{it.name}</p>
+                        {tracked && (
+                          <div className="absolute left-2 top-2 flex items-center gap-1 rounded-sm border border-[#252525] bg-[#0A0A0A] px-1 py-0.5">
+                            <button
+                              onClick={() => void adjustTrackedStock(it, -1)}
+                              disabled={stockBusyId === it.id || it.stockQuantity <= 0}
+                              className="h-5 w-5 rounded-sm text-[#777777] hover:text-[#F0EDE6] disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center"
+                              title="إنقاص المخزون"
+                            >
+                              <Minus size={10} />
+                            </button>
+                            <span className={`min-w-5 text-center font-mono tabular-nums text-[10px] ${out ? "text-[#FF3333]" : "text-[#5CC45C]"}`}>
+                              {it.stockQuantity}
+                            </span>
+                            <button
+                              onClick={() => void adjustTrackedStock(it, 1)}
+                              disabled={stockBusyId === it.id}
+                              className="h-5 w-5 rounded-sm text-[#F5C100] hover:bg-[#F5C100]/10 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center"
+                              title="زيادة المخزون"
+                            >
+                              <Plus size={10} />
+                            </button>
+                          </div>
+                        )}
+                        <p className={`font-body text-xs text-[#F0EDE6] mb-1 ${tracked ? "pl-20" : ""}`}>{it.name}</p>
                         {it.description && (
                           <p className="font-mono text-[9px] text-[#777777] leading-snug mb-1.5">{it.description}</p>
                         )}
@@ -237,8 +286,9 @@ export default function KitchenBlock() {
                             </button>
                             <span className="font-mono tabular-nums text-xs text-[#F0EDE6] w-6 text-center">{q}</span>
                             <button
-                              onClick={() => inc(it.id)}
-                              className="w-6 h-6 rounded-sm border border-[#F5C100]/40 bg-[#F5C100]/10 hover:bg-[#F5C100]/20 flex items-center justify-center text-[#F5C100]"
+                              onClick={() => inc(it)}
+                              disabled={maxed}
+                              className="w-6 h-6 rounded-sm border border-[#F5C100]/40 bg-[#F5C100]/10 hover:bg-[#F5C100]/20 flex items-center justify-center text-[#F5C100] disabled:opacity-30 disabled:cursor-not-allowed"
                             >
                               <Plus size={11} />
                             </button>

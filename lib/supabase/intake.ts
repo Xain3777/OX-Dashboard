@@ -30,6 +30,11 @@ function logError(table: string, operation: string, error: unknown) {
   console.error("Supabase write failed:", { table, operation, error });
 }
 
+function isMissingDescriptionColumn(error: unknown): boolean {
+  const msg = (error as { message?: string })?.message ?? String(error);
+  return msg.includes("'description' column") || msg.includes('"description" column');
+}
+
 // ── exchange rate ─────────────────────────────────────────────
 
 const RATE_KEY = "exchange_rate_usd_syp";
@@ -819,9 +824,10 @@ export async function pushItemSale(opts: {
   }
 }
 
-// ── catalog_items management (manager-only INSERT/DELETE; reception
-// can only edit sell_price / stock_quantity / low_stock_threshold,
-// enforced by the BEFORE UPDATE trigger from migration 0030) ──
+// ── catalog_items management (reception can insert stock-tracked
+// inventory rows with no cost fields; DELETE remains manager-only.
+// Reception updates are limited to sell_price / stock_quantity /
+// low_stock_threshold by the BEFORE UPDATE trigger from migration 0030) ──
 
 export async function persistCatalogItemInsert(opts: {
   user: CurrentUser;
@@ -867,13 +873,25 @@ export async function persistCatalogItemInsert(opts: {
     };
     console.log("Supabase insert payload:", { table: "catalog_items", payload });
 
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("catalog_items")
       .insert(payload)
       .select()
       .single();
+    if (error && isMissingDescriptionColumn(error)) {
+      logError("catalog_items", "insert-description-retry", error);
+      const payloadWithoutDescription: Record<string, unknown> = { ...payload };
+      delete payloadWithoutDescription.description;
+      const retry = await supabase
+        .from("catalog_items")
+        .insert(payloadWithoutDescription)
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
     if (error) { logError("catalog_items", "insert", error); return { error: error.message }; }
-    if (!data) { logError("catalog_items", "insert", "no row returned"); return { error: "لم يتم إضافة الصنف — تحقق من صلاحيات المدير" }; }
+    if (!data) { logError("catalog_items", "insert", "no row returned"); return { error: "لم يتم إضافة الصنف — تحقق من صلاحيات RLS" }; }
     logSuccess("catalog_items", "insert", data);
 
     await pushActivity({
@@ -939,12 +957,25 @@ export async function persistCatalogItemUpdate(opts: {
 
     const supabase = supabaseBrowser();
     console.log("Supabase update payload:", { table: "catalog_items", id: opts.id, payload: mapped });
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("catalog_items")
       .update(mapped)
       .eq("id", opts.id)
       .select()
       .single();
+    if (error && isMissingDescriptionColumn(error)) {
+      logError("catalog_items", "update-description-retry", error);
+      const mappedWithoutDescription: Record<string, unknown> = { ...mapped };
+      delete mappedWithoutDescription.description;
+      const retry = await supabase
+        .from("catalog_items")
+        .update(mappedWithoutDescription)
+        .eq("id", opts.id)
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
     if (error) {
       // The reception_locked_column trigger raises this when a non-manager
       // tries to change a column outside (sell_price, stock_quantity,

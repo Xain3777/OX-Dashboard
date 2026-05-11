@@ -67,6 +67,19 @@ const CURRENCY_LABEL: Record<Currency, string> = {
   usd: "$",
 };
 
+const CURRENCY_OPTIONS: Currency[] = ["usd", "syp"];
+
+function formatMoney(amount: number, currency: Currency): string {
+  return currency === "syp"
+    ? `${Math.round(amount).toLocaleString("en-US")} ل.س`
+    : `$${Number(amount).toFixed(2)}`;
+}
+
+function catalogSectionLabel(itemType: string): string {
+  if (itemType === "water" || itemType === "drink" || itemType === "meal") return "قسم المطبخ";
+  return "قائمة المتجر";
+}
+
 const CATEGORY_GROUP_ORDER: ProductCategory[] = [
   "protein",
   "mass_gainer",
@@ -140,6 +153,7 @@ interface PriceEditRowProps {
 function PriceEditRow({ product, onSave, onCancel }: PriceEditRowProps) {
   const [costInput, setCostInput]   = useState(product.cost == null ? "" : String(product.cost));
   const [markupInput, setMarkupInput] = useState("");
+  const currency = product.priceCurrency ?? "usd";
 
   // Compute preview
   const cost  = parseFloat(costInput) || 0;
@@ -195,7 +209,7 @@ function PriceEditRow({ product, onSave, onCancel }: PriceEditRowProps) {
       <div className="flex flex-col gap-0.5 opacity-70">
         <span className="font-mono text-[9px] text-[#555555]">سعر البيع</span>
         <span className="font-mono text-xs text-[#F0EDE6] px-2 py-1 bg-[#111111] border border-[#252525] rounded-sm">
-          {formatCurrency(previewPrice)}$
+          {formatMoney(previewPrice, currency)}
           <span className="text-[#555555] mr-1 text-[10px]">({markupPct}%)</span>
         </span>
       </div>
@@ -217,6 +231,7 @@ interface ReceptionPriceEditRowProps {
 
 function ReceptionPriceEditRow({ product, onSave, onCancel }: ReceptionPriceEditRowProps) {
   const [priceInput, setPriceInput] = useState(String(product.price));
+  const currency = product.priceCurrency ?? "usd";
 
   function handleSave() {
     const p = parseFloat(priceInput);
@@ -227,11 +242,11 @@ function ReceptionPriceEditRow({ product, onSave, onCancel }: ReceptionPriceEdit
   return (
     <div className="flex flex-wrap items-center gap-2 py-1">
       <div className="flex flex-col gap-0.5">
-        <span className="font-mono text-[9px] text-[#555555]">سعر البيع ($)</span>
+        <span className="font-mono text-[9px] text-[#555555]">سعر البيع ({CURRENCY_LABEL[currency]})</span>
         <input
           type="number"
           min="0"
-          step="0.01"
+          step={currency === "syp" ? "1" : "0.01"}
           value={priceInput}
           onChange={(e) => setPriceInput(e.target.value)}
           className="w-24 bg-[#0A0A0A] border border-[#252525] rounded-sm px-2 py-1 text-xs text-[#F5C100] font-mono focus:outline-none focus:border-[#F5C100]/50"
@@ -284,6 +299,7 @@ export default function StoreBlock() {
   const [showAddForm,       setShowAddForm]       = useState(false);
   const [newProductName,    setNewProductName]    = useState("");
   const [newProductCat,     setNewProductCat]     = useState<ProductCategory>("protein");
+  const [newProductCurrency, setNewProductCurrency] = useState<Currency>("usd");
   const [newProductPrice,   setNewProductPrice]   = useState("");
   const [newProductCost,    setNewProductCost]    = useState("");
   const [newProductStock,   setNewProductStock]   = useState("");
@@ -298,8 +314,16 @@ export default function StoreBlock() {
     [sales]
   );
 
-  const todayTotal = useMemo(
-    () => todaySales.reduce((sum, s) => sum + (s.isReversal ? -s.total : s.total), 0),
+  const todayTotals = useMemo(
+    () => todaySales.reduce(
+      (sum, s) => {
+        const cur = (s.currency ?? "usd") as Currency;
+        const amount = s.isReversal ? -s.total : s.total;
+        sum[cur] += amount;
+        return sum;
+      },
+      { usd: 0, syp: 0 } as Record<Currency, number>,
+    ),
     [todaySales]
   );
 
@@ -405,13 +429,19 @@ export default function StoreBlock() {
     setAddProductError("");
     const name = newProductName.trim();
     if (!name) { setAddProductError("أدخل اسم المنتج."); return; }
+    const existingItem = catalogItems.find((item) => item.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase());
+    const alreadyExists = existingItem != null;
+    if (alreadyExists) {
+      setAddProductError(`هذا الصنف موجود بالفعل في ${catalogSectionLabel(existingItem.itemType)} — عدّل مخزونه هناك بدل إضافة نسخة ثانية.`);
+      return;
+    }
     const price = parseFloat(newProductPrice);
     if (!isFinite(price) || price <= 0) { setAddProductError("سعر البيع غير صالح."); return; }
     const stock = newProductStock === "" ? 0 : parseInt(newProductStock, 10);
     if (!Number.isInteger(stock) || stock < 0) { setAddProductError("الكمية غير صالحة."); return; }
-    // Cost is manager-only. Reception's input is hidden, so the value parses to 0.
-    const cost = isManager && newProductCost !== "" ? parseFloat(newProductCost) : 0;
-    if (isManager && newProductCost !== "" && (!isFinite(cost) || cost < 0)) {
+    // Cost is manager-only; reception-created rows intentionally store no cost.
+    const cost = isManager && newProductCost !== "" ? parseFloat(newProductCost) : null;
+    if (isManager && newProductCost !== "" && (cost == null || !Number.isFinite(cost) || cost < 0)) {
       setAddProductError("التكلفة غير صالحة.");
       return;
     }
@@ -422,6 +452,7 @@ export default function StoreBlock() {
       category: newProductCat,
       cost,
       price,
+      priceCurrency: newProductCurrency,
       stock,
       lowStockThreshold: 3,
     });
@@ -432,6 +463,7 @@ export default function StoreBlock() {
     setNewProductPrice("");
     setNewProductCost("");
     setNewProductStock("");
+    setNewProductCurrency("usd");
     setShowAddForm(false);
     setProductToast("تمت إضافة المنتج");
     setTimeout(() => setProductToast(""), 2000);
@@ -499,7 +531,7 @@ export default function StoreBlock() {
                       <option key={p.id} value={p.id} disabled={isOutOfStock(p.stock)}>
                         {p.name}
                         {isOutOfStock(p.stock) ? " — نفد المخزون" : isLowStock(p.stock, p.lowStockThreshold) ? ` (${p.stock} متبقي)` : ""}
-                        {" · "}{p.price}{"$"}
+                        {" · "}{formatMoney(p.price, p.priceCurrency ?? "usd")}
                       </option>
                     ))}
                   </optgroup>
@@ -528,9 +560,7 @@ export default function StoreBlock() {
               <div className="flex flex-col gap-1">
                 <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">الإجمالي</label>
                 <div className="px-3 py-2 bg-[#0A0A0A] border border-[#252525]/60 rounded-sm font-mono tabular-nums text-xs text-[#F5C100] whitespace-nowrap" dir="ltr">
-                  {cur === "syp"
-                    ? `${Math.round(total).toLocaleString("en-US")} ل.س`
-                    : `$${total.toFixed(2)}`}
+                  {formatMoney(total, cur)}
                 </div>
               </div>
             );
@@ -593,16 +623,33 @@ export default function StoreBlock() {
                   <option key={c} value={c}>{getProductCategoryLabel(c)}</option>
                 ))}
               </select>
+              {(newProductCat === "water" || newProductCat === "drink") && (
+                <span className="font-mono text-[9px] text-[#777777]">
+                  سيظهر هذا الصنف في قسم المطبخ.
+                </span>
+              )}
             </div>
             <div className="flex flex-col gap-1 w-28">
-              <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">سعر البيع ($)</label>
+              <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">سعر البيع</label>
               <input
-                type="number" min="0" step="0.01"
+                type="number" min="0" step={newProductCurrency === "syp" ? "1" : "0.01"}
                 value={newProductPrice}
                 onChange={e => setNewProductPrice(e.target.value)}
                 className="bg-[#0A0A0A] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F5C100] font-mono tabular-nums focus:outline-none focus:border-[#F5C100]/40"
                 dir="ltr"
               />
+            </div>
+            <div className="flex flex-col gap-1 w-24">
+              <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">العملة</label>
+              <select
+                value={newProductCurrency}
+                onChange={e => setNewProductCurrency(e.target.value as Currency)}
+                className="bg-[#0A0A0A] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#F0EDE6] focus:outline-none focus:border-[#F5C100]/40"
+              >
+                {CURRENCY_OPTIONS.map(cur => (
+                  <option key={cur} value={cur}>{CURRENCY_LABEL[cur]}</option>
+                ))}
+              </select>
             </div>
             {isManager && (
               <div className="flex flex-col gap-1 w-28">
@@ -651,7 +698,7 @@ export default function StoreBlock() {
                 "اسم المنتج",
                 "التصنيف",
                 ...(isManager ? ["التكلفة ($)"] : []),
-                "السعر ($)",
+                "السعر",
                 "المخزون",
                 ...(isManager ? ["هامش الربح"] : []),
                 "",
@@ -702,7 +749,7 @@ export default function StoreBlock() {
                     )}
                     {/* Price */}
                     <td className="px-4 py-2.5 font-mono text-[#F0EDE6] tabular-nums text-right">
-                      {formatCurrency(product.price)}
+                      {formatMoney(product.price, product.priceCurrency ?? "usd")}
                     </td>
                     {/* Stock */}
                     <td className="px-4 py-2.5 text-right">
@@ -770,7 +817,7 @@ export default function StoreBlock() {
                           <ReceptionPriceEditRow
                             product={product}
                             onSave={async (price) => {
-                              const r = await updateProductPrice(product.id, product.cost ?? 0, price);
+                              const r = await updateProductPrice(product.id, Number.NaN, price);
                               if (r.error) { setStockAddError(r.error); return; }
                               setEditingProductId(null);
                               setProductToast("تم تحديث السعر");
@@ -882,13 +929,13 @@ export default function StoreBlock() {
                     <td className="px-4 py-2.5 font-mono tabular-nums text-[#AAAAAA] text-right">
                       {sale.isReversal ? <span className="line-through">{sale.quantity}</span> : sale.quantity}
                     </td>
-                    <td className="px-4 py-2.5 font-mono tabular-nums text-[#777777] text-right">
-                      {sale.isReversal ? <span className="line-through">{formatCurrency(sale.unitPrice)}</span> : formatCurrency(sale.unitPrice)}
+                    <td className="px-4 py-2.5 font-mono tabular-nums text-[#777777] text-right" dir="ltr">
+                      {sale.isReversal ? <span className="line-through">{formatMoney(sale.unitPrice, (sale.currency ?? "usd") as Currency)}</span> : formatMoney(sale.unitPrice, (sale.currency ?? "usd") as Currency)}
                     </td>
-                    <td className="px-4 py-2.5 font-mono tabular-nums font-medium text-right">
+                    <td className="px-4 py-2.5 font-mono tabular-nums font-medium text-right" dir="ltr">
                       {sale.isReversal
-                        ? <span className="line-through text-[#D42B2B]">{formatCurrency(sale.total)}</span>
-                        : <span className="text-[#F0EDE6]">{formatCurrency(sale.total)}</span>}
+                        ? <span className="line-through text-[#D42B2B]">{formatMoney(sale.total, (sale.currency ?? "usd") as Currency)}</span>
+                        : <span className="text-[#F0EDE6]">{formatMoney(sale.total, (sale.currency ?? "usd") as Currency)}</span>}
                     </td>
                     <td className="px-4 py-2.5 text-right">
                       <CurrencyBadge currency={(sale.currency as Currency) ?? "usd"} />
@@ -935,9 +982,21 @@ export default function StoreBlock() {
       {/* Sales summary */}
       <div className="flex items-center justify-end gap-2 px-5 py-2.5 border-t border-[#252525] bg-[#111111]/60">
         <span className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">إجمالي اليوم</span>
-        <span className="font-mono tabular-nums text-sm font-medium text-[#F5C100] glow-gold-sm">
-          {formatCurrency(todayTotal)}$
-        </span>
+        {todayTotals.usd > 0 && (
+          <span className="font-mono tabular-nums text-sm font-medium text-[#F5C100] glow-gold-sm" dir="ltr">
+            {formatMoney(todayTotals.usd, "usd")}
+          </span>
+        )}
+        {todayTotals.syp > 0 && (
+          <span className="font-mono tabular-nums text-sm font-medium text-[#5CC45C]" dir="ltr">
+            {formatMoney(todayTotals.syp, "syp")}
+          </span>
+        )}
+        {todayTotals.usd <= 0 && todayTotals.syp <= 0 && (
+          <span className="font-mono tabular-nums text-sm font-medium text-[#777777]" dir="ltr">
+            {formatMoney(0, "usd")}
+          </span>
+        )}
       </div>
 
       {/* Live activity feed */}

@@ -829,7 +829,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const entry: ActivityEntry = {
       id: generateId(),
       type: "price_edit",
-      description: `تعديل سعر — تكلفة: ${cost}، بيع: ${price}`,
+      description: Number.isFinite(cost)
+        ? `تعديل سعر — تكلفة: ${cost}، بيع: ${price}`
+        : `تعديل سعر — بيع: ${price}`,
       amountUSD: price,
       userId: "manager",
       userName: "المدير",
@@ -841,7 +843,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }));
     return updateCatalogItem(productId, {
       sellPrice: price,
-      costPrice: Number.isFinite(cost) ? cost : null,
+      ...(Number.isFinite(cost) ? { costPrice: cost } : {}),
     });
   }, [setState, updateCatalogItem]);
 
