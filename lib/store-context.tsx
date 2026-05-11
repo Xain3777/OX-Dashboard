@@ -696,11 +696,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const cancelItemSale = useCallback((id: string) => {
     setState((prev) => {
       const now = new Date().toISOString();
+      const original = prev.itemSales.find((s) => s.id === id);
       const itemSales = prev.itemSales.map((s) =>
         s.id === id ? { ...s, cancelledAt: s.cancelledAt ?? now } : s,
       );
-      const { sales } = deriveLegacyFromCatalog(prev.catalogItems, itemSales);
-      return { ...prev, itemSales, sales };
+      const shouldRestore = original != null && original.cancelledAt == null;
+      const catalogItems = shouldRestore
+        ? prev.catalogItems.map((c) =>
+            c.id === original.catalogItemId && c.trackStock
+              ? { ...c, stockQuantity: c.stockQuantity + original.quantity }
+              : c,
+          )
+        : prev.catalogItems;
+      const { foodItems, products, sales } = deriveLegacyFromCatalog(catalogItems, itemSales);
+      return { ...prev, itemSales, catalogItems, foodItems, products, sales };
     });
   }, [setState]);
 

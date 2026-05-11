@@ -1081,6 +1081,35 @@ export async function cancelTransaction(opts: {
     }
     logSuccess(opts.table, "cancel", data);
 
+    if (opts.table === "item_sales") {
+      const sale = row as DbRow;
+      const catalogItemId = sale.catalog_item_id == null ? null : String(sale.catalog_item_id);
+      const quantity = Number(sale.quantity ?? 0);
+      if (catalogItemId && quantity > 0) {
+        const { data: item, error: itemErr } = await supabase
+          .from("catalog_items")
+          .select("track_stock, stock_quantity")
+          .eq("id", catalogItemId)
+          .maybeSingle();
+        if (itemErr) {
+          logError("catalog_items", "select-stock-restore", itemErr);
+          return { error: itemErr.message };
+        }
+        const catalogItem = item as { track_stock?: boolean; stock_quantity?: number } | null;
+        if (catalogItem?.track_stock) {
+          const restoredStock = Number(catalogItem.stock_quantity ?? 0) + quantity;
+          const { error: stockErr } = await supabase
+            .from("catalog_items")
+            .update({ stock_quantity: restoredStock })
+            .eq("id", catalogItemId);
+          if (stockErr) {
+            logError("catalog_items", "stock-restore", stockErr);
+            return { error: stockErr.message };
+          }
+        }
+      }
+    }
+
     const r = row as Record<string, unknown>;
     const label = r.product_name || r.member_name || r.description || "عملية";
     const amtSYP = Number(r.amount_syp ?? 0);
