@@ -404,7 +404,18 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
 
     type Row = Record<string, unknown>;
 
-    const subscriptions: Subscription[] = (subsRes.data ?? []).map((row: Row) => ({
+    const subscriptions: Subscription[] = (subsRes.data ?? []).map((row: Row) => {
+      const remaining = calculateRemainingDays(String(row.end_date ?? ""));
+      const dbStatus = String(row.status ?? "active") as SubStatus;
+      // Derive status from the end date so expired subs move out of "active"
+      // automatically once their end_date has passed. Preserve cancelled/frozen.
+      const status: SubStatus =
+        dbStatus === "cancelled" || dbStatus === "frozen"
+          ? dbStatus
+          : remaining > 0
+            ? "active"
+            : "expired";
+      return ({
       id: String(row.id),
       memberId: String(row.member_id ?? ""),
       memberName: String(row.member_name ?? ""),
@@ -413,20 +424,21 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       offer: String(row.offer ?? "none") as OfferType,
       startDate: String(row.start_date ?? ""),
       endDate: String(row.end_date ?? ""),
-      remainingDays: calculateRemainingDays(String(row.end_date ?? "")),
+      remainingDays: remaining,
       amount: Number(row.amount ?? 0),
       paidAmount: Number(row.paid_amount ?? 0),
       paymentStatus: String(row.payment_status ?? "paid") as PaymentStatus,
       paymentMethod: String(row.payment_method ?? "cash") as PaymentMethod,
       currency: String(row.currency ?? "usd") as Currency,
-      status: String(row.status ?? "active") as SubStatus,
+      status,
       privateCoachName: row.private_coach_name == null ? null : String(row.private_coach_name),
       note: row.note == null ? null : String(row.note),
       activationCode: row.activation_code == null ? null : String(row.activation_code),
       createdAt: String(row.created_at ?? ""),
       createdBy: String(row.created_by ?? ""),
       lockedAt: String(row.created_at ?? ""),
-    }));
+    });
+    });
 
     const itemSales: ItemSale[] = (salesRes.data ?? []).map((row: Row) => rowToItemSale(row));
 
