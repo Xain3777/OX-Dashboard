@@ -585,6 +585,7 @@ export default function SubscriptionsBlock() {
       paymentMethod: "cash",
       currency: "usd",
       status: remaining > 0 ? "active" : "expired",
+      activationCode: row.activation_code == null ? null : String(row.activation_code),
       createdAt: String(row.created_at ?? new Date().toISOString()),
       createdBy: user.id,
       lockedAt: String(row.created_at ?? new Date().toISOString()),
@@ -708,6 +709,7 @@ export default function SubscriptionsBlock() {
       status: remaining > 0 ? "active" : "expired",
       privateCoachName: coachPrivateCoach.trim(),
       note: "Our gym coach private",
+      activationCode: row.activation_code == null ? null : String(row.activation_code),
       createdAt: String(row.created_at ?? new Date().toISOString()),
       createdBy: user.id,
       lockedAt: String(row.created_at ?? new Date().toISOString()),
@@ -794,6 +796,7 @@ export default function SubscriptionsBlock() {
         paymentStatus: pay.status, paymentMethod: "cash",
         currency: "usd",
         status: rem > 0 ? "active" : "expired",
+        activationCode: row.activation_code == null ? null : String(row.activation_code),
         createdAt: String(row.created_at ?? new Date().toISOString()),
         createdBy: user.id,
         lockedAt: String(row.created_at ?? new Date().toISOString()),
@@ -878,6 +881,7 @@ export default function SubscriptionsBlock() {
         paymentStatus: pay.status, paymentMethod: "cash",
         currency: "usd",
         status: rem > 0 ? "active" : "expired",
+        activationCode: row.activation_code == null ? null : String(row.activation_code),
         createdAt: String(row.created_at ?? new Date().toISOString()),
         createdBy: user.id,
         lockedAt: String(row.created_at ?? new Date().toISOString()),
@@ -935,6 +939,7 @@ export default function SubscriptionsBlock() {
       paymentStatus: pay.status, paymentMethod: "cash",
       currency: "usd",
       status: rem > 0 ? "active" : "expired",
+      activationCode: r.data!.activation_code == null ? null : String(r.data!.activation_code),
       createdAt: String(r.data!.created_at ?? new Date().toISOString()),
       createdBy: user.id,
       lockedAt: String(r.data!.created_at ?? new Date().toISOString()),
@@ -997,6 +1002,7 @@ export default function SubscriptionsBlock() {
       paymentStatus: pay.status, paymentMethod: "cash",
       currency: "usd",
       status: rem > 0 ? "active" : "expired",
+      activationCode: r.data!.activation_code == null ? null : String(r.data!.activation_code),
       createdAt: String(r.data!.created_at ?? new Date().toISOString()),
       createdBy: user.id,
       lockedAt: String(r.data!.created_at ?? new Date().toISOString()),
@@ -1049,6 +1055,7 @@ export default function SubscriptionsBlock() {
       paymentStatus: pay.status, paymentMethod: "cash",
       currency: "usd",
       status: rem > 0 ? "active" : "expired",
+      activationCode: r.data!.activation_code == null ? null : String(r.data!.activation_code),
       createdAt: String(r.data!.created_at ?? new Date().toISOString()),
       createdBy: user.id,
       lockedAt: String(r.data!.created_at ?? new Date().toISOString()),
@@ -1104,6 +1111,7 @@ export default function SubscriptionsBlock() {
       status: rem > 0 ? "active" : "expired",
       privateCoachName: null,
       note: customNote.trim() || null,
+      activationCode: r.data!.activation_code == null ? null : String(r.data!.activation_code),
       createdAt: String(r.data!.created_at ?? new Date().toISOString()),
       createdBy: user.id,
       lockedAt: String(r.data!.created_at ?? new Date().toISOString()),
@@ -1550,7 +1558,7 @@ export default function SubscriptionsBlock() {
               <table className="w-full min-w-[860px] border-collapse">
                 <thead>
                   <tr className="bg-charcoal">
-                    {["اسم العضو","الهاتف","الكوتش","الخطة","العرض","تاريخ البدء","تاريخ الانتهاء","الأيام المتبقية","المبلغ","الدفع","الحالة",""].map((col, i) => (
+                    {["اسم العضو","الهاتف","الكوتش","الخطة","العرض","تاريخ البدء","تاريخ الانتهاء","الأيام المتبقية","المبلغ","الدفع","الحالة","رمز التفعيل",""].map((col, i) => (
                       <th key={i} className="px-3.5 py-2.5 text-right font-mono text-[10px] text-secondary uppercase tracking-wider whitespace-nowrap">
                         {col}
                       </th>
@@ -1560,7 +1568,7 @@ export default function SubscriptionsBlock() {
                 <tbody>
                   {filtered.length === 0 && (
                     <tr>
-                      <td colSpan={12} className="px-4 py-10 text-center font-mono text-xs text-slate uppercase tracking-wider">
+                      <td colSpan={13} className="px-4 py-10 text-center font-mono text-xs text-slate uppercase tracking-wider">
                         {subscriptions.length === 0 ? "لا توجد اشتراكات" : (searchQuery ? "لا توجد نتائج للبحث" : "لا توجد اشتراكات تطابق هذا الفلتر")}
                       </td>
                     </tr>
@@ -1599,6 +1607,9 @@ export default function SubscriptionsBlock() {
                       </td>
                       <td className="px-3.5 py-3"><PaymentStatusChip status={sub.paymentStatus} /></td>
                       <td className="px-3.5 py-3"><SubStatusChip status={sub.status} /></td>
+                      <td className="px-3.5 py-3 font-mono text-xs text-ghost tabular-nums whitespace-nowrap" dir="ltr">
+                        {sub.activationCode ? sub.activationCode : <span className="text-slate">—</span>}
+                      </td>
                       <td className="px-3.5 py-3 text-center">
                         <div className="flex items-center justify-center gap-1.5">
                           {sub.status !== "cancelled" ? (

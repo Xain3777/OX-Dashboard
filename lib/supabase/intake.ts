@@ -35,6 +35,24 @@ function isMissingDescriptionColumn(error: unknown): boolean {
   return msg.includes("'description' column") || msg.includes('"description" column');
 }
 
+// Activation code — 2 uppercase letters + 6 digits, e.g. "QK482917".
+// Format mirrors the App repo's public.generate_activation_code() helper.
+// Uses crypto.getRandomValues when available; falls back to Math.random.
+function generateActivationCode(): string {
+  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const buf = new Uint32Array(8);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    crypto.getRandomValues(buf);
+  } else {
+    for (let i = 0; i < buf.length; i++) buf[i] = Math.floor(Math.random() * 0xffffffff);
+  }
+  const l1 = letters[buf[0] % 26];
+  const l2 = letters[buf[1] % 26];
+  let digits = "";
+  for (let i = 2; i < 8; i++) digits += String(buf[i] % 10);
+  return `${l1}${l2}${digits}`;
+}
+
 // ── exchange rate ─────────────────────────────────────────────
 
 const RATE_KEY = "exchange_rate_usd_syp";
@@ -272,6 +290,53 @@ export async function pushSubscription(opts: {
         ? Math.round(opts.paidAmount)
         : Math.round(opts.paidAmount * opts.exchangeRate);
 
+    // Activation code — per-member, stable across renewals.
+    // 1. If this member already has any prior non-null code, reuse it.
+    // 2. Otherwise generate a new one and check uniqueness against existing
+    //    non-null codes. Retry on the (astronomically rare) collision.
+    // The unique partial index on activation_code is the final safety net.
+    let activationCode: string | null = null;
+    if (opts.memberId) {
+      const { data: prior, error: priorErr } = await supabase
+        .from("gym_subscriptions")
+        .select("activation_code")
+        .eq("member_id", opts.memberId)
+        .not("activation_code", "is", null)
+        .limit(1)
+        .maybeSingle();
+      if (priorErr) {
+        logError("gym_subscriptions", "select-prior-activation-code", priorErr);
+        // Fall through — generate a new one rather than block the insert.
+      } else if (prior?.activation_code) {
+        activationCode = String(prior.activation_code);
+      }
+    }
+    if (!activationCode) {
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const candidate = generateActivationCode();
+        const { data: clash, error: clashErr } = await supabase
+          .from("gym_subscriptions")
+          .select("id")
+          .eq("activation_code", candidate)
+          .limit(1)
+          .maybeSingle();
+        if (clashErr) {
+          logError("gym_subscriptions", "select-activation-code-clash", clashErr);
+          // Treat lookup failure as no clash — the unique index will catch
+          // any real duplicate at insert time.
+          activationCode = candidate;
+          break;
+        }
+        if (!clash) {
+          activationCode = candidate;
+          break;
+        }
+      }
+      if (!activationCode) {
+        return { error: "تعذّر توليد رمز تفعيل فريد — حاول مرة أخرى" };
+      }
+    }
+
     const trimmedPhone = (opts.phone ?? "").trim();
     const trimmedCoach = (opts.privateCoachName ?? "").trim();
     const trimmedNote  = (opts.note ?? "").trim();
@@ -294,6 +359,7 @@ export async function pushSubscription(opts: {
       ...(opts.groupId ? { group_id: opts.groupId } : {}),
       private_coach_name: trimmedCoach || null,
       note: trimmedNote || null,
+      activation_code: activationCode,
       cash_session_id: cashSessionId,
       created_by: opts.user.id,
     };

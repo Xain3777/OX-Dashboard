@@ -57,6 +57,7 @@ export interface Subscription {
   status: SubStatus;
   privateCoachName?: string | null;
   note?: string | null;
+  activationCode?: string | null;
   createdAt: string;
   createdBy: string;
   lockedAt?: string;

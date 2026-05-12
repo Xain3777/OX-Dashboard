@@ -422,6 +422,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       status: String(row.status ?? "active") as SubStatus,
       privateCoachName: row.private_coach_name == null ? null : String(row.private_coach_name),
       note: row.note == null ? null : String(row.note),
+      activationCode: row.activation_code == null ? null : String(row.activation_code),
       createdAt: String(row.created_at ?? ""),
       createdBy: String(row.created_by ?? ""),
       lockedAt: String(row.created_at ?? ""),
