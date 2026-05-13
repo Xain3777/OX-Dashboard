@@ -7,7 +7,6 @@ import { CurrencyProvider, useCurrency } from "@/lib/currency-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { StoreProvider, useStore } from "@/lib/store-context";
 import type { ActivityEntry, ActivityType } from "@/lib/store-context";
-import type { AuditEntry, AuditAction } from "@/lib/types";
 import ExchangeRateModal from "@/components/ExchangeRateModal";
 import KPIStrip from "@/components/KPIStrip";
 import DailyExportButton from "@/components/DailyExportButton";
@@ -217,28 +216,6 @@ function exportMonthlyExcel(ctx: {
   XLSX.writeFile(wb, `ملخص_OX_GYM_${month}.xlsx`);
 }
 
-// ── Activity → Audit converter ────────────────────────────────────────────────
-
-const ACTIVITY_TO_AUDIT_ACTION: Partial<Record<ActivityType, AuditAction>> = {
-  sale: "sale_created",
-  inbody: "inbody_session",
-  subscription: "subscription_created",
-  price_edit: "price_edit",
-};
-
-function activityFeedToAuditEntries(feed: ActivityEntry[]): AuditEntry[] {
-  return feed.map((e) => ({
-    id: e.id,
-    action: ACTIVITY_TO_AUDIT_ACTION[e.type] ?? "sale_created",
-    description: e.description,
-    entityType: e.type,
-    entityId: e.id,
-    userId: e.userId,
-    userName: e.userName,
-    timestamp: e.timestamp,
-  }));
-}
-
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 function DashboardContent() {
@@ -431,9 +408,10 @@ function DashboardContent() {
           </div>
         )}
 
-        {/* سجل المراجعة */}
+        {/* سجل المراجعة — reads from Supabase activity_feed directly so it
+            covers every event written via pushActivity(), cross-browser. */}
         <CollapsibleSection title="سجل المراجعة" collapsed={collapsed.audit} onToggle={() => toggle("audit")}>
-          <AuditLog entries={activityFeedToAuditEntries(store.activityFeed)} />
+          <AuditLog />
         </CollapsibleSection>
 
         {/* ════════════════════════════════════════════════════════════

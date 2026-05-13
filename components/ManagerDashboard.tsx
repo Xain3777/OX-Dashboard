@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import Image from "next/image";
 import {
@@ -24,7 +24,9 @@ import { formatTime, formatDate } from "@/lib/utils/time";
 import KPIStrip from "@/components/KPIStrip";
 import DailyExportButton from "@/components/DailyExportButton";
 import InventoryActivityPanel from "@/components/InventoryActivityPanel";
+import AccountabilityBlock from "@/components/AccountabilityBlock";
 import { findStaffByEmail } from "@/lib/staff-accounts";
+import { supabaseBrowser } from "@/lib/supabase/client";
 import {
   makeDateRange,
   useManagerOverview,
@@ -37,7 +39,7 @@ import {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-type ManagerSection = "sessions" | "subscriptions" | "inbody" | "store" | "kitchen" | "expenses";
+type ManagerSection = "sessions" | "subscriptions" | "inbody" | "store" | "kitchen" | "expenses" | "audit";
 
 const FOOD_CATEGORIES: FoodItemCategory[] = ["meals", "meal_addons", "other", "breakfast", "salads", "drinks", "snacks", "food"];
 const FOOD_CAT_LABELS: Record<FoodItemCategory, string> = {
@@ -71,17 +73,58 @@ const FREQ_LABELS: Record<ExpenseFrequency, string> = {
   monthly: "شهري", weekly: "أسبوعي", daily: "يومي", one_time: "مرة واحدة",
 };
 
-// In modern data, `createdBy` is the auth.users UUID (not an email). We try
-// the email path first (legacy rows), fall back to the rich row-level
-// `created_by_name` if it was passed in, otherwise show a short UUID prefix.
-// Phase 4 fix will add `created_by_name` to subscription writes too.
-function fmtEmployee(idOrEmail: string, fallbackName?: string): string {
+// In modern data, `createdBy` is the auth.users UUID (not an email). Resolution
+// order:
+//   1. profile map fetched via useProfileNames() — keyed by auth.users.id,
+//      values are profiles.display_name. This is the canonical source.
+//   2. row-level created_by_name snapshot if passed in (some tables already
+//      carry this, e.g. item_sales / sales / inbody_sessions / expenses).
+//   3. legacy email lookup against the hardcoded staff roster.
+//   4. last-resort UUID prefix so we never show an empty cell.
+function fmtEmployee(
+  idOrEmail: string,
+  profileNames?: Map<string, string>,
+  fallbackName?: string,
+): string {
+  if (idOrEmail && profileNames) {
+    const fromProfile = profileNames.get(idOrEmail);
+    if (fromProfile) return fromProfile;
+  }
+  if (fallbackName && fallbackName.trim()) return fallbackName;
   const staff = findStaffByEmail(idOrEmail);
   if (staff) return staff.displayName;
-  if (fallbackName) return fallbackName;
   if (idOrEmail.includes("@")) return idOrEmail.replace(/@.*$/, "");
-  // UUID — show first 8 chars rather than the full thing
   return idOrEmail.slice(0, 8);
+}
+
+// Caches profiles.display_name keyed by auth.users.id so any table column
+// rendering an employee can resolve the name without re-fetching. The
+// profiles table is tiny (≈5 rows), and we refetch on insert/update via
+// realtime so renaming a staff member propagates immediately.
+function useProfileNames(): Map<string, string> {
+  const [map, setMap] = useState<Map<string, string>>(new Map());
+  useEffect(() => {
+    let cancelled = false;
+    const supabase = supabaseBrowser();
+    async function load() {
+      const { data } = await supabase.from("profiles").select("id, display_name");
+      if (cancelled) return;
+      const m = new Map<string, string>();
+      for (const p of (data ?? []) as Array<Record<string, unknown>>) {
+        const id = p.id == null ? "" : String(p.id);
+        const name = p.display_name == null ? "" : String(p.display_name);
+        if (id) m.set(id, name);
+      }
+      setMap(m);
+    }
+    void load();
+    const ch = supabase
+      .channel("profiles-names")
+      .on("postgres_changes", { event: "*", schema: "public", table: "profiles" }, () => void load())
+      .subscribe();
+    return () => { cancelled = true; void supabase.removeChannel(ch); };
+  }, []);
+  return map;
 }
 
 // ─── Session label helper ─────────────────────────────────────────────────────
@@ -244,15 +287,17 @@ function SessionsAccordion() {
       {allSessions.map((sess, idx) => {
         const open     = isOpen(sess.id, idx);
         const isLive   = sess.status === "open";
-        const subsI    = isLive ? store.subsIncome   : (sess.subsIncome   ?? 0);
-        const storeI   = isLive ? store.storeIncome  : (sess.storeIncome  ?? 0);
-        const mealsI   = isLive ? store.mealsIncome  : (sess.mealsIncome  ?? 0);
-        const inbodyI  = isLive ? store.inbodyIncome : (sess.inbodyIncome ?? 0);
-        const totalI   = isLive ? store.totalIncome  : (sess.totalIncome  ?? 0);
-        const running  = isLive ? store.runningCash  : (sess.actualCash   ?? 0);
+        const subsI    = isLive ? store.subsIncome    : (sess.subsIncome    ?? 0);
+        const storeI   = isLive ? store.storeIncome   : (sess.storeIncome   ?? 0);
+        const mealsI   = isLive ? store.mealsIncome   : (sess.mealsIncome   ?? 0);
+        const inbodyI  = isLive ? store.inbodyIncome  : (sess.inbodyIncome  ?? 0);
+        const totalI   = isLive ? store.totalIncome   : (sess.totalIncome   ?? 0);
+        const expenses = isLive ? store.expensesTotal : (sess.expensesTotal ?? 0);
+        const running  = isLive ? store.runningCash   : (sess.actualCash    ?? 0);
+        const expectedAtClose = sess.openingCash + totalI - expenses;
         const openedDt = sess.openedAt;
         const closedDt = sess.closedAt ?? null;
-        const diff     = sess.actualCash != null ? sess.actualCash - (sess.openingCash + totalI) : null;
+        const diff     = sess.actualCash != null ? sess.actualCash - expectedAtClose : null;
 
         return (
           <div key={sess.id} className="bg-[#1A1A1A] border border-[#252525] rounded-sm overflow-hidden">
@@ -284,21 +329,39 @@ function SessionsAccordion() {
                   <Stat label="مطبخ" value={`$${mealsI.toFixed(2)}`} />
                   <Stat label="InBody" value={`$${inbodyI.toFixed(2)}`} highlight />
                 </div>
+
+                {/* Reception-style totals stack: gross income / expenses / net.
+                    Same labels + colors as CashSessionBlock so reception and
+                    manager read the same numbers off the same UI shape. */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between px-3 py-2 bg-[#0F0F0F] border border-[#252525] rounded-sm">
+                    <span className="font-mono text-[10px] text-[#555555] tracking-widest uppercase">إجمالي الدخل</span>
+                    <span className="font-mono text-sm text-[#AAAAAA] tabular-nums" dir="ltr">${totalI.toFixed(2)}</span>
+                  </div>
+                  <div className={`flex items-center justify-between px-3 py-2 border rounded-sm ${
+                    expenses > 0 ? "bg-[#FF3333]/5 border-[#FF3333]/25" : "bg-[#0F0F0F] border-[#252525]"
+                  }`}>
+                    <span className="font-mono text-[10px] tracking-widest uppercase text-[#555555]">مصاريف الوردية</span>
+                    <span className={`font-mono text-sm tabular-nums ${expenses > 0 ? "text-[#FF7A7A]" : "text-[#555555]"}`} dir="ltr">
+                      {expenses > 0 ? `−$${expenses.toFixed(2)}` : "$0.00"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between px-3 py-2 bg-[#F5C100]/5 border border-[#F5C100]/30 rounded-sm">
+                    <span className="font-mono text-[10px] tracking-widest uppercase text-[#F5C100]/70">
+                      {isLive ? "إجمالي الخزنة المتوقع ($)" : "صافي الربح ($)"}
+                    </span>
+                    <span className="font-mono text-base text-[#F5C100] tabular-nums" dir="ltr">
+                      ${(isLive ? running : expectedAtClose).toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+
                 <div className="border-t border-[#252525]/60 pt-3 flex flex-wrap gap-6">
                   <div>
                     <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">فتح الصندوق</p>
                     <p className="font-mono tabular-nums text-sm text-[#F0EDE6]">${sess.openingCash.toFixed(2)}</p>
                   </div>
-                  <div>
-                    <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">إجمالي الدخل</p>
-                    <p className="font-mono tabular-nums text-sm text-[#F5C100]">${totalI.toFixed(2)}</p>
-                  </div>
-                  {isLive ? (
-                    <div>
-                      <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">متوقع بالصندوق</p>
-                      <p className="font-mono tabular-nums text-sm text-[#5CC45C]">${running.toFixed(2)}</p>
-                    </div>
-                  ) : sess.actualCash != null && (
+                  {!isLive && sess.actualCash != null && (
                     <>
                       <div>
                         <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">الفعلي بالصندوق</p>
@@ -308,7 +371,7 @@ function SessionsAccordion() {
                         <div>
                           <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">الفرق</p>
                           <p className={`font-mono tabular-nums text-sm ${diff < 0 ? "text-[#FF3333]" : diff > 0 ? "text-[#F5C100]" : "text-[#5CC45C]"}`}>
-                            {diff >= 0 ? "+" : ""}{diff.toFixed(2)}
+                            {diff >= 0 ? "+" : ""}${diff.toFixed(2)}
                           </p>
                         </div>
                       )}
@@ -343,6 +406,7 @@ const SUB_STATUS_LABEL: Record<string, string> = {
 function SubscriptionsLog() {
   const { subscriptions } = useStore();
   const sessionLabel = useSessionLabel();
+  const profileNames = useProfileNames();
   const sorted = useMemo(
     () => [...subscriptions].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [subscriptions]
@@ -376,7 +440,7 @@ function SubscriptionsLog() {
                       : <span className="text-[#F5C100]">{getOfferLabel(sub.offer)}</span>}
                   </td>
                   <td className="px-4 py-2.5 font-mono tabular-nums text-[#5CC45C] whitespace-nowrap">${sub.paidAmount.toFixed(2)}</td>
-                  <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA] whitespace-nowrap">{fmtEmployee(sub.createdBy)}</td>
+                  <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA] whitespace-nowrap">{fmtEmployee(sub.createdBy, profileNames)}</td>
                   <td className="px-4 py-2.5 font-mono text-[10px] text-[#777777] whitespace-nowrap">{sessionLabel(sub.createdAt)}</td>
                   <td className={`px-4 py-2.5 font-mono text-[10px] whitespace-nowrap ${SUB_STATUS_COLOR[sub.status] ?? "text-[#AAAAAA]"}`}>
                     {SUB_STATUS_LABEL[sub.status] ?? sub.status}
@@ -451,6 +515,7 @@ type ProdEdit = { cost: string; price: string; stock: string };
 function StoreDashboard() {
   const { sales, products, addProduct, updateProductPrice, adjustStock } = useStore();
   const sessionLabel = useSessionLabel();
+  const profileNames = useProfileNames();
 
   // Sales log
   const storeSales = useMemo(
@@ -534,7 +599,7 @@ function StoreDashboard() {
                     <td className="px-4 py-2 font-mono tabular-nums text-[#AAAAAA]">{s.quantity}</td>
                     <td className="px-4 py-2 font-mono tabular-nums text-[#777777]">${s.unitPrice.toFixed(2)}</td>
                     <td className="px-4 py-2 font-mono tabular-nums text-[#F5C100]">${s.total.toFixed(2)}</td>
-                    <td className="px-4 py-2 font-mono text-[10px] text-[#AAAAAA] whitespace-nowrap">{fmtEmployee(s.createdBy)}</td>
+                    <td className="px-4 py-2 font-mono text-[10px] text-[#AAAAAA] whitespace-nowrap">{fmtEmployee(s.createdBy, profileNames)}</td>
                     <td className="px-4 py-2 font-mono text-[10px] text-[#777777] whitespace-nowrap">{sessionLabel(s.createdAt)}</td>
                   </tr>
                 ))}
@@ -649,6 +714,7 @@ function KitchenDashboard() {
   const { sales, foodItems, addFoodItem, updateFoodItem, removeFoodItem } = useStore();
   const { exchangeRate, openRateModal } = useCurrency();
   const sessionLabel = useSessionLabel();
+  const profileNames = useProfileNames();
 
   // Kitchen sales log
   const kitchenSales = useMemo(
@@ -767,7 +833,7 @@ function KitchenDashboard() {
                     <td className="px-4 py-2 font-mono tabular-nums text-[#AAAAAA]">{s.quantity}</td>
                     <td className="px-4 py-2 font-mono tabular-nums text-[#777777]" dir="ltr">{s.currency === "syp" ? `${Math.round(s.unitPrice).toLocaleString("ar-SY")} ل.س` : `$${s.unitPrice.toFixed(2)}`}</td>
                     <td className="px-4 py-2 font-mono tabular-nums text-[#F5C100]" dir="ltr">{s.currency === "syp" ? `${Math.round(s.total).toLocaleString("ar-SY")} ل.س` : `$${s.total.toFixed(2)}`}</td>
-                    <td className="px-4 py-2 font-mono text-[10px] text-[#AAAAAA] whitespace-nowrap">{fmtEmployee(s.createdBy)}</td>
+                    <td className="px-4 py-2 font-mono text-[10px] text-[#AAAAAA] whitespace-nowrap">{fmtEmployee(s.createdBy, profileNames)}</td>
                     <td className="px-4 py-2 font-mono text-[10px] text-[#777777] whitespace-nowrap">{sessionLabel(s.createdAt)}</td>
                   </tr>
                 ))}
@@ -1758,7 +1824,7 @@ export default function ManagerDashboard() {
   const [showLogout, setShowLogout] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<ManagerSection, boolean>>({
     sessions: true, subscriptions: true, inbody: true,
-    store: true, kitchen: true, expenses: true,
+    store: true, kitchen: true, expenses: true, audit: true,
   });
   const [ovCollapsed, setOvCollapsed] = useState<Record<OverviewSection, boolean>>({
     revenue: false, subs: false, members: false, other: false, expensesNet: false,
@@ -1895,6 +1961,11 @@ export default function ManagerDashboard() {
         <Section title="المصاريف" icon={<ReceiptText size={18} className="text-[#F5C100]" />}
           collapsed={collapsed.expenses} onToggle={() => toggle("expenses")}>
           <ExpensesManager />
+        </Section>
+
+        <Section title="تدقيق ومحاسبة" icon={<Shield size={18} className="text-[#F5C100]" />}
+          collapsed={collapsed.audit} onToggle={() => toggle("audit")}>
+          <AccountabilityBlock />
         </Section>
 
         <footer className="border-t border-gunmetal pt-6 pb-8 space-y-4">

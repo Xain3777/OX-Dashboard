@@ -81,6 +81,7 @@ export async function persistExchangeRate(
   if (!Number.isFinite(rate) || rate <= 0) return { error: "سعر صرف غير صالح" };
   try {
     const supabase = supabaseBrowser();
+    const previousRate = await fetchExchangeRate();
     const { data, error } = await supabase
       .from("app_settings")
       .upsert(
@@ -103,7 +104,9 @@ export async function persistExchangeRate(
     await pushActivity({
       user,
       action: "exchange_rate_update",
-      description: `تحديث سعر الصرف — 1$ = ${rate.toLocaleString("en-US")} ل.س`,
+      description: `تحديث سعر الصرف — 1$ = ${previousRate.toLocaleString("en-US")} → ${rate.toLocaleString("en-US")} ل.س`,
+      oldValue: { rate: previousRate },
+      newValue: { rate },
     });
     return {};
   } catch (e) {
@@ -122,12 +125,17 @@ export async function pushActivity(opts: {
   amountUSD?: number;
   entityType?: string;
   entityId?: string;
+  // Structured before/after for edit/delete/cancel events. Older DBs may not
+  // have these columns yet — if the insert fails on unknown column, we retry
+  // without them so writes don't break before migration 0041 is applied.
+  oldValue?: Record<string, unknown> | null;
+  newValue?: Record<string, unknown> | null;
 }) {
   try {
     assertUser(opts.user);
     const supabase = supabaseBrowser();
     const cashSessionId = (await getActiveSession())?.id ?? null;
-    const { error } = await supabase.from("activity_feed").insert({
+    const basePayload: Record<string, unknown> = {
       action: opts.action,
       description: opts.description,
       amount_syp: opts.amountSYP ?? null,
@@ -137,10 +145,85 @@ export async function pushActivity(opts: {
       cash_session_id: cashSessionId,
       created_by: opts.user.id,
       created_by_name: opts.user.displayName,
-    });
+    };
+    const payload: Record<string, unknown> = { ...basePayload };
+    if (opts.oldValue !== undefined) payload.old_value = opts.oldValue ?? null;
+    if (opts.newValue !== undefined) payload.new_value = opts.newValue ?? null;
+
+    let { error } = await supabase.from("activity_feed").insert(payload);
+    if (error) {
+      const msg = (error as { message?: string }).message ?? String(error);
+      if (msg.includes("old_value") || msg.includes("new_value")) {
+        logError("activity_feed", "insert-fallback-no-audit-cols", error);
+        const retry = await supabase.from("activity_feed").insert(basePayload);
+        error = retry.error;
+      }
+    }
     if (error) logError("activity_feed", "insert", error);
   } catch (e) {
     logError("activity_feed", "insert", e);
+  }
+}
+
+// ── stock snapshots ───────────────────────────────────────────
+//
+// Walks every catalog row where track_stock = true and writes one
+// stock_snapshots row per item for the given session and type.
+// Uses upsert with on-conflict ignore so a duplicate call is a no-op.
+// Called on cash session open and close. Errors are logged but not
+// surfaced — the session lifecycle still succeeds.
+
+export async function snapshotStockForSession(opts: {
+  user: CurrentUser;
+  cashSessionId: string;
+  snapshotType: "open" | "close";
+  exchangeRate: number;
+}): Promise<void> {
+  try {
+    if (!opts.cashSessionId) return;
+    const supabase = supabaseBrowser();
+    const { data: items, error } = await supabase
+      .from("catalog_items")
+      .select(
+        "id, name, category, sell_price, sell_currency, cost_price, cost_currency, stock_quantity"
+      )
+      .eq("track_stock", true)
+      .eq("is_active", true);
+    if (error) { logError("stock_snapshots", "select-catalog", error); return; }
+    if (!items || items.length === 0) return;
+
+    const rate = Number.isFinite(opts.exchangeRate) && opts.exchangeRate > 0
+      ? opts.exchangeRate
+      : FALLBACK_RATE;
+
+    const rows = items.map((it) => {
+      const r = it as Record<string, unknown>;
+      return {
+        cash_session_id: opts.cashSessionId,
+        snapshot_type: opts.snapshotType,
+        catalog_item_id: String(r.id),
+        item_name_snapshot: String(r.name ?? ""),
+        category_snapshot: r.category == null ? null : String(r.category),
+        stock_quantity: Number(r.stock_quantity ?? 0),
+        sell_price: Number(r.sell_price ?? 0),
+        sell_currency: String(r.sell_currency ?? "usd"),
+        cost_price: r.cost_price == null ? null : Number(r.cost_price),
+        cost_currency: r.cost_currency == null ? null : String(r.cost_currency),
+        exchange_rate_to_syp: rate,
+        snapshot_by: opts.user.id,
+      };
+    });
+
+    const { error: insErr } = await supabase
+      .from("stock_snapshots")
+      .upsert(rows, {
+        onConflict: "cash_session_id,snapshot_type,catalog_item_id",
+        ignoreDuplicates: true,
+      });
+    if (insErr) logError("stock_snapshots", "upsert", insErr);
+    else logSuccess("stock_snapshots", `upsert-${opts.snapshotType}`, { count: rows.length });
+  } catch (e) {
+    logError("stock_snapshots", "snapshot", e);
   }
 }
 
@@ -1041,6 +1124,17 @@ export async function persistCatalogItemUpdate(opts: {
     if (Object.keys(mapped).length === 0) return { error: "لا توجد تغييرات" };
 
     const supabase = supabaseBrowser();
+
+    // Read the existing row so we can capture before/after for the audit log.
+    // If the read fails we still attempt the update — the audit entry just
+    // won't have an oldValue. Use the same column shape we're about to update.
+    const auditCols = "name, category, item_type, sell_currency, sell_price, cost_currency, cost_price, stock_quantity, track_stock, low_stock_threshold, sort_order, is_active";
+    const { data: priorRow } = await supabase
+      .from("catalog_items")
+      .select(auditCols)
+      .eq("id", opts.id)
+      .maybeSingle();
+
     console.log("Supabase update payload:", { table: "catalog_items", id: opts.id, payload: mapped });
     let { data, error } = await supabase
       .from("catalog_items")
@@ -1076,12 +1170,30 @@ export async function persistCatalogItemUpdate(opts: {
     if (!data) { logError("catalog_items", "update", "no row returned"); return { error: "لم يتم تعديل الصنف — تحقق من صلاحيات RLS" }; }
     logSuccess("catalog_items", "update", data);
 
+    // Diff prior vs new: only include keys that actually changed.
+    const newRow = data as Record<string, unknown>;
+    const diffOld: Record<string, unknown> = {};
+    const diffNew: Record<string, unknown> = {};
+    if (priorRow) {
+      const before = priorRow as Record<string, unknown>;
+      for (const k of Object.keys(mapped)) {
+        if (before[k] !== newRow[k]) {
+          diffOld[k] = before[k] ?? null;
+          diffNew[k] = newRow[k] ?? null;
+        }
+      }
+    } else {
+      for (const k of Object.keys(mapped)) diffNew[k] = newRow[k] ?? null;
+    }
+
     await pushActivity({
       user: opts.user,
       action: "catalog_item_update",
-      description: `تعديل صنف — ${(data as DbRow).name as string} (${Object.keys(mapped).join(", ")})`,
+      description: `تعديل صنف — ${(data as DbRow).name as string} (${Object.keys(diffNew).join(", ") || Object.keys(mapped).join(", ")})`,
       entityType: "catalog_item",
       entityId: opts.id,
+      oldValue: priorRow ? diffOld : null,
+      newValue: diffNew,
     });
     return { data: data as DbRow };
   } catch (e) {
@@ -1112,12 +1224,26 @@ export async function persistCatalogItemDelete(opts: {
     logSuccess("catalog_items", "delete", data);
 
     const row = (data as DbRow[])[0];
+    const r = row as Record<string, unknown>;
     await pushActivity({
       user: opts.user,
       action: "catalog_item_delete",
       description: `حذف صنف — ${(row.name as string) ?? opts.id}`,
       entityType: "catalog_item",
       entityId: opts.id,
+      oldValue: {
+        name: r.name ?? null,
+        category: r.category ?? null,
+        item_type: r.item_type ?? null,
+        sell_currency: r.sell_currency ?? null,
+        sell_price: r.sell_price ?? null,
+        cost_currency: r.cost_currency ?? null,
+        cost_price: r.cost_price ?? null,
+        stock_quantity: r.stock_quantity ?? null,
+        track_stock: r.track_stock ?? null,
+        low_stock_threshold: r.low_stock_threshold ?? null,
+        is_active: r.is_active ?? null,
+      },
     });
     return {};
   } catch (e) {
@@ -1196,7 +1322,7 @@ export async function cancelTransaction(opts: {
     }
 
     const r = row as Record<string, unknown>;
-    const label = r.product_name || r.member_name || r.description || "عملية";
+    const label = r.product_name || r.member_name || r.description || r.item_name_snapshot || "عملية";
     const amtSYP = Number(r.amount_syp ?? 0);
     await pushActivity({
       user: opts.user,
@@ -1205,6 +1331,8 @@ export async function cancelTransaction(opts: {
       amountSYP: -amtSYP,
       entityType: opts.table,
       entityId: opts.id,
+      oldValue: r,
+      newValue: { cancelled_at: new Date().toISOString(), cancelled_by: opts.user.id, cancelled_reason: opts.reason ?? null },
     });
     return {};
   } catch (e) {
@@ -1330,6 +1458,19 @@ export async function openCashSession(
     if (!data) { logError("cash_sessions", "insert", "no row returned"); return { error: "لم يتم فتح الجلسة — تحقق من RLS" }; }
     logSuccess("cash_sessions", "insert", data);
 
+    // Snapshot every track_stock catalog row as the session's opening
+    // inventory. Fire-and-forget — failure is logged but doesn't block
+    // the session opening (snapshots are diagnostic, not load-bearing
+    // for the cash-handoff math).
+    const sessionId = String((data as DbRow).id);
+    const rate = await fetchExchangeRate();
+    void snapshotStockForSession({
+      user,
+      cashSessionId: sessionId,
+      snapshotType: "open",
+      exchangeRate: rate,
+    });
+
     await pushActivity({
       user,
       action: "session_opened",
@@ -1454,11 +1595,30 @@ export async function closeCashSession(
     }
     logSuccess("cash_sessions", "update-close", data);
 
+    // Snapshot inventory at close. Counts come from the auto-decrement
+    // on each sale (catalog_items.stock_quantity is already current).
+    // Fire-and-forget for the same reason as open.
+    const rate = await fetchExchangeRate();
+    void snapshotStockForSession({
+      user,
+      cashSessionId: sessionId,
+      snapshotType: "close",
+      exchangeRate: rate,
+    });
+
     await pushActivity({
       user,
       action: "session_closed",
       description: `إغلاق جلسة — المبلغ الفعلي: $${actualCashUSD.toFixed(2)}`,
       amountUSD: actualCashUSD,
+      oldValue: { status: "open" },
+      newValue: {
+        status: "closed",
+        opening_cash: openingCash,
+        actual_cash: actualCashUSD,
+        expected_cash: expectedCash,
+        difference,
+      },
     });
     return { data: (data as DbRow[])[0] };
   } catch (e) {

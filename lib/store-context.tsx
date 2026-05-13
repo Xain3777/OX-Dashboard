@@ -89,6 +89,8 @@ export interface LocalSession {
   mealsIncome?: number;
   inbodyIncome?: number;
   totalIncome?: number;
+  expensesTotal?: number;
+  netIncome?: number;
   discrepancyNote?: string;
 }
 
@@ -1204,6 +1206,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         mealsIncome: incomeSnapshot.mealsIncome,
         inbodyIncome: incomeSnapshot.inbodyIncome,
         totalIncome: incomeSnapshot.totalIncome,
+        expensesTotal: incomeSnapshot.expensesTotal,
+        netIncome: incomeSnapshot.netIncome,
         discrepancyNote,
       };
       return { ...prev, localSession: closedSession, lastClosingCash: actualCash };
