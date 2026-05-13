@@ -13,6 +13,12 @@ interface QtyMap { [id: string]: number }
 
 const KITCHEN_TYPES = new Set(["meal", "water", "drink"]);
 
+// ماء كبير's badge should always render (it shares the same inventory row as
+// every other catalog item — its track_stock flag is just sometimes off in
+// the DB). UI-only override; sale / inc clamping continue to follow the
+// row's own track_stock value.
+const FORCE_BADGE_NAMES = new Set(["ماء كبير"]);
+
 type KitchenGroupKey = "meals" | "meal_addons" | "other";
 
 const KITCHEN_GROUP_ORDER: KitchenGroupKey[] = ["meals", "meal_addons", "other"];
@@ -228,22 +234,24 @@ export default function KitchenBlock() {
                     const tracked   = it.trackStock;
                     const out       = tracked && it.stockQuantity <= 0;
                     const maxed     = tracked && q >= it.stockQuantity;
+                    const showBadge = tracked || FORCE_BADGE_NAMES.has(it.name);
+                    const badgeIsOut = showBadge && it.stockQuantity <= 0;
                     return (
                       <div
                         key={it.id}
                         className={`relative p-3 border rounded-sm transition-colors ${q > 0 ? "border-[#F5C100]/50 bg-[#F5C100]/5" : out ? "border-[#D42B2B]/50 bg-[#1A0A0A]/25" : "border-[#252525] bg-[#111111]"}`}
                       >
-                        {tracked && (
+                        {showBadge && (
                           <div
-                            className={`absolute left-2 top-2 min-w-10 rounded-sm border px-2 py-0.5 text-center font-mono tabular-nums text-[10px] ${out ? "border-[#D42B2B]/40 bg-[#D42B2B]/10 text-[#FF3333]" : "border-[#252525] bg-[#0A0A0A] text-[#5CC45C]"}`}
+                            className={`absolute left-2 top-2 min-w-10 rounded-sm border px-2 py-0.5 text-center font-mono tabular-nums text-[10px] ${badgeIsOut ? "border-[#D42B2B]/40 bg-[#D42B2B]/10 text-[#FF3333]" : "border-[#252525] bg-[#0A0A0A] text-[#5CC45C]"}`}
                             title="المخزون"
                           >
-                            <span className={`min-w-5 text-center font-mono tabular-nums text-[10px] ${out ? "text-[#FF3333]" : "text-[#5CC45C]"}`}>
+                            <span className={`min-w-5 text-center font-mono tabular-nums text-[10px] ${badgeIsOut ? "text-[#FF3333]" : "text-[#5CC45C]"}`}>
                               {it.stockQuantity}
                             </span>
                           </div>
                         )}
-                        <p className={`font-body text-xs text-[#F0EDE6] mb-1 ${tracked ? "pl-20" : ""}`}>{it.name}</p>
+                        <p className={`font-body text-xs text-[#F0EDE6] mb-1 ${showBadge ? "pl-20" : ""}`}>{it.name}</p>
                         {it.description && (
                           <p className="font-mono text-[9px] text-[#777777] leading-snug mb-1.5">{it.description}</p>
                         )}

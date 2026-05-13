@@ -639,6 +639,11 @@ export async function pushExpense(opts: {
    *  current rate. Required for SYP expenses; optional for USD-native ones
    *  (where the rate isn't used to compute USD) but stored anyway for audit. */
   exchangeRate?: number;
+  /** Free-form note from the reception daily-expenses block. */
+  note?: string | null;
+  /** Where the row originated. Defaults to 'manager'; reception's daily
+   *  block writes 'reception_daily' so the manager UI can badge it. */
+  source?: "manager" | "reception_daily";
 }): Promise<{ data?: DbRow; error?: string }> {
   try {
     assertUser(opts.user);
@@ -658,6 +663,7 @@ export async function pushExpense(opts: {
           ? Math.round(opts.amount * rate)
           : null;
 
+    const note = opts.note == null ? null : String(opts.note).trim() || null;
     const payload = {
       description: opts.description,
       amount: opts.amount,
@@ -667,6 +673,9 @@ export async function pushExpense(opts: {
       amount_syp: amountSYP,
       cash_session_id: cashSessionId,
       created_by: opts.user.id,
+      created_by_name: opts.user.displayName,
+      note,
+      source: opts.source ?? "manager",
     };
     console.log("Supabase write payload:", { table: "expenses", operation: "insert", payload });
 
@@ -680,11 +689,16 @@ export async function pushExpense(opts: {
     if (!data) { logError("expenses", "insert", "no row returned"); return { error: "لم يتم حفظ المصروف — تحقق من RLS" }; }
     logSuccess("expenses", "insert", data);
 
+    const amountLabel =
+      opts.currency === "syp"
+        ? `${Math.round(opts.amount).toLocaleString("en-US")} ل.س`
+        : `$${opts.amount}`;
     await pushActivity({
       user: opts.user,
       action: "expense_create",
-      description: `مصروف — ${opts.description} — $${opts.amount}`,
+      description: `مصروف — ${opts.description} — ${amountLabel}`,
       amountUSD: opts.currency === "usd" ? opts.amount : undefined,
+      amountSYP: opts.currency === "syp" ? Math.round(opts.amount) : amountSYP ?? undefined,
       entityType: "expense",
       entityId: (data as DbRow).id as string,
     });
@@ -703,6 +717,7 @@ export async function updateExpense(opts: {
   currency: Currency;
   category: string;
   exchangeRate?: number;
+  note?: string | null;
 }): Promise<{ data?: DbRow; error?: string }> {
   try {
     assertUser(opts.user);
@@ -722,7 +737,7 @@ export async function updateExpense(opts: {
           : null;
 
     const supabase = supabaseBrowser();
-    const payload = {
+    const payload: Record<string, unknown> = {
       description: opts.description.trim(),
       amount: opts.amount,
       currency: opts.currency,
@@ -730,6 +745,10 @@ export async function updateExpense(opts: {
       exchange_rate: rate,
       amount_syp: amountSYP,
     };
+    if (opts.note !== undefined) {
+      const trimmed = opts.note == null ? null : String(opts.note).trim() || null;
+      payload.note = trimmed;
+    }
 
     const { data, error } = await supabase
       .from("expenses")

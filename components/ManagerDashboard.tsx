@@ -14,7 +14,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
 import { useCurrency } from "@/lib/currency-context";
 import type { LocalSession } from "@/lib/store-context";
-import type { FoodItem, FoodItemCategory, ProductCategory, ExpenseCategory, ExpenseFrequency, Expense } from "@/lib/types";
+import type { FoodItem, FoodItemCategory, ProductCategory, ExpenseCategory, ExpenseFrequency, Expense, Currency } from "@/lib/types";
 import type { Product } from "@/lib/types";
 import {
   getPlanLabel, getOfferLabel, getProductCategoryLabel, getCategoryLabel,
@@ -23,6 +23,7 @@ import { cancelTransaction, pushExpense, updateExpense } from "@/lib/supabase/in
 import { formatTime, formatDate } from "@/lib/utils/time";
 import KPIStrip from "@/components/KPIStrip";
 import DailyExportButton from "@/components/DailyExportButton";
+import InventoryActivityPanel from "@/components/InventoryActivityPanel";
 import { findStaffByEmail } from "@/lib/staff-accounts";
 import {
   makeDateRange,
@@ -918,6 +919,29 @@ function KitchenDashboard() {
 
 // ─── Expenses manager ─────────────────────────────────────────────────────────
 
+// Time-of-day label derived from Asia/Damascus hour:
+//   05:00–11:59 → صباحاً
+//   12:00–16:59 → ظهراً
+//   17:00–20:59 → مساءً
+//   21:00–04:59 → ليلاً
+function shiftLabel(createdAt: string): string {
+  try {
+    const hh = new Date(createdAt).toLocaleString("en-GB", {
+      timeZone: "Asia/Damascus",
+      hour: "2-digit",
+      hour12: false,
+    });
+    const h = parseInt(hh, 10);
+    if (!Number.isFinite(h)) return "";
+    if (h >= 5  && h < 12) return "صباحاً";
+    if (h >= 12 && h < 17) return "ظهراً";
+    if (h >= 17 && h < 21) return "مساءً";
+    return "ليلاً";
+  } catch {
+    return "";
+  }
+}
+
 function ExpensesManager() {
   const { expenses, addExpense, updateExpenseLocal, removeExpenseLocal } = useStore();
   const { user } = useAuth();
@@ -925,11 +949,13 @@ function ExpensesManager() {
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState<ExpenseCategory>("salaries");
   const [amount, setAmount] = useState("");
+  const [currency, setCurrency] = useState<Currency>("usd");
   const [frequency, setFrequency] = useState<ExpenseFrequency>("monthly");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDescription, setEditDescription] = useState("");
   const [editCategory, setEditCategory] = useState<ExpenseCategory>("salaries");
   const [editAmount, setEditAmount] = useState("");
+  const [editCurrency, setEditCurrency] = useState<Currency>("usd");
   const [editFrequency, setEditFrequency] = useState<ExpenseFrequency>("one_time");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -938,7 +964,16 @@ function ExpensesManager() {
     () => [...expenses].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [expenses]
   );
-  const total = useMemo(() => sorted.reduce((s, e) => s + e.amount, 0), [sorted]);
+  // Totals tracked per currency so reception-entered SYP rows aren't summed
+  // alongside manager USD entries as if they were the same number.
+  const totals = useMemo(() => {
+    let usd = 0, syp = 0;
+    for (const e of sorted) {
+      if ((e.currency ?? "usd") === "syp") syp += e.amount;
+      else usd += e.amount;
+    }
+    return { usd, syp };
+  }, [sorted]);
 
   async function handleAdd() {
     setError(""); setSuccess("");
@@ -950,9 +985,10 @@ function ExpensesManager() {
       user: { id: user.id, displayName: user.displayName },
       description: description.trim(),
       amount: a,
-      currency: "usd",
+      currency,
       category,
       exchangeRate,
+      source: "manager",
     });
     if (r.error) { setError(r.error); return; }
     const row = r.data!;
@@ -962,11 +998,13 @@ function ExpensesManager() {
       category,
       amount: a,
       paymentMethod: "cash",
-      currency: "usd",
+      currency,
       frequency,
       date: new Date().toISOString().slice(0, 10),
       createdAt: String(row.created_at ?? new Date().toISOString()),
       createdBy: user.id,
+      createdByName: user.displayName,
+      source: "manager",
     };
     addExpense(full);
     setDescription(""); setAmount("");
@@ -980,6 +1018,7 @@ function ExpensesManager() {
     setEditDescription(expense.description);
     setEditCategory(expense.category);
     setEditAmount(String(expense.amount));
+    setEditCurrency((expense.currency ?? "usd") as Currency);
     setEditFrequency(expense.frequency ?? "one_time");
   }
 
@@ -987,6 +1026,7 @@ function ExpensesManager() {
     setEditingId(null);
     setEditDescription("");
     setEditAmount("");
+    setEditCurrency("usd");
     setEditFrequency("one_time");
     setEditCategory("salaries");
   }
@@ -1005,7 +1045,7 @@ function ExpensesManager() {
       id: expense.id,
       description: nextDescription,
       amount: nextAmount,
-      currency: expense.currency ?? "usd",
+      currency: editCurrency,
       category: editCategory,
       exchangeRate,
     });
@@ -1013,6 +1053,7 @@ function ExpensesManager() {
     updateExpenseLocal(expense.id, {
       description: nextDescription,
       amount: nextAmount,
+      currency: editCurrency,
       category: editCategory,
       frequency: editFrequency,
     });
@@ -1048,7 +1089,17 @@ function ExpensesManager() {
           <select value={category} onChange={(e) => setCategory(e.target.value as ExpenseCategory)} className={SELECT}>
             {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{getCategoryLabel(c)}</option>)}
           </select>
-          <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="المبلغ $" type="number" min="0" step="0.01" className={`w-32 ${INPUT}`} />
+          <input
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            placeholder={currency === "syp" ? "المبلغ ل.س" : "المبلغ $"}
+            type="number" min="0" step={currency === "syp" ? "1" : "0.01"}
+            className={`w-32 ${INPUT}`}
+          />
+          <select value={currency} onChange={(e) => setCurrency(e.target.value as Currency)} className={SELECT}>
+            <option value="usd">$</option>
+            <option value="syp">ل.س</option>
+          </select>
           <select value={frequency} onChange={(e) => setFrequency(e.target.value as ExpenseFrequency)} className={SELECT}>
             {(["monthly", "weekly", "daily", "one_time"] as ExpenseFrequency[]).map((f) => (
               <option key={f} value={f}>{FREQ_LABELS[f]}</option>
@@ -1066,17 +1117,38 @@ function ExpensesManager() {
         <>
           <div className="overflow-x-auto max-h-64 overflow-y-auto">
             <table className="w-full text-xs">
-              <THead className="sticky top-0" cols={["التاريخ", "الوصف", "الفئة", "المبلغ", "التكرار", ""]} />
+              <THead className="sticky top-0" cols={["التاريخ", "الوصف", "ملاحظة", "الفئة", "المبلغ", "المصدر", "التكرار", ""]} />
               <tbody className="divide-y divide-[#252525]/60">
                 {sorted.map((exp) => {
                   const editing = editingId === exp.id;
+                  const isReception = exp.source === "reception_daily";
+                  const expCurrency = (exp.currency ?? "usd") as Currency;
+                  const amountText = expCurrency === "syp"
+                    ? `${Math.round(exp.amount).toLocaleString("en-US")} ل.س`
+                    : `$${exp.amount.toFixed(2)}`;
+                  const receptionName = exp.createdByName ?? "—";
+                  const shift = shiftLabel(exp.createdAt);
                   return (
-                    <tr key={exp.id} className="hover:bg-[#252525]/20 transition-colors">
-                      <td className="px-4 py-2.5 font-mono text-[#777777] whitespace-nowrap">{formatDate(exp.createdAt)}</td>
+                    <tr
+                      key={exp.id}
+                      className={[
+                        "transition-colors",
+                        isReception
+                          ? "bg-[#F5C100]/5 hover:bg-[#F5C100]/10 border-r-2 border-r-[#F5C100]/40"
+                          : "hover:bg-[#252525]/20",
+                      ].join(" ")}
+                    >
+                      <td className="px-4 py-2.5 font-mono text-[#777777] whitespace-nowrap">
+                        {formatDate(exp.createdAt)}
+                        <span className="block text-[9px] text-[#555555]">{formatTime(exp.createdAt)}</span>
+                      </td>
                       <td className="px-4 py-2.5 text-[#F0EDE6]">
                         {editing ? (
                           <input value={editDescription} onChange={(e) => setEditDescription(e.target.value)} className={`min-w-[160px] ${INPUT}`} />
                         ) : exp.description}
+                      </td>
+                      <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA] max-w-[220px] truncate">
+                        {exp.note ? exp.note : <span className="text-[#555555]">—</span>}
                       </td>
                       <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA] whitespace-nowrap">
                         {editing ? (
@@ -1085,10 +1157,26 @@ function ExpensesManager() {
                           </select>
                         ) : getCategoryLabel(exp.category)}
                       </td>
-                      <td className="px-4 py-2.5 font-mono tabular-nums text-[#FF3333]">
+                      <td className="px-4 py-2.5 font-mono tabular-nums text-[#FF3333] whitespace-nowrap" dir="ltr">
                         {editing ? (
-                          <input value={editAmount} onChange={(e) => setEditAmount(e.target.value)} type="number" min="0" step="0.01" className={`w-28 ${INPUT}`} />
-                        ) : `$${exp.amount.toFixed(2)}`}
+                          <div className="flex items-center gap-1">
+                            <input value={editAmount} onChange={(e) => setEditAmount(e.target.value)} type="number" min="0" step={editCurrency === "syp" ? "1" : "0.01"} className={`w-28 ${INPUT}`} />
+                            <select value={editCurrency} onChange={(e) => setEditCurrency(e.target.value as Currency)} className={SELECT}>
+                              <option value="usd">$</option>
+                              <option value="syp">ل.س</option>
+                            </select>
+                          </div>
+                        ) : amountText}
+                      </td>
+                      <td className="px-4 py-2.5 font-mono text-[10px] whitespace-nowrap">
+                        {isReception ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-[#F5C100]/15 border border-[#F5C100]/40 rounded text-[#F5C100]">
+                            <span>من الاستقبال — {receptionName}</span>
+                            {shift && <span className="text-[#F5C100]/70">· {shift}</span>}
+                          </span>
+                        ) : (
+                          <span className="text-[#777777]">المدير{exp.createdByName ? ` — ${exp.createdByName}` : ""}</span>
+                        )}
                       </td>
                       <td className="px-4 py-2.5 font-mono text-[10px] text-[#777777] whitespace-nowrap">
                         {editing ? (
@@ -1130,7 +1218,19 @@ function ExpensesManager() {
           </div>
           <div className="border-t border-[#252525] px-5 py-3 flex items-center justify-between bg-[#111111]/60">
             <span className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">الإجمالي المسجل</span>
-            <span className="font-mono tabular-nums text-sm text-[#FF3333]">${total.toFixed(2)}</span>
+            <div className="flex items-center gap-3" dir="ltr">
+              {totals.usd > 0 && (
+                <span className="font-mono tabular-nums text-sm text-[#FF3333]">${totals.usd.toFixed(2)}</span>
+              )}
+              {totals.syp > 0 && (
+                <span className="font-mono tabular-nums text-sm text-[#FF7A7A]">
+                  {Math.round(totals.syp).toLocaleString("en-US")} ل.س
+                </span>
+              )}
+              {totals.usd <= 0 && totals.syp <= 0 && (
+                <span className="font-mono tabular-nums text-sm text-[#777777]">—</span>
+              )}
+            </div>
           </div>
         </>
       )}
@@ -1776,7 +1876,10 @@ export default function ManagerDashboard() {
 
         <Section title="المتجر — المبيعات والمخزون" icon={<Package size={18} className="text-[#F5C100]" />}
           collapsed={collapsed.store} onToggle={() => toggle("store")}>
-          <StoreDashboard />
+          <div className="space-y-4">
+            <StoreDashboard />
+            <InventoryActivityPanel />
+          </div>
         </Section>
 
         <Section title="المطبخ — الطلبات والأصناف" icon={<ChefHat size={18} className="text-[#F5C100]" />}

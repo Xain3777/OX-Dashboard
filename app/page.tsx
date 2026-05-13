@@ -23,6 +23,7 @@ import AuditLog from "@/components/AuditLog";
 import CalculationsBlock from "@/components/CalculationsBlock";
 import InBodyBlock from "@/components/InBodyBlock";
 import KitchenBlock from "@/components/KitchenBlock";
+import DailyExpensesBlock from "@/components/DailyExpensesBlock";
 import LoginScreen from "@/components/LoginScreen";
 import ManagerDashboard from "@/components/ManagerDashboard";
 import {
@@ -47,6 +48,7 @@ type Section =
   | "store"
   | "inbody"
   | "kitchen"
+  | "dailyExpenses"
   | "calculations"
   | "weekly"
   | "monthly"
@@ -254,6 +256,7 @@ function DashboardContent() {
     store: false,
     inbody: false,
     kitchen: false,
+    dailyExpenses: false,
     calculations: false,
     weekly: true,
     monthly: true,
@@ -406,6 +409,11 @@ function DashboardContent() {
         {/* المطبخ — طلبات الاستقبال */}
         <CollapsibleSection title="المطبخ" collapsed={collapsed.kitchen} onToggle={() => toggle("kitchen")}>
           <KitchenBlock />
+        </CollapsibleSection>
+
+        {/* المصاريف اليومية — استقبال (مرئية أيضاً للمدير في تبويب المصاريف) */}
+        <CollapsibleSection title="المصاريف اليومية" collapsed={collapsed.dailyExpenses} onToggle={() => toggle("dailyExpenses")}>
+          <DailyExpensesBlock />
         </CollapsibleSection>
 
         {/* مراجعة أسبوعية + شهرية — manager only */}

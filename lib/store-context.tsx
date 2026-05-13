@@ -476,6 +476,9 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       date: String(row.created_at ?? new Date().toISOString()).slice(0, 10),
       createdAt: String(row.created_at ?? ""),
       createdBy: String(row.created_by ?? ""),
+      createdByName: row.created_by_name == null ? undefined : String(row.created_by_name),
+      note: row.note == null ? null : String(row.note),
+      source: (String(row.source ?? "manager") === "reception_daily" ? "reception_daily" : "manager") as Expense["source"],
       lockedAt: String(row.created_at ?? ""),
     }));
 

@@ -222,6 +222,8 @@ export type PaymentMethod = "cash" | "card" | "transfer" | "other";
 
 export type Currency = "syp" | "usd";
 
+export type ExpenseSource = "manager" | "reception_daily";
+
 export interface Expense {
   id: string;
   description: string;
@@ -233,6 +235,9 @@ export interface Expense {
   date: string;
   createdAt: string;
   createdBy: string;
+  createdByName?: string;
+  note?: string | null;
+  source?: ExpenseSource;
   lockedAt?: string;
 }
 
