@@ -355,7 +355,7 @@ function SubscriptionsLog() {
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
-            <THead cols={["تاريخ التسجيل", "العضو", "الخطة", "العرض", "المبلغ المدفوع", "الموظف", "الجلسة", "الحالة"]} />
+            <THead cols={["تاريخ التسجيل", "العضو", "الكوتش", "الخطة", "العرض", "المبلغ المدفوع", "الموظف", "الجلسة", "الحالة"]} />
             <tbody className="divide-y divide-[#252525]/60">
               {sorted.map((sub) => (
                 <tr key={sub.id} className="hover:bg-[#252525]/20 transition-colors">
@@ -364,6 +364,11 @@ function SubscriptionsLog() {
                     <span className="text-[9px] text-[#555555]">{formatTime(sub.createdAt)}</span>
                   </td>
                   <td className="px-4 py-2.5 text-[#F0EDE6] whitespace-nowrap font-medium">{sub.memberName}</td>
+                  <td className="px-4 py-2.5 font-mono text-[10px] whitespace-nowrap">
+                    {sub.privateCoachName
+                      ? <span className="text-[#F5C100]">{sub.privateCoachName}</span>
+                      : <span className="text-[#555555]">—</span>}
+                  </td>
                   <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA] whitespace-nowrap">{getPlanLabel(sub.planType)}</td>
                   <td className="px-4 py-2.5 font-mono text-[10px] whitespace-nowrap">
                     {sub.offer === "none"

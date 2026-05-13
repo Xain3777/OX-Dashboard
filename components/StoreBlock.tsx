@@ -691,9 +691,9 @@ export default function StoreBlock() {
         </div>
       )}
 
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
         <table className="w-full text-xs">
-          <thead>
+          <thead className="sticky top-0 z-10">
             <tr className="border-y border-[#252525] bg-[#111111]">
               {[
                 "اسم المنتج",
@@ -895,9 +895,9 @@ export default function StoreBlock() {
         <span className="font-mono text-[10px] text-[#555555]">{todaySales.length} معاملة</span>
       </div>
 
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
         <table className="w-full text-xs">
-          <thead>
+          <thead className="sticky top-0 z-10">
             <tr className="border-y border-[#252525] bg-[#111111]">
               {["الوقت", "المنتج", "الكمية", "سعر الوحدة", "الإجمالي", "العملة", "الموظف", ""].map(h => (
                 <th key={h} className="px-4 py-2 text-right font-mono text-[10px] uppercase tracking-widest text-[#555555] whitespace-nowrap">

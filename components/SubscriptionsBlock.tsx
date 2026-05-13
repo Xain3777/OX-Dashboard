@@ -1554,9 +1554,9 @@ export default function SubscriptionsBlock() {
             </div>
 
             {/* ── Table ─────────────────────────────────────────────────── */}
-            <div className="overflow-x-auto rounded border border-gunmetal">
+            <div className="overflow-x-auto overflow-y-auto max-h-[60vh] rounded border border-gunmetal">
               <table className="w-full min-w-[860px] border-collapse">
-                <thead>
+                <thead className="sticky top-0 z-10">
                   <tr className="bg-charcoal">
                     {["اسم العضو","الهاتف","الكوتش","الخطة","العرض","تاريخ البدء","تاريخ الانتهاء","الأيام المتبقية","المبلغ","الدفع","الحالة","رمز التفعيل",""].map((col, i) => (
                       <th key={i} className="px-3.5 py-2.5 text-right font-mono text-[10px] text-secondary uppercase tracking-wider whitespace-nowrap">
