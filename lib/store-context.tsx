@@ -185,6 +185,8 @@ export interface StoreContextType extends StoreState {
   subsIncome: number;
   inbodyIncome: number;
   totalIncome: number;
+  expensesTotal: number;
+  netIncome: number;
   runningCash: number;
   lastClosedByName: string;
 }
@@ -578,6 +580,8 @@ const StoreContext = createContext<StoreContextType>({
   subsIncome: 0,
   inbodyIncome: 0,
   totalIncome: 0,
+  expensesTotal: 0,
+  netIncome: 0,
   runningCash: 0,
   lastClosedByName: "",
 });
@@ -1101,6 +1105,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const [incomeData, setIncomeData] = useState<SessionIncome>({
     subsIncome: 0, storeIncome: 0, mealsIncome: 0, inbodyIncome: 0, totalIncome: 0,
+    expensesTotal: 0, netIncome: 0,
   });
 
   const refreshIncome = useCallback(async (sessionId: string) => {
@@ -1111,7 +1116,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const sid = state.localSession?.id;
     if (!sid || state.localSession?.status !== "open") {
-      setIncomeData({ subsIncome: 0, storeIncome: 0, mealsIncome: 0, inbodyIncome: 0, totalIncome: 0 });
+      setIncomeData({
+        subsIncome: 0, storeIncome: 0, mealsIncome: 0, inbodyIncome: 0, totalIncome: 0,
+        expensesTotal: 0, netIncome: 0,
+      });
       return;
     }
     void refreshIncome(sid);
@@ -1122,6 +1130,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .on("postgres_changes", { event: "*", schema: "public", table: "item_sales",      filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
       .on("postgres_changes", { event: "*", schema: "public", table: "gym_subscriptions", filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
       .on("postgres_changes", { event: "*", schema: "public", table: "inbody_sessions", filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
+      .on("postgres_changes", { event: "*", schema: "public", table: "expenses",        filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
   }, [state.localSession?.id, state.localSession?.status, state.itemSales.length, refreshIncome]);
@@ -1238,7 +1247,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     openLocalSession,
     closeLocalSession,
     ...incomeData,
-    runningCash: (state.localSession?.openingCash ?? 0) + incomeData.totalIncome,
+    // Running cash = opening + income − expenses. Matches what
+    // closeCashSession (intake.ts) computes server-side as expectedCash, so
+    // the live discrepancy badge in CashSessionBlock can trust this value.
+    runningCash:
+      (state.localSession?.openingCash ?? 0) + incomeData.netIncome,
   };
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

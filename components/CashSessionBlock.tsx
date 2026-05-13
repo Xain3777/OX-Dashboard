@@ -34,6 +34,7 @@ export default function CashSessionBlock() {
     subsIncome,
     inbodyIncome,
     totalIncome,
+    expensesTotal,
     runningCash,
   } = useStore();
 
@@ -99,7 +100,15 @@ export default function CashSessionBlock() {
       closingValue
     );
     if (r.error) { setMsg({ kind: "err", text: r.error }); return; }
-    closeLocalSession(closingValue, { subsIncome, storeIncome, mealsIncome, inbodyIncome, totalIncome }, hasDiscrepancy ? discrepancyNote.trim() : undefined);
+    closeLocalSession(
+      closingValue,
+      {
+        subsIncome, storeIncome, mealsIncome, inbodyIncome, totalIncome,
+        expensesTotal,
+        netIncome: Number((totalIncome - expensesTotal).toFixed(2)),
+      },
+      hasDiscrepancy ? discrepancyNote.trim() : undefined,
+    );
     setClosingInput("");
     setDiscrepancyNote("");
     setMsg({ kind: "ok", text: `أُغلقت الجلسة — ${user.displayName} — الفعلي: ${fmt(closingValue)}` });
@@ -157,8 +166,24 @@ export default function CashSessionBlock() {
               </div>
             </div>
 
-            <div className="border-t border-[#252525] pt-3">
-              <Stat label="إجمالي الخزنة ($)" value={fmt(runningCash)} accent="gold" big />
+            <div className="border-t border-[#252525] pt-3 space-y-2">
+              {/* Income / expenses / net cash — three lines so the cashier
+                  sees the gross take, the spend, and the net that should
+                  actually be in the drawer. The bottom number matches the
+                  server's expectedCash used by closeCashSession. */}
+              <div className="flex items-center justify-between px-3 py-2 bg-[#0F0F0F] border border-[#252525] clip-corner-sm">
+                <span className="font-mono text-[10px] text-[#555555] tracking-widest uppercase">إجمالي الدخل</span>
+                <span className="font-mono text-sm text-[#AAAAAA] tabular-nums" dir="ltr">{fmt(totalIncome)}</span>
+              </div>
+              <div className={`flex items-center justify-between px-3 py-2 border clip-corner-sm ${
+                expensesTotal > 0 ? "bg-[#FF3333]/5 border-[#FF3333]/25" : "bg-[#0F0F0F] border-[#252525]"
+              }`}>
+                <span className="font-mono text-[10px] tracking-widest uppercase text-[#555555]">مصاريف الوردية</span>
+                <span className={`font-mono text-sm tabular-nums ${expensesTotal > 0 ? "text-[#FF7A7A]" : "text-[#555555]"}`} dir="ltr">
+                  {expensesTotal > 0 ? `−${fmt(expensesTotal)}` : fmt(0)}
+                </span>
+              </div>
+              <Stat label="إجمالي الخزنة المتوقع ($)" value={fmt(runningCash)} accent="gold" big />
             </div>
 
             {/* Close form */}

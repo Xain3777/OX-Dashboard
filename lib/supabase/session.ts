@@ -15,7 +15,15 @@ export interface SessionIncome {
   storeIncome: number;
   mealsIncome: number;
   inbodyIncome: number;
+  /** Sum of income only — does NOT subtract expenses. */
   totalIncome: number;
+  /** Sum of session expenses, USD-normalized, currency + exchange_rate
+   *  honored at write time. Always ≥ 0. */
+  expensesTotal: number;
+  /** totalIncome − expensesTotal. Matches the server-side computation in
+   *  closeCashSession (intake.ts) so the live discrepancy badge can trust
+   *  this value. Excludes openingCash — caller adds it. */
+  netIncome: number;
 }
 
 export async function getActiveSession(): Promise<ActiveSession | null> {
@@ -122,17 +130,40 @@ export async function fetchSessionIncome(sessionId: string): Promise<SessionInco
     );
   };
 
-  const [sub, store, meals, inbody] = await Promise.all([
+  // Expenses live in their own table and have no member_name filter, so
+  // sumLegacyUSD can't be reused. Inline a similar reducer. SYP rows divide
+  // by their snapshotted exchange_rate (the rate at write time, per
+  // 0002_finance_hardening — same convention used by closeCashSession).
+  const sumExpensesUSD = async (): Promise<number> => {
+    const { data } = await supabase
+      .from("expenses")
+      .select("amount, currency, exchange_rate")
+      .eq("cash_session_id", sessionId)
+      .is("cancelled_at", null);
+    return (data ?? []).reduce((a: number, r: unknown) => {
+      const row    = r as Record<string, unknown>;
+      const amount = Number(row.amount ?? 0);
+      const cur    = String(row.currency ?? "usd");
+      const rate   = Number(row.exchange_rate ?? 1) || 1;
+      return a + (cur === "syp" ? amount / rate : amount);
+    }, 0);
+  };
+
+  const [sub, store, meals, inbody, expensesTotal] = await Promise.all([
     sumLegacyUSD("gym_subscriptions", "paid_amount"),
     sumItemSalesUSD("store"),
     sumItemSalesUSD("kitchen"),
     sumLegacyUSD("inbody_sessions", "amount"),
+    sumExpensesUSD(),
   ]);
+  const totalIncome = sub + store + meals + inbody;
   return {
-    subsIncome:   Number(sub.toFixed(2)),
-    storeIncome:  Number(store.toFixed(2)),
-    mealsIncome:  Number(meals.toFixed(2)),
-    inbodyIncome: Number(inbody.toFixed(2)),
-    totalIncome:  Number((sub + store + meals + inbody).toFixed(2)),
+    subsIncome:    Number(sub.toFixed(2)),
+    storeIncome:   Number(store.toFixed(2)),
+    mealsIncome:   Number(meals.toFixed(2)),
+    inbodyIncome:  Number(inbody.toFixed(2)),
+    totalIncome:   Number(totalIncome.toFixed(2)),
+    expensesTotal: Number(expensesTotal.toFixed(2)),
+    netIncome:     Number((totalIncome - expensesTotal).toFixed(2)),
   };
 }
