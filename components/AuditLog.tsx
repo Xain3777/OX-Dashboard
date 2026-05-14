@@ -43,15 +43,26 @@ const ACTION_META: Record<string, ActionMeta> = {
 
   // Subscriptions
   subscription_create:      { label: "إنشاء اشتراك",  color: "text-[#F5C100]", borderColor: "border-l-[#F5C100]", icon: <UserPlus size={13} /> },
+  subscription_update:      { label: "تعديل اشتراك",  color: "text-[#F5C100]", borderColor: "border-l-[#F5C100]", icon: <Edit3 size={13} /> },
   gym_subscriptions_cancel: { label: "حذف اشتراك",   color: "text-[#FF3333]", borderColor: "border-l-[#FF3333]", icon: <XCircle size={13} /> },
 
   // InBody
   inbody_session:           { label: "جلسة InBody",   color: "text-[#F5C100]", borderColor: "border-l-[#F5C100]", icon: <Activity size={13} /> },
+  inbody_create:            { label: "جلسة InBody",   color: "text-[#F5C100]", borderColor: "border-l-[#F5C100]", icon: <Activity size={13} /> },
   inbody_sessions_cancel:   { label: "إلغاء InBody",  color: "text-[#FF3333]", borderColor: "border-l-[#FF3333]", icon: <XCircle size={13} /> },
+
+  // Private training
+  private_session_create:   { label: "تدريب خاص",     color: "text-[#F5C100]", borderColor: "border-l-[#F5C100]", icon: <Activity size={13} /> },
 
   // Expenses
   expense_create:           { label: "تسجيل مصروف",  color: "text-[#FF7A00]", borderColor: "border-l-[#FF7A00]", icon: <Receipt size={13} /> },
+  expense_update:           { label: "تعديل مصروف",  color: "text-[#F5C100]", borderColor: "border-l-[#F5C100]", icon: <Edit3 size={13} /> },
   expenses_cancel:          { label: "إلغاء مصروف", color: "text-[#FF3333]", borderColor: "border-l-[#FF3333]", icon: <XCircle size={13} /> },
+
+  // Legacy actions (pre-catalog-cutover) — still present on prod activity_feed.
+  product_stock_adjust:     { label: "تعديل المخزون",  color: "text-[#F5C100]", borderColor: "border-l-[#F5C100]", icon: <Edit3 size={13} /> },
+  product_price_update:     { label: "تعديل السعر",    color: "text-[#F5C100]", borderColor: "border-l-[#F5C100]", icon: <Edit3 size={13} /> },
+  food_item_delete:         { label: "حذف صنف مطبخ",  color: "text-[#FF3333]", borderColor: "border-l-[#FF3333]", icon: <Trash2 size={13} /> },
 
   // Cash session lifecycle
   session_opened:           { label: "فتح وردية",    color: "text-[#FFD740]", borderColor: "border-l-[#FFD740]", icon: <LogIn size={13} /> },
@@ -108,11 +119,11 @@ const FILTER_TABS: { key: FilterTab; label: string }[] = [
 const FILTER_ACTIONS: Record<FilterTab, string[] | null> = {
   all:           null,
   sales:         ["sale_create", "item_sale"],
-  subscriptions: ["subscription_create"],
-  expenses:      ["expense_create"],
-  inbody:        ["inbody_session"],
+  subscriptions: ["subscription_create", "subscription_update"],
+  expenses:      ["expense_create", "expense_update"],
+  inbody:        ["inbody_session", "inbody_create"],
   sessions:      ["session_opened", "session_closed"],
-  catalog:       ["catalog_item_create", "catalog_item_update", "catalog_item_delete"],
+  catalog:       ["catalog_item_create", "catalog_item_update", "catalog_item_delete", "product_stock_adjust", "product_price_update", "food_item_delete"],
   rate:          ["exchange_rate_update"],
   cancels:       ["sales_cancel", "item_sales_cancel", "gym_subscriptions_cancel", "inbody_sessions_cancel", "expenses_cancel"],
 };

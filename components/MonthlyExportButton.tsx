@@ -43,6 +43,11 @@ const ACTION_LABEL: Record<string, string> = {
   catalog_item_delete: "حذف صنف",
   exchange_rate_update: "تغيير سعر الدولار",
   private_session_create: "جلسة تدريب خاص",
+  // Legacy action names (pre-catalog-cutover) — still present in old
+  // activity_feed rows on the production DB.
+  product_stock_adjust: "تعديل المخزون",
+  product_price_update: "تعديل السعر",
+  food_item_delete: "حذف صنف مطبخ",
 };
 
 function fmtMoney(n: number | null): string {
