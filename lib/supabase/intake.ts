@@ -373,51 +373,31 @@ export async function pushSubscription(opts: {
         ? Math.round(opts.paidAmount)
         : Math.round(opts.paidAmount * opts.exchangeRate);
 
-    // Activation code — per-member, stable across renewals.
-    // 1. If this member already has any prior non-null code, reuse it.
-    // 2. Otherwise generate a new one and check uniqueness against existing
-    //    non-null codes. Retry on the (astronomically rare) collision.
-    // The unique partial index on activation_code is the final safety net.
+    // Activation code — one per subscription row. The unique index on
+    // activation_code forbids reuse across rows, so each insert generates a
+    // fresh code and probes for collision before insert; the index is the
+    // final safety net.
     let activationCode: string | null = null;
-    if (opts.memberId) {
-      const { data: prior, error: priorErr } = await supabase
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const candidate = generateActivationCode();
+      const { data: clash, error: clashErr } = await supabase
         .from("gym_subscriptions")
-        .select("activation_code")
-        .eq("member_id", opts.memberId)
-        .not("activation_code", "is", null)
+        .select("id")
+        .eq("activation_code", candidate)
         .limit(1)
         .maybeSingle();
-      if (priorErr) {
-        logError("gym_subscriptions", "select-prior-activation-code", priorErr);
-        // Fall through — generate a new one rather than block the insert.
-      } else if (prior?.activation_code) {
-        activationCode = String(prior.activation_code);
+      if (clashErr) {
+        logError("gym_subscriptions", "select-activation-code-clash", clashErr);
+        activationCode = candidate;
+        break;
+      }
+      if (!clash) {
+        activationCode = candidate;
+        break;
       }
     }
     if (!activationCode) {
-      for (let attempt = 0; attempt < 10; attempt++) {
-        const candidate = generateActivationCode();
-        const { data: clash, error: clashErr } = await supabase
-          .from("gym_subscriptions")
-          .select("id")
-          .eq("activation_code", candidate)
-          .limit(1)
-          .maybeSingle();
-        if (clashErr) {
-          logError("gym_subscriptions", "select-activation-code-clash", clashErr);
-          // Treat lookup failure as no clash — the unique index will catch
-          // any real duplicate at insert time.
-          activationCode = candidate;
-          break;
-        }
-        if (!clash) {
-          activationCode = candidate;
-          break;
-        }
-      }
-      if (!activationCode) {
-        return { error: "تعذّر توليد رمز تفعيل فريد — حاول مرة أخرى" };
-      }
+      return { error: "تعذّر توليد رمز تفعيل فريد — حاول مرة أخرى" };
     }
 
     const trimmedPhone = (opts.phone ?? "").trim();
