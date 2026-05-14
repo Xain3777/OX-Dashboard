@@ -26,6 +26,53 @@ const STATUS_LABEL: Record<string, string> = {
   unpaid: "غير مدفوع",
 };
 
+// Arabic labels for every activity_feed.action we emit. Anything missing
+// falls through to the raw action string so we never silently drop a row.
+const ACTION_LABEL: Record<string, string> = {
+  sale_create: "بيع",
+  item_sale: "بيع",
+  sales_cancel: "إلغاء بيع",
+  item_sales_cancel: "إلغاء بيع",
+  subscription_create: "إنشاء اشتراك",
+  subscription_update: "تعديل اشتراك",
+  gym_subscriptions_cancel: "إلغاء اشتراك",
+  inbody_create: "جلسة InBody",
+  inbody_session: "جلسة InBody",
+  inbody_sessions_cancel: "إلغاء InBody",
+  expense_create: "تسجيل مصروف",
+  expense_update: "تعديل مصروف",
+  expenses_cancel: "إلغاء مصروف",
+  session_opened: "فتح وردية",
+  session_closed: "إغلاق وردية",
+  catalog_item_create: "صنف جديد",
+  catalog_item_update: "تعديل صنف",
+  catalog_item_delete: "حذف صنف",
+  exchange_rate_update: "تغيير سعر الدولار",
+  private_session_create: "جلسة تدريب خاص",
+};
+
+function fmtMoney(n: number | null): string {
+  if (n == null) return "";
+  return Number(n).toFixed(2);
+}
+
+function diffString(oldV: Record<string, unknown> | null, newV: Record<string, unknown> | null): string {
+  if (!oldV && !newV) return "";
+  const keys = new Set<string>();
+  Object.keys(oldV ?? {}).forEach((k) => keys.add(k));
+  Object.keys(newV ?? {}).forEach((k) => keys.add(k));
+  const out: string[] = [];
+  for (const k of keys) {
+    if (["id", "created_at", "created_by"].includes(k)) continue;
+    const o = oldV?.[k]; const n = newV?.[k];
+    if (o === n) continue;
+    const ov = o == null ? "—" : typeof o === "object" ? JSON.stringify(o) : String(o);
+    const nv = n == null ? "—" : typeof n === "object" ? JSON.stringify(n) : String(n);
+    out.push(`${k}: ${ov} → ${nv}`);
+  }
+  return out.join(" | ");
+}
+
 export default function DailyExportButton() {
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [loading, setLoading] = useState(false);
@@ -58,6 +105,41 @@ export default function DailyExportButton() {
       const summaryWS = XLSX.utils.aoa_to_sheet(summary);
       summaryWS["!cols"] = [{ wch: 38 }, { wch: 12 }, { wch: 14 }];
       XLSX.utils.book_append_sheet(wb, summaryWS, "ملخص");
+
+      // ── Sheet: تفصيل الورديات ────────────────────────────────────
+      // One row per shift in the day. Columns mirror the day summary but
+      // scoped to that shift's cash_session_id. The shift label is derived
+      // from the open hour (صباحية / ظهيرة / مسائية / ليلية).
+      const shiftsHeader = [
+        "الوردية", "الموظف", "وقت الفتح", "وقت الإغلاق", "الحالة",
+        "الافتتاحي ($)", "المتوقع ($)", "الفعلي ($)", "الفرق ($)",
+        "اشتراكات ($)", "InBody ($)", "متجر ($)", "مطبخ ($)",
+        "مصاريف ($)", "الدخل ($)", "الصافي ($)",
+        "# اشتراكات", "# InBody", "# متجر", "# مطبخ", "# مصاريف",
+      ];
+      const shiftsRows = report.shifts.map((s) => [
+        s.shiftLabel,
+        s.employeeName,
+        damascusTime(s.openedAt),
+        s.closedAt ? damascusTime(s.closedAt) : "—",
+        s.status === "open" ? "مفتوحة" : "مغلقة",
+        s.openingCashUSD,
+        fmtMoney(s.expectedCashUSD),
+        fmtMoney(s.actualCashUSD),
+        fmtMoney(s.differenceUSD),
+        s.subscriptionsUSD, s.inbodyUSD, s.storeSalesUSD, s.kitchenSalesUSD,
+        s.expensesUSD, s.incomeUSD, s.netUSD,
+        s.counts.subscriptions, s.counts.inbody, s.counts.storeSales, s.counts.kitchenSales, s.counts.expenses,
+      ]);
+      const shiftsWS = XLSX.utils.aoa_to_sheet([shiftsHeader, ...shiftsRows]);
+      shiftsWS["!cols"] = [
+        { wch: 10 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 10 },
+        { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 10 },
+        { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 },
+        { wch: 12 }, { wch: 10 }, { wch: 10 },
+        { wch: 10 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 8 },
+      ];
+      XLSX.utils.book_append_sheet(wb, shiftsWS, `تفصيل الورديات (${report.shifts.length})`);
 
       // ── Sheet 2: الاشتراكات ───────────────────────────────────────
       const subsHeader = [
@@ -154,6 +236,30 @@ export default function DailyExportButton() {
         { wch: 10 }, { wch: 28 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 8 }, { wch: 18 },
       ];
       XLSX.utils.book_append_sheet(wb, expWS, `مصاريف (${report.counts.expenses})`);
+
+      // ── Sheet: سجل النشاط ────────────────────────────────────────
+      // Every event from activity_feed for the day: who, what, when, with
+      // the structured before/after diff for edit/delete events. This is
+      // the "what did each employee do today" view.
+      const actHeader = [
+        "الوقت", "الموظف", "الإجراء", "الوصف",
+        "المبلغ ($)", "المبلغ (ل.س)", "تفاصيل التغيير",
+      ];
+      const actRows = report.activity.map((a) => [
+        damascusTime(a.time),
+        a.by,
+        ACTION_LABEL[a.action] ?? a.action,
+        a.description,
+        a.amountUSD == null ? "" : Number(a.amountUSD).toFixed(2),
+        a.amountSYP == null ? "" : Math.round(Number(a.amountSYP)),
+        diffString(a.oldValue, a.newValue),
+      ]);
+      const actWS = XLSX.utils.aoa_to_sheet([actHeader, ...actRows]);
+      actWS["!cols"] = [
+        { wch: 10 }, { wch: 18 }, { wch: 16 }, { wch: 36 },
+        { wch: 10 }, { wch: 12 }, { wch: 60 },
+      ];
+      XLSX.utils.book_append_sheet(wb, actWS, `سجل النشاط (${report.activity.length})`);
 
       XLSX.writeFile(wb, `OX-Report-${date}.xlsx`);
     } finally {

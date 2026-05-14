@@ -266,6 +266,44 @@ export interface ExpenseDailyRow {
   by: string;
 }
 
+export interface ShiftBreakdown {
+  sessionId: string;
+  employeeName: string;
+  openedAt: string;
+  closedAt: string | null;
+  status: string;
+  shiftLabel: string;   // "صباحية" / "ظهيرة" / "مسائية" / "ليلية" based on opened_at hour
+  openingCashUSD: number;
+  actualCashUSD: number | null;
+  expectedCashUSD: number | null;
+  differenceUSD: number | null;
+  subscriptionsUSD: number;
+  storeSalesUSD: number;
+  kitchenSalesUSD: number;
+  inbodyUSD: number;
+  expensesUSD: number;
+  incomeUSD: number;
+  netUSD: number;
+  counts: {
+    subscriptions: number;
+    storeSales: number;
+    kitchenSales: number;
+    inbody: number;
+    expenses: number;
+  };
+}
+
+export interface ActivityEntryRow {
+  time: string;
+  action: string;
+  description: string;
+  amountUSD: number | null;
+  amountSYP: number | null;
+  by: string;
+  oldValue: Record<string, unknown> | null;
+  newValue: Record<string, unknown> | null;
+}
+
 export interface DailyReport {
   date: string;
   windowStartUTC: string;
@@ -292,6 +330,8 @@ export interface DailyReport {
   kitchenSales: SaleDailyRow[];
   inbody: InBodyDailyRow[];
   expenses: ExpenseDailyRow[];
+  shifts: ShiftBreakdown[];
+  activity: ActivityEntryRow[];
 }
 
 // Damascus has been UTC+3 year-round since 2022 (no DST). Anchoring the
@@ -323,17 +363,20 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
     nameMap[String(pr.id)] = String(pr.display_name ?? "");
   }
 
-  const [sessionsRes, subsRes, salesRes, inbodyRes, expensesRes] = await Promise.all([
+  const [sessionsRes, subsRes, salesRes, inbodyRes, expensesRes, activityRes] = await Promise.all([
     supabase
       .from("cash_sessions")
-      .select("id")
+      .select(
+        "id, opened_at, closed_at, status, opening_cash, actual_cash, expected_cash, difference, opened_by"
+      )
       .gte("opened_at", dayStart)
-      .lte("opened_at", dayEnd),
+      .lte("opened_at", dayEnd)
+      .order("opened_at", { ascending: true }),
     supabase
       .from("gym_subscriptions")
       .select(
         "created_at, member_name, phone, plan_type, offer, start_date, end_date, " +
-        "amount, paid_amount, payment_status, payment_method, currency, exchange_rate, created_by"
+        "amount, paid_amount, payment_status, payment_method, currency, exchange_rate, created_by, cash_session_id"
       )
       .gte("created_at", dayStart)
       .lte("created_at", dayEnd)
@@ -344,7 +387,7 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
       .select(
         "created_at, source, item_name_snapshot, quantity, unit_price, original_total, " +
         "original_currency, exchange_rate_to_syp, amount_usd, payment_method, " +
-        "created_by, created_by_name"
+        "created_by, created_by_name, cash_session_id"
       )
       .gte("created_at", dayStart)
       .lte("created_at", dayEnd)
@@ -353,7 +396,7 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
       .from("inbody_sessions")
       .select(
         "created_at, member_name, session_type, amount, currency, exchange_rate, " +
-        "created_by, created_by_name"
+        "created_by, created_by_name, cash_session_id"
       )
       .gte("created_at", dayStart)
       .lte("created_at", dayEnd)
@@ -361,10 +404,18 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
       .not("member_name", "ilike", "%test%"),
     supabase
       .from("expenses")
-      .select("created_at, description, category, amount, currency, exchange_rate, created_by")
+      .select("created_at, description, category, amount, currency, exchange_rate, created_by, cash_session_id")
       .gte("created_at", dayStart)
       .lte("created_at", dayEnd)
       .is("cancelled_at", null),
+    supabase
+      .from("activity_feed")
+      .select(
+        "id, action, description, amount_syp, amount_usd, created_at, created_by, created_by_name, old_value, new_value"
+      )
+      .gte("created_at", dayStart)
+      .lte("created_at", dayEnd)
+      .order("created_at", { ascending: true }),
   ]);
 
   const sessionsCount = (sessionsRes.data ?? []).length;
@@ -459,6 +510,93 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
   const expensesUSD      = expenses.reduce((a, r) => a + r.amountUSD, 0);
   const incomeUSD        = subscriptionsUSD + storeSalesUSD + kitchenSalesUSD + inbodyUSD;
 
+  // ─── Per-shift breakdown ────────────────────────────────────────────────
+  // For each cash_session opened during this day, bucket every transaction
+  // that carries its session_id (regardless of when within the day the
+  // transaction was logged). The shift label is derived from the hour of
+  // opened_at in Damascus time so the manager sees "صباحية" / "مسائية" etc.
+  function shiftLabel(openedAt: string): string {
+    const h = Number(
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: "Asia/Damascus",
+        hour: "2-digit",
+        hour12: false,
+      }).format(new Date(openedAt))
+    );
+    if (h >= 5  && h < 12) return "صباحية";
+    if (h >= 12 && h < 17) return "ظهيرة";
+    if (h >= 17 && h < 22) return "مسائية";
+    return "ليلية";
+  }
+
+  const sessionRows = (sessionsRes.data ?? []) as unknown as Record<string, unknown>[];
+  const subRowsAll  = (subsRes.data ?? [])     as unknown as Record<string, unknown>[];
+  const saleRowsAll = (salesRes.data ?? [])    as unknown as Record<string, unknown>[];
+  const ibRowsAll   = (inbodyRes.data ?? [])   as unknown as Record<string, unknown>[];
+  const expRowsAll  = (expensesRes.data ?? []) as unknown as Record<string, unknown>[];
+
+  const shifts: ShiftBreakdown[] = sessionRows.map((s) => {
+    const sid = String(s.id);
+    const openedAt = String(s.opened_at ?? "");
+    const subRowsForSession    = subRowsAll.filter((r) => String(r.cash_session_id ?? "") === sid);
+    const inbodyRowsForSession = ibRowsAll.filter((r)  => String(r.cash_session_id ?? "") === sid);
+    const expRowsForSession    = expRowsAll.filter((r) => String(r.cash_session_id ?? "") === sid);
+    const subsUSD = subRowsForSession.reduce((a, row) =>
+      a + toUSD(Number(row.paid_amount ?? 0), String(row.currency ?? "usd"), Number(row.exchange_rate ?? 0)), 0);
+    const inbodyUSDs = inbodyRowsForSession.reduce((a, row) =>
+      a + toUSD(Number(row.amount ?? 0), String(row.currency ?? "usd"), Number(row.exchange_rate ?? 0)), 0);
+    const expUSDs = expRowsForSession.reduce((a, row) =>
+      a + toUSD(Number(row.amount ?? 0), String(row.currency ?? "usd"), Number(row.exchange_rate ?? 0)), 0);
+    // item_sales has GENERATED amount_usd — just sum it.
+    const storeRowsForSession   = saleRowsAll.filter((r) => String(r.cash_session_id ?? "") === sid && String(r.source ?? "store") === "store");
+    const kitchenRowsForSession = saleRowsAll.filter((r) => String(r.cash_session_id ?? "") === sid && String(r.source ?? "store") === "kitchen");
+    const storeUSDs   = storeRowsForSession.reduce((a, r)   => a + Number(r.amount_usd ?? 0), 0);
+    const kitchenUSDs = kitchenRowsForSession.reduce((a, r) => a + Number(r.amount_usd ?? 0), 0);
+    const incomeUSDs  = subsUSD + storeUSDs + kitchenUSDs + inbodyUSDs;
+
+    return {
+      sessionId: sid,
+      employeeName: nameMap[String(s.opened_by ?? "")] ?? "—",
+      openedAt,
+      closedAt: s.closed_at ? String(s.closed_at) : null,
+      status: String(s.status ?? ""),
+      shiftLabel: openedAt ? shiftLabel(openedAt) : "—",
+      openingCashUSD:   Number(Number(s.opening_cash ?? 0).toFixed(2)),
+      actualCashUSD:    s.actual_cash   == null ? null : Number(Number(s.actual_cash).toFixed(2)),
+      expectedCashUSD:  s.expected_cash == null ? null : Number(Number(s.expected_cash).toFixed(2)),
+      differenceUSD:    s.difference    == null ? null : Number(Number(s.difference).toFixed(2)),
+      subscriptionsUSD: Number(subsUSD.toFixed(2)),
+      storeSalesUSD:    Number(storeUSDs.toFixed(2)),
+      kitchenSalesUSD:  Number(kitchenUSDs.toFixed(2)),
+      inbodyUSD:        Number(inbodyUSDs.toFixed(2)),
+      expensesUSD:      Number(expUSDs.toFixed(2)),
+      incomeUSD:        Number(incomeUSDs.toFixed(2)),
+      netUSD:           Number((incomeUSDs - expUSDs).toFixed(2)),
+      counts: {
+        subscriptions: subRowsForSession.length,
+        storeSales:    storeRowsForSession.length,
+        kitchenSales:  kitchenRowsForSession.length,
+        inbody:        inbodyRowsForSession.length,
+        expenses:      expRowsForSession.length,
+      },
+    };
+  });
+
+  // ─── Activity log for the day ───────────────────────────────────────────
+  const activity: ActivityEntryRow[] = (activityRes.data ?? []).map((a) => {
+    const r = a as Record<string, unknown>;
+    return {
+      time: String(r.created_at ?? ""),
+      action: String(r.action ?? ""),
+      description: String(r.description ?? ""),
+      amountUSD: r.amount_usd == null ? null : Number(r.amount_usd),
+      amountSYP: r.amount_syp == null ? null : Number(r.amount_syp),
+      by: String(r.created_by_name ?? nameMap[String(r.created_by ?? "")] ?? ""),
+      oldValue: (r.old_value as Record<string, unknown> | null) ?? null,
+      newValue: (r.new_value as Record<string, unknown> | null) ?? null,
+    };
+  });
+
   return {
     date,
     windowStartUTC: dayStart,
@@ -485,6 +623,311 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
     kitchenSales,
     inbody,
     expenses,
+    shifts,
+    activity,
+  };
+}
+
+// ─── Monthly Report ──────────────────────────────────────────────────────────
+// A multi-day version of fetchDailyReport. Adds per-day rollup so the manager
+// can scan the month at a glance, plus the same per-shift breakdown and
+// activity log as the daily report. Date arguments are Damascus-local
+// YYYY-MM-DD strings (typically the 1st of the month → today).
+
+export interface DailyRollup {
+  date: string;            // YYYY-MM-DD (Damascus)
+  subscriptionsUSD: number;
+  storeSalesUSD: number;
+  kitchenSalesUSD: number;
+  inbodyUSD: number;
+  expensesUSD: number;
+  incomeUSD: number;
+  netUSD: number;
+  shiftsCount: number;
+  activityCount: number;
+}
+
+export interface EmployeeMonthlyTotals {
+  name: string;
+  shifts: number;
+  totalIncomeUSD: number;
+  voidsCount: number;          // any *_cancel action
+  exchangeRateChanges: number; // exchange_rate_update action
+  stockEdits: number;          // catalog_item_update/create/delete actions
+}
+
+export interface MonthlyReport {
+  startDate: string;
+  endDate: string;
+  windowStartUTC: string;
+  windowEndUTC: string;
+  totals: DailyReport["totals"];
+  counts: DailyReport["counts"] & { shifts: number; activity: number };
+  dailyRollup: DailyRollup[];
+  shifts: ShiftBreakdown[];
+  activity: ActivityEntryRow[];
+  employees: EmployeeMonthlyTotals[];
+}
+
+function damascusRangeUTC(startDate: string, endDate: string): { start: string; end: string } {
+  const start = new Date(`${startDate}T00:00:00.000${DAMASCUS_OFFSET}`).toISOString();
+  const end   = new Date(`${endDate}T23:59:59.999${DAMASCUS_OFFSET}`).toISOString();
+  return { start, end };
+}
+
+function damascusCalendarDate(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-CA", { timeZone: "Asia/Damascus" });
+}
+
+export async function fetchMonthlyReport(
+  startDate: string,
+  endDate: string,
+): Promise<MonthlyReport> {
+  const supabase = supabaseBrowser();
+  const { start: rangeStart, end: rangeEnd } = damascusRangeUTC(startDate, endDate);
+
+  const { data: profiles } = await supabase.from("profiles").select("id, display_name");
+  const nameMap: Record<string, string> = {};
+  for (const p of profiles ?? []) {
+    const pr = p as Record<string, unknown>;
+    nameMap[String(pr.id)] = String(pr.display_name ?? "");
+  }
+
+  const [sessionsRes, subsRes, salesRes, inbodyRes, expensesRes, activityRes] = await Promise.all([
+    supabase
+      .from("cash_sessions")
+      .select(
+        "id, opened_at, closed_at, status, opening_cash, actual_cash, expected_cash, difference, opened_by"
+      )
+      .gte("opened_at", rangeStart)
+      .lte("opened_at", rangeEnd)
+      .order("opened_at", { ascending: true }),
+    supabase
+      .from("gym_subscriptions")
+      .select("created_at, paid_amount, currency, exchange_rate, cash_session_id")
+      .gte("created_at", rangeStart)
+      .lte("created_at", rangeEnd)
+      .is("cancelled_at", null)
+      .not("member_name", "ilike", "%test%"),
+    supabase
+      .from("item_sales")
+      .select("created_at, source, amount_usd, cash_session_id")
+      .gte("created_at", rangeStart)
+      .lte("created_at", rangeEnd)
+      .is("cancelled_at", null),
+    supabase
+      .from("inbody_sessions")
+      .select("created_at, amount, currency, exchange_rate, cash_session_id, member_name")
+      .gte("created_at", rangeStart)
+      .lte("created_at", rangeEnd)
+      .is("cancelled_at", null)
+      .not("member_name", "ilike", "%test%"),
+    supabase
+      .from("expenses")
+      .select("created_at, amount, currency, exchange_rate, cash_session_id")
+      .gte("created_at", rangeStart)
+      .lte("created_at", rangeEnd)
+      .is("cancelled_at", null),
+    supabase
+      .from("activity_feed")
+      .select(
+        "id, action, description, amount_syp, amount_usd, created_at, created_by, created_by_name, old_value, new_value"
+      )
+      .gte("created_at", rangeStart)
+      .lte("created_at", rangeEnd)
+      .order("created_at", { ascending: true }),
+  ]);
+
+  function shiftLabel(openedAt: string): string {
+    const h = Number(
+      new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Damascus", hour: "2-digit", hour12: false }).format(new Date(openedAt))
+    );
+    if (h >= 5  && h < 12) return "صباحية";
+    if (h >= 12 && h < 17) return "ظهيرة";
+    if (h >= 17 && h < 22) return "مسائية";
+    return "ليلية";
+  }
+
+  // ── Per-shift breakdown ─────────────────────────────────────────────────
+  const sessionRows = (sessionsRes.data ?? []) as unknown as Record<string, unknown>[];
+  const subRows  = (subsRes.data ?? []) as unknown as Record<string, unknown>[];
+  const saleRows = (salesRes.data ?? []) as unknown as Record<string, unknown>[];
+  const ibRows   = (inbodyRes.data ?? []) as unknown as Record<string, unknown>[];
+  const expRows  = (expensesRes.data ?? []) as unknown as Record<string, unknown>[];
+
+  const shifts: ShiftBreakdown[] = sessionRows.map((s) => {
+    const sid = String(s.id);
+    const openedAt = String(s.opened_at ?? "");
+    const subsForSession   = subRows.filter((r) => String(r.cash_session_id ?? "") === sid);
+    const ibForSession     = ibRows.filter((r) => String(r.cash_session_id ?? "") === sid);
+    const expForSession    = expRows.filter((r) => String(r.cash_session_id ?? "") === sid);
+    const storeForSession  = saleRows.filter((r) => String(r.cash_session_id ?? "") === sid && String(r.source ?? "store") === "store");
+    const kitchenForSession = saleRows.filter((r) => String(r.cash_session_id ?? "") === sid && String(r.source ?? "store") === "kitchen");
+
+    const subsUSD = subsForSession.reduce((a, r) =>
+      a + toUSD(Number(r.paid_amount ?? 0), String(r.currency ?? "usd"), Number(r.exchange_rate ?? 0)), 0);
+    const ibUSD = ibForSession.reduce((a, r) =>
+      a + toUSD(Number(r.amount ?? 0), String(r.currency ?? "usd"), Number(r.exchange_rate ?? 0)), 0);
+    const expUSD = expForSession.reduce((a, r) =>
+      a + toUSD(Number(r.amount ?? 0), String(r.currency ?? "usd"), Number(r.exchange_rate ?? 0)), 0);
+    const storeUSD   = storeForSession.reduce((a, r) => a + Number(r.amount_usd ?? 0), 0);
+    const kitchenUSD = kitchenForSession.reduce((a, r) => a + Number(r.amount_usd ?? 0), 0);
+    const incomeUSD = subsUSD + storeUSD + kitchenUSD + ibUSD;
+
+    return {
+      sessionId: sid,
+      employeeName: nameMap[String(s.opened_by ?? "")] ?? "—",
+      openedAt,
+      closedAt: s.closed_at ? String(s.closed_at) : null,
+      status: String(s.status ?? ""),
+      shiftLabel: openedAt ? shiftLabel(openedAt) : "—",
+      openingCashUSD:   Number(Number(s.opening_cash ?? 0).toFixed(2)),
+      actualCashUSD:    s.actual_cash   == null ? null : Number(Number(s.actual_cash).toFixed(2)),
+      expectedCashUSD:  s.expected_cash == null ? null : Number(Number(s.expected_cash).toFixed(2)),
+      differenceUSD:    s.difference    == null ? null : Number(Number(s.difference).toFixed(2)),
+      subscriptionsUSD: Number(subsUSD.toFixed(2)),
+      storeSalesUSD:    Number(storeUSD.toFixed(2)),
+      kitchenSalesUSD:  Number(kitchenUSD.toFixed(2)),
+      inbodyUSD:        Number(ibUSD.toFixed(2)),
+      expensesUSD:      Number(expUSD.toFixed(2)),
+      incomeUSD:        Number(incomeUSD.toFixed(2)),
+      netUSD:           Number((incomeUSD - expUSD).toFixed(2)),
+      counts: {
+        subscriptions: subsForSession.length,
+        storeSales:    storeForSession.length,
+        kitchenSales:  kitchenForSession.length,
+        inbody:        ibForSession.length,
+        expenses:      expForSession.length,
+      },
+    };
+  });
+
+  // ── Per-day rollup ──────────────────────────────────────────────────────
+  const rollup = new Map<string, DailyRollup>();
+  const ensureDay = (date: string): DailyRollup => {
+    let r = rollup.get(date);
+    if (!r) {
+      r = {
+        date,
+        subscriptionsUSD: 0, storeSalesUSD: 0, kitchenSalesUSD: 0,
+        inbodyUSD: 0, expensesUSD: 0, incomeUSD: 0, netUSD: 0,
+        shiftsCount: 0, activityCount: 0,
+      };
+      rollup.set(date, r);
+    }
+    return r;
+  };
+  for (const r of subRows) {
+    const d = damascusCalendarDate(String(r.created_at ?? ""));
+    ensureDay(d).subscriptionsUSD += toUSD(Number(r.paid_amount ?? 0), String(r.currency ?? "usd"), Number(r.exchange_rate ?? 0));
+  }
+  for (const r of saleRows) {
+    const d = damascusCalendarDate(String(r.created_at ?? ""));
+    const v = Number(r.amount_usd ?? 0);
+    if (String(r.source ?? "store") === "kitchen") ensureDay(d).kitchenSalesUSD += v;
+    else                                            ensureDay(d).storeSalesUSD   += v;
+  }
+  for (const r of ibRows) {
+    const d = damascusCalendarDate(String(r.created_at ?? ""));
+    ensureDay(d).inbodyUSD += toUSD(Number(r.amount ?? 0), String(r.currency ?? "usd"), Number(r.exchange_rate ?? 0));
+  }
+  for (const r of expRows) {
+    const d = damascusCalendarDate(String(r.created_at ?? ""));
+    ensureDay(d).expensesUSD += toUSD(Number(r.amount ?? 0), String(r.currency ?? "usd"), Number(r.exchange_rate ?? 0));
+  }
+  for (const s of sessionRows) {
+    const d = damascusCalendarDate(String(s.opened_at ?? ""));
+    ensureDay(d).shiftsCount += 1;
+  }
+  for (const a of activityRes.data ?? []) {
+    const d = damascusCalendarDate(String((a as Record<string, unknown>).created_at ?? ""));
+    ensureDay(d).activityCount += 1;
+  }
+  const dailyRollup: DailyRollup[] = [...rollup.values()]
+    .map((r) => ({
+      ...r,
+      subscriptionsUSD: Number(r.subscriptionsUSD.toFixed(2)),
+      storeSalesUSD:    Number(r.storeSalesUSD.toFixed(2)),
+      kitchenSalesUSD:  Number(r.kitchenSalesUSD.toFixed(2)),
+      inbodyUSD:        Number(r.inbodyUSD.toFixed(2)),
+      expensesUSD:      Number(r.expensesUSD.toFixed(2)),
+      incomeUSD:        Number((r.subscriptionsUSD + r.storeSalesUSD + r.kitchenSalesUSD + r.inbodyUSD).toFixed(2)),
+      netUSD:           Number((r.subscriptionsUSD + r.storeSalesUSD + r.kitchenSalesUSD + r.inbodyUSD - r.expensesUSD).toFixed(2)),
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  // ── Activity log + per-employee aggregates ──────────────────────────────
+  const activity: ActivityEntryRow[] = (activityRes.data ?? []).map((a) => {
+    const r = a as Record<string, unknown>;
+    return {
+      time: String(r.created_at ?? ""),
+      action: String(r.action ?? ""),
+      description: String(r.description ?? ""),
+      amountUSD: r.amount_usd == null ? null : Number(r.amount_usd),
+      amountSYP: r.amount_syp == null ? null : Number(r.amount_syp),
+      by: String(r.created_by_name ?? nameMap[String(r.created_by ?? "")] ?? ""),
+      oldValue: (r.old_value as Record<string, unknown> | null) ?? null,
+      newValue: (r.new_value as Record<string, unknown> | null) ?? null,
+    };
+  });
+
+  const empMap = new Map<string, EmployeeMonthlyTotals>();
+  const ensureEmp = (name: string): EmployeeMonthlyTotals => {
+    let e = empMap.get(name);
+    if (!e) {
+      e = { name, shifts: 0, totalIncomeUSD: 0, voidsCount: 0, exchangeRateChanges: 0, stockEdits: 0 };
+      empMap.set(name, e);
+    }
+    return e;
+  };
+  for (const s of shifts) {
+    const e = ensureEmp(s.employeeName || "—");
+    e.shifts += 1;
+    e.totalIncomeUSD += s.incomeUSD;
+  }
+  for (const a of activity) {
+    const e = ensureEmp(a.by || "—");
+    if (a.action.endsWith("_cancel")) e.voidsCount += 1;
+    if (a.action === "exchange_rate_update") e.exchangeRateChanges += 1;
+    if (a.action === "catalog_item_update" || a.action === "catalog_item_create" || a.action === "catalog_item_delete") e.stockEdits += 1;
+  }
+  const employees: EmployeeMonthlyTotals[] = [...empMap.values()]
+    .map((e) => ({ ...e, totalIncomeUSD: Number(e.totalIncomeUSD.toFixed(2)) }))
+    .sort((a, b) => b.totalIncomeUSD - a.totalIncomeUSD);
+
+  // ── Totals ──────────────────────────────────────────────────────────────
+  const subscriptionsUSD = dailyRollup.reduce((a, r) => a + r.subscriptionsUSD, 0);
+  const storeSalesUSD    = dailyRollup.reduce((a, r) => a + r.storeSalesUSD,    0);
+  const kitchenSalesUSD  = dailyRollup.reduce((a, r) => a + r.kitchenSalesUSD,  0);
+  const inbodyUSD        = dailyRollup.reduce((a, r) => a + r.inbodyUSD,        0);
+  const expensesUSD      = dailyRollup.reduce((a, r) => a + r.expensesUSD,      0);
+  const incomeUSD        = subscriptionsUSD + storeSalesUSD + kitchenSalesUSD + inbodyUSD;
+
+  return {
+    startDate, endDate,
+    windowStartUTC: rangeStart, windowEndUTC: rangeEnd,
+    totals: {
+      subscriptionsUSD: Number(subscriptionsUSD.toFixed(2)),
+      storeSalesUSD:    Number(storeSalesUSD.toFixed(2)),
+      kitchenSalesUSD:  Number(kitchenSalesUSD.toFixed(2)),
+      inbodyUSD:        Number(inbodyUSD.toFixed(2)),
+      expensesUSD:      Number(expensesUSD.toFixed(2)),
+      incomeUSD:        Number(incomeUSD.toFixed(2)),
+      netUSD:           Number((incomeUSD - expensesUSD).toFixed(2)),
+    },
+    counts: {
+      subscriptions: subRows.length,
+      storeSales:    saleRows.filter((r) => String(r.source ?? "store") === "store").length,
+      kitchenSales:  saleRows.filter((r) => String(r.source ?? "store") === "kitchen").length,
+      inbody:        ibRows.length,
+      expenses:      expRows.length,
+      shifts:        shifts.length,
+      activity:      activity.length,
+    },
+    dailyRollup,
+    shifts,
+    activity,
+    employees,
   };
 }
 

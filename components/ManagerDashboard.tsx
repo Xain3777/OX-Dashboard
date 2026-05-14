@@ -23,8 +23,10 @@ import { cancelTransaction, pushExpense, updateExpense } from "@/lib/supabase/in
 import { formatTime, formatDate } from "@/lib/utils/time";
 import KPIStrip from "@/components/KPIStrip";
 import DailyExportButton from "@/components/DailyExportButton";
+import MonthlyExportButton from "@/components/MonthlyExportButton";
 import InventoryActivityPanel from "@/components/InventoryActivityPanel";
 import AccountabilityBlock from "@/components/AccountabilityBlock";
+import AuditLog from "@/components/AuditLog";
 import { findStaffByEmail } from "@/lib/staff-accounts";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import {
@@ -39,7 +41,7 @@ import {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-type ManagerSection = "sessions" | "subscriptions" | "inbody" | "store" | "kitchen" | "expenses" | "audit";
+type ManagerSection = "sessions" | "subscriptions" | "inbody" | "store" | "kitchen" | "expenses" | "audit" | "activity";
 
 const FOOD_CATEGORIES: FoodItemCategory[] = ["meals", "meal_addons", "other", "breakfast", "salads", "drinks", "snacks", "food"];
 const FOOD_CAT_LABELS: Record<FoodItemCategory, string> = {
@@ -1824,7 +1826,7 @@ export default function ManagerDashboard() {
   const [showLogout, setShowLogout] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<ManagerSection, boolean>>({
     sessions: true, subscriptions: true, inbody: true,
-    store: true, kitchen: true, expenses: true, audit: true,
+    store: true, kitchen: true, expenses: true, audit: true, activity: false,
   });
   const [ovCollapsed, setOvCollapsed] = useState<Record<OverviewSection, boolean>>({
     revenue: false, subs: false, members: false, other: false, expensesNet: false,
@@ -1968,8 +1970,17 @@ export default function ManagerDashboard() {
           <AccountabilityBlock />
         </Section>
 
+        {/* Reception activity feed — every edit/create/cancel made by any
+            staff member, with old→new diff for edits. Open by default so
+            the manager sees it without hunting. */}
+        <Section title="سجل نشاط الفريق" icon={<Activity size={18} className="text-[#F5C100]" />}
+          collapsed={collapsed.activity} onToggle={() => toggle("activity")}>
+          <AuditLog />
+        </Section>
+
         <footer className="border-t border-gunmetal pt-6 pb-8 space-y-4">
           <DailyExportButton />
+          <MonthlyExportButton />
           <div className="flex items-center gap-2">
             <Image src="/logo-icon.png" alt="OX" width={20} height={20} className="h-5 w-auto" />
             <span className="font-mono text-[10px] text-slate">نظام OX GYM المالي — لوحة المدير</span>
