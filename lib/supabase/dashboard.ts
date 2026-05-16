@@ -248,6 +248,26 @@ export interface SaleDailyRow {
   by: string;
 }
 
+// Per-item inventory + profit reconciliation for the daily report.
+// openingStock is DERIVED as currentStock + soldQty — accurate only if the
+// item was not restocked/adjusted mid-day. revenue/cost/profit are in the
+// item's native sell currency (`currency`); costKnown is false when the
+// catalog row has no cost_price (then cost/profit are not meaningful).
+export interface InventoryRow {
+  name: string;
+  category: string;
+  itemType: string;
+  trackStock: boolean;
+  openingStock: number | null;  // null when track_stock is off
+  soldQty: number;
+  currentStock: number | null;  // null when track_stock is off
+  currency: "syp" | "usd";
+  revenue: number;
+  cost: number;
+  profit: number;
+  costKnown: boolean;
+}
+
 export interface InBodyDailyRow {
   time: string;
   memberName: string;
@@ -264,6 +284,7 @@ export interface ExpenseDailyRow {
   originalAmount: number;
   currency: string;
   by: string;
+  cancelled: boolean;
 }
 
 export interface ShiftBreakdown {
@@ -332,6 +353,10 @@ export interface DailyReport {
   expenses: ExpenseDailyRow[];
   shifts: ShiftBreakdown[];
   activity: ActivityEntryRow[];
+  inventory: {
+    kitchen: InventoryRow[];
+    store: InventoryRow[];
+  };
 }
 
 // Damascus has been UTC+3 year-round since 2022 (no DST). Anchoring the
@@ -363,7 +388,7 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
     nameMap[String(pr.id)] = String(pr.display_name ?? "");
   }
 
-  const [sessionsRes, subsRes, salesRes, inbodyRes, expensesRes, activityRes] = await Promise.all([
+  const [sessionsRes, subsRes, salesRes, inbodyRes, expensesRes, activityRes, catalogRes] = await Promise.all([
     supabase
       .from("cash_sessions")
       .select(
@@ -385,7 +410,7 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
     supabase
       .from("item_sales")
       .select(
-        "created_at, source, item_name_snapshot, quantity, unit_price, original_total, " +
+        "created_at, source, catalog_item_id, item_name_snapshot, quantity, unit_price, original_total, " +
         "original_currency, exchange_rate_to_syp, amount_usd, payment_method, " +
         "created_by, created_by_name, cash_session_id"
       )
@@ -402,12 +427,14 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
       .lte("created_at", dayEnd)
       .is("cancelled_at", null)
       .not("member_name", "ilike", "%test%"),
+    // Expenses are fetched INCLUDING cancelled rows so the daily report can
+    // list them all with a "cancelled?" column. Cancelled rows are excluded
+    // from money totals / counts below — only the detail list shows them.
     supabase
       .from("expenses")
-      .select("created_at, description, category, amount, currency, exchange_rate, created_by, cash_session_id")
+      .select("created_at, description, category, amount, currency, exchange_rate, created_by, cash_session_id, cancelled_at")
       .gte("created_at", dayStart)
-      .lte("created_at", dayEnd)
-      .is("cancelled_at", null),
+      .lte("created_at", dayEnd),
     supabase
       .from("activity_feed")
       .select(
@@ -416,6 +443,11 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
       .gte("created_at", dayStart)
       .lte("created_at", dayEnd)
       .order("created_at", { ascending: true }),
+    supabase
+      .from("catalog_items")
+      .select(
+        "id, name, category, item_type, sell_currency, cost_currency, cost_price, stock_quantity, track_stock, is_active"
+      ),
   ]);
 
   const sessionsCount = (sessionsRes.data ?? []).length;
@@ -492,6 +524,7 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
       originalAmount: raw,
       currency,
       by: nameMap[String(r.created_by ?? "")] ?? String(r.created_by ?? ""),
+      cancelled: r.cancelled_at != null,
     };
   });
 
@@ -507,7 +540,7 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
   const storeSalesUSD    = storeSales.reduce((a, r) => a + r.totalUSD, 0);
   const kitchenSalesUSD  = kitchenSales.reduce((a, r) => a + r.totalUSD, 0);
   const inbodyUSD        = inbody.reduce((a, r) => a + r.amountUSD, 0);
-  const expensesUSD      = expenses.reduce((a, r) => a + r.amountUSD, 0);
+  const expensesUSD      = expenses.reduce((a, r) => a + (r.cancelled ? 0 : r.amountUSD), 0);
   const incomeUSD        = subscriptionsUSD + storeSalesUSD + kitchenSalesUSD + inbodyUSD;
 
   // ─── Per-shift breakdown ────────────────────────────────────────────────
@@ -540,7 +573,8 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
     const openedAt = String(s.opened_at ?? "");
     const subRowsForSession    = subRowsAll.filter((r) => String(r.cash_session_id ?? "") === sid);
     const inbodyRowsForSession = ibRowsAll.filter((r)  => String(r.cash_session_id ?? "") === sid);
-    const expRowsForSession    = expRowsAll.filter((r) => String(r.cash_session_id ?? "") === sid);
+    // Cancelled expenses are excluded from per-shift totals/counts.
+    const expRowsForSession    = expRowsAll.filter((r) => String(r.cash_session_id ?? "") === sid && r.cancelled_at == null);
     const subsUSD = subRowsForSession.reduce((a, row) =>
       a + toUSD(Number(row.paid_amount ?? 0), String(row.currency ?? "usd"), Number(row.exchange_rate ?? 0)), 0);
     const inbodyUSDs = inbodyRowsForSession.reduce((a, row) =>
@@ -597,6 +631,114 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
     };
   });
 
+  // ─── Inventory + profit reconciliation ──────────────────────────────────
+  // Per-item: opening stock (DERIVED = current + sold), units sold today,
+  // current stock, and revenue/cost/profit in the item's native sell
+  // currency. The derived opening is exact only when the item was not
+  // restocked/adjusted mid-day — it's a best estimate, not an audit number.
+  const KITCHEN_ITEM_TYPES = new Set(["meal", "water", "drink"]);
+
+  type InvAccum = {
+    soldQty: number;
+    revenue: number;            // native sell currency
+    cost: number;               // native sell currency
+    costKnown: boolean;
+    currency: "syp" | "usd";    // used only for legacy (no catalog) rows
+  };
+  const salesByCatalogId = new Map<string, InvAccum>();
+  const salesByName = new Map<string, InvAccum>();
+
+  const catalogRows = (catalogRes.data ?? []) as unknown as Record<string, unknown>[];
+  const catalogById = new Map<string, Record<string, unknown>>();
+  for (const c of catalogRows) catalogById.set(String(c.id), c);
+
+  // Per-unit cost expressed in the item's *sell* currency. Converts from the
+  // catalog row's cost_currency using the sale's snapshot rate when they
+  // differ. Returns null when the catalog row has no cost recorded.
+  function unitCostInSellCurrency(
+    cat: Record<string, unknown> | undefined,
+    rate: number
+  ): number | null {
+    if (!cat || cat.cost_price == null) return null;
+    const costPrice = Number(cat.cost_price);
+    const costCur = String(cat.cost_currency ?? cat.sell_currency ?? "usd");
+    const sellCur = String(cat.sell_currency ?? "usd");
+    if (costCur === sellCur) return costPrice;
+    if (costCur === "usd" && sellCur === "syp") return rate > 0 ? costPrice * rate : null;
+    if (costCur === "syp" && sellCur === "usd") return rate > 0 ? costPrice / rate : null;
+    return costPrice;
+  }
+
+  for (const s of salesRes.data ?? []) {
+    const r = s as unknown as Record<string, unknown>;
+    const catId = r.catalog_item_id == null ? "" : String(r.catalog_item_id);
+    const cat = catId ? catalogById.get(catId) : undefined;
+    const qty = Number(r.quantity ?? 0);
+    const rate = Number(r.exchange_rate_to_syp ?? 0);
+    const revenue = Number(r.original_total ?? 0);
+    const unitCost = unitCostInSellCurrency(cat, rate);
+    const key = catId || `name:${String(r.item_name_snapshot ?? "")}`;
+    const bucket = catId ? salesByCatalogId : salesByName;
+    const acc = bucket.get(key) ?? {
+      soldQty: 0, revenue: 0, cost: 0, costKnown: true,
+      currency: String(r.original_currency ?? "usd") === "syp" ? "syp" : "usd",
+    };
+    acc.soldQty += qty;
+    acc.revenue += revenue;
+    if (unitCost == null) acc.costKnown = false;
+    else acc.cost += unitCost * qty;
+    bucket.set(key, acc);
+  }
+
+  function buildInventoryRow(cat: Record<string, unknown>, acc: InvAccum | undefined): InventoryRow {
+    const tracked = Boolean(cat.track_stock);
+    const soldQty = acc?.soldQty ?? 0;
+    const currentStock = tracked ? Number(cat.stock_quantity ?? 0) : null;
+    return {
+      name: String(cat.name ?? ""),
+      category: String(cat.category ?? ""),
+      itemType: String(cat.item_type ?? ""),
+      trackStock: tracked,
+      currentStock,
+      openingStock: tracked ? (currentStock as number) + soldQty : null,
+      soldQty,
+      currency: String(cat.sell_currency ?? "usd") === "syp" ? "syp" : "usd",
+      revenue: Number((acc?.revenue ?? 0).toFixed(2)),
+      cost: Number((acc?.cost ?? 0).toFixed(2)),
+      profit: Number(((acc?.revenue ?? 0) - (acc?.cost ?? 0)).toFixed(2)),
+      costKnown: acc?.costKnown ?? true,
+    };
+  }
+
+  const inventoryKitchen: InventoryRow[] = [];
+  const inventoryStore: InventoryRow[] = [];
+  for (const cat of catalogRows) {
+    const acc = salesByCatalogId.get(String(cat.id));
+    // Include every stock-tracked item, plus any item sold today.
+    if (!cat.track_stock && !acc) continue;
+    const row = buildInventoryRow(cat, acc);
+    if (KITCHEN_ITEM_TYPES.has(row.itemType)) inventoryKitchen.push(row);
+    else inventoryStore.push(row);
+  }
+  // Legacy sales whose catalog_item_id is null can't be matched to a catalog
+  // row — surface them as sold-only rows so their revenue isn't dropped.
+  for (const [key, acc] of salesByName) {
+    inventoryStore.push({
+      name: key.slice("name:".length),
+      category: "", itemType: "other", trackStock: false,
+      openingStock: null, soldQty: acc.soldQty, currentStock: null,
+      currency: acc.currency,
+      revenue: Number(acc.revenue.toFixed(2)),
+      cost: Number(acc.cost.toFixed(2)),
+      profit: Number((acc.revenue - acc.cost).toFixed(2)),
+      costKnown: acc.costKnown,
+    });
+  }
+  const invSort = (a: InventoryRow, b: InventoryRow) =>
+    b.soldQty - a.soldQty || a.name.localeCompare(b.name, "ar");
+  inventoryKitchen.sort(invSort);
+  inventoryStore.sort(invSort);
+
   return {
     date,
     windowStartUTC: dayStart,
@@ -616,7 +758,8 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
       storeSales:    storeSales.length,
       kitchenSales:  kitchenSales.length,
       inbody:        inbody.length,
-      expenses:      expenses.length,
+      // Active (non-cancelled) count — pairs with expensesUSD in the summary.
+      expenses:      expenses.filter((r) => !r.cancelled).length,
     },
     subscriptions,
     storeSales,
@@ -625,6 +768,10 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
     expenses,
     shifts,
     activity,
+    inventory: {
+      kitchen: inventoryKitchen,
+      store: inventoryStore,
+    },
   };
 }
 
