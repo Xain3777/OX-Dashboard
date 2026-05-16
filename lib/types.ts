@@ -46,6 +46,7 @@ export interface Subscription {
   phone?: string | null;
   planType: PlanType;
   offer: OfferType;
+  groupId?: string | null;  // links members of one offer (couple / referral / corporate)
   startDate: string;
   endDate: string;       // auto-calculated
   remainingDays: number; // computed

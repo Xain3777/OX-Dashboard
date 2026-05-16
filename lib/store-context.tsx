@@ -426,6 +426,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       phone: row.phone == null ? null : String(row.phone),
       planType: String(row.plan_type ?? "1_month") as PlanType,
       offer: String(row.offer ?? "none") as OfferType,
+      groupId: row.group_id == null ? null : String(row.group_id),
       startDate: String(row.start_date ?? ""),
       endDate: String(row.end_date ?? ""),
       remainingDays: remaining,

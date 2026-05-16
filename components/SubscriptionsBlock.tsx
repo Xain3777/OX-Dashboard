@@ -523,8 +523,34 @@ export default function SubscriptionsBlock() {
     } else {
       result = [...result].sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
     }
-    return result;
+    // Keep offer-group members (couples / referral groups) adjacent so they
+    // read as one unit, anchored at the first member's sorted position.
+    const seen = new Set<string>();
+    const grouped: Subscription[] = [];
+    for (const sub of result) {
+      if (sub.groupId) {
+        if (seen.has(sub.groupId)) continue;
+        seen.add(sub.groupId);
+        grouped.push(...result.filter((s) => s.groupId === sub.groupId));
+      } else {
+        grouped.push(sub);
+      }
+    }
+    return grouped;
   }, [subscriptions, activeFilter, sortMode, searchQuery, subMatchesSearch]);
+
+  // Visible members sharing a group_id — used to render couples / referral
+  // groups as one connected block with a shared accent.
+  const groupInfo = useMemo(() => {
+    const map = new Map<string, Subscription[]>();
+    for (const s of filtered) {
+      if (!s.groupId) continue;
+      const arr = map.get(s.groupId) ?? [];
+      arr.push(s);
+      map.set(s.groupId, arr);
+    }
+    return map;
+  }, [filtered]);
 
   const filterCounts: Record<FilterTab, number> = {
     all:      subscriptions.filter((s) => s.status !== "cancelled").length,
@@ -790,7 +816,7 @@ export default function SubscriptionsBlock() {
         memberId: String(row.member_id ?? (i === 0 ? m1.data?.id : m2.data?.id) ?? ""),
         memberName: coupleNames[i].trim(),
         phone: (couplePhones[i] ?? "").trim() || null,
-        planType: "1_month", offer: "couple",
+        planType: "1_month", offer: "couple", groupId,
         startDate: coupleStart, endDate,
         remainingDays: rem, amount: halfTotal, paidAmount: halfPaid,
         paymentStatus: pay.status, paymentMethod: "cash",
@@ -875,7 +901,7 @@ export default function SubscriptionsBlock() {
         memberId: member.id,
         memberName: member.name,
         phone: member.phone || null,
-        planType: refPlan, offer: offerType,
+        planType: refPlan, offer: offerType, groupId,
         startDate: refStart, endDate,
         remainingDays: rem, amount: perMemberTotal[index], paidAmount: perMemberPaid[index],
         paymentStatus: pay.status, paymentMethod: "cash",
@@ -1573,11 +1599,27 @@ export default function SubscriptionsBlock() {
                       </td>
                     </tr>
                   )}
-                  {filtered.map((sub) => (
+                  {filtered.map((sub) => {
+                    const mates       = sub.groupId ? groupInfo.get(sub.groupId) : undefined;
+                    const isGrouped   = !!mates && mates.length > 1;
+                    const groupIndex  = isGrouped ? mates!.findIndex((m) => m.id === sub.id) : -1;
+                    const isGroupLast = isGrouped && groupIndex === mates!.length - 1;
+                    const partners    = isGrouped ? mates!.filter((m) => m.id !== sub.id).map((m) => m.memberName) : [];
+                    return (
                     <tr key={sub.id}
-                      className={`ox-table-row bg-iron/50 border-b border-gunmetal last:border-b-0 transition-colors duration-100 hover:bg-gunmetal/60 ${sub.status === "expired" ? "opacity-60" : ""} ${rowAccent(sub)}`}>
+                      className={`ox-table-row transition-colors duration-100 hover:bg-gunmetal/60 ${
+                        isGrouped ? `bg-gold/[0.045] ${isGroupLast ? "border-b border-gunmetal" : ""}` : "bg-iron/50 border-b border-gunmetal"
+                      } last:border-b-0 ${sub.status === "expired" ? "opacity-60" : ""} ${rowAccent(sub)}`}>
                       <td className="px-3.5 py-3 font-body font-medium text-sm text-offwhite whitespace-nowrap">
+                        {isGrouped && (
+                          <span className="text-gold mr-1" aria-hidden>{groupIndex === 0 ? "┌" : isGroupLast ? "└" : "├"}</span>
+                        )}
                         {sub.memberName}
+                        {isGrouped && (
+                          <span className="block font-mono text-[9px] text-gold/80 mt-0.5">
+                            {sub.offer === "couple" ? "عرض الزوجين" : "مجموعة"} — مع {partners.join("، ")}
+                          </span>
+                        )}
                         {sub.note && (
                           <span className="block font-mono text-[9px] text-slate italic mt-0.5 truncate max-w-[180px]" title={sub.note}>
                             {sub.note}
@@ -1646,7 +1688,8 @@ export default function SubscriptionsBlock() {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
