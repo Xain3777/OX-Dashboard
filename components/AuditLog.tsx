@@ -95,9 +95,30 @@ const FIELD_LABEL: Record<string, string> = {
   rate: "سعر الدولار",
   opening_cash: "الافتتاحي", actual_cash: "النقد الفعلي",
   expected_cash: "النقد المتوقع", difference: "الفرق", status: "الحالة",
-  cancelled_at: "وقت الإلغاء", cancelled_reason: "سبب الإلغاء",
+  cancelled_reason: "سبب الإلغاء",
   paid_amount: "المبلغ المدفوع", amount: "المبلغ", member_name: "اسم العضو",
   plan_type: "الخطة", offer: "العرض", end_date: "تاريخ الانتهاء",
+  start_date: "تاريخ البدء", note: "ملاحظة", source: "المصدر",
+  currency: "العملة", description: "الوصف", phone: "الهاتف",
+  payment_status: "حالة الدفع", payment_method: "طريقة الدفع",
+};
+
+// Internal / bookkeeping columns that are noise in a human-facing diff —
+// UUIDs, audit stamps, and per-row currency snapshots. Hidden everywhere.
+const HIDDEN_DIFF_FIELDS = new Set<string>([
+  "id", "created_at", "created_by", "updated_at",
+  "cash_session_id", "cancelled_by", "created_by_name",
+  "member_id", "entity_id", "amount_syp", "exchange_rate",
+  "cancelled_at",
+]);
+
+// Enum values rendered in Arabic instead of their raw DB strings.
+const VALUE_LABEL: Record<string, string> = {
+  syp: "ليرة", usd: "دولار",
+  cash: "نقدي", card: "بطاقة", transfer: "حوالة",
+  miscellaneous: "متنوّع", reception_daily: "مصروف استقبال يومي",
+  paid: "مدفوع", partial: "جزئي", unpaid: "غير مدفوع",
+  open: "مفتوحة", closed: "مغلقة",
 };
 
 // ── FILTER TABS ───────────────────────────────────────────────
@@ -147,10 +168,23 @@ type FeedRow = {
 // ── Row ───────────────────────────────────────────────────────
 
 function renderVal(v: unknown): string {
-  if (v == null) return "—";
+  if (v == null || v === "") return "—";
   if (typeof v === "boolean") return v ? "نعم" : "لا";
   if (typeof v === "number") return v.toLocaleString("en-US");
-  if (typeof v === "string") return v;
+  if (typeof v === "string") {
+    if (VALUE_LABEL[v]) return VALUE_LABEL[v];
+    // ISO timestamp → readable Damascus date+time
+    if (/^\d{4}-\d{2}-\d{2}T/.test(v)) {
+      const d = new Date(v);
+      if (!Number.isNaN(d.getTime())) {
+        return d.toLocaleString("ar-SY", {
+          timeZone: "Asia/Damascus",
+          day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
+        });
+      }
+    }
+    return v;
+  }
   try { return JSON.stringify(v); } catch { return String(v); }
 }
 
@@ -159,9 +193,20 @@ function DiffRows({ oldValue, newValue }: { oldValue: Record<string, unknown> | 
     const ks = new Set<string>();
     if (oldValue) Object.keys(oldValue).forEach((k) => ks.add(k));
     if (newValue) Object.keys(newValue).forEach((k) => ks.add(k));
-    return Array.from(ks).filter((k) => !["id", "created_at", "created_by"].includes(k));
+    return Array.from(ks)
+      .filter((k) => !HIDDEN_DIFF_FIELDS.has(k))
+      // Only rows that actually changed — drops the noise of unchanged fields.
+      .filter((k) => (oldValue?.[k] ?? null) !== (newValue?.[k] ?? null));
   }, [oldValue, newValue]);
   if (keys.length === 0) return null;
+
+  const oldEmpty = !oldValue || Object.keys(oldValue).length === 0;
+  const newEmpty = !newValue || Object.keys(newValue).length === 0;
+  // Snapshot = a create or cancellation record (one side absent). Render it as
+  // a plain label/value list instead of a misleading "value → —" diff.
+  const snapshot = oldEmpty || newEmpty;
+  const snap = newEmpty ? oldValue : newValue;
+
   return (
     <div className="mt-1.5 px-2.5 py-1.5 bg-[#0A0A0A] border border-[#252525]/60 rounded-sm">
       <table className="w-full text-[10px] font-mono">
@@ -169,9 +214,17 @@ function DiffRows({ oldValue, newValue }: { oldValue: Record<string, unknown> | 
           {keys.map((k) => (
             <tr key={k}>
               <td className="py-0.5 pr-2 text-[#666666] whitespace-nowrap">{FIELD_LABEL[k] ?? k}</td>
-              <td className="py-0.5 px-1.5 text-[#FF7A00] tabular-nums truncate max-w-[120px]" title={renderVal(oldValue?.[k])}>{renderVal(oldValue?.[k])}</td>
-              <td className="py-0.5 px-1 text-[#555555]">→</td>
-              <td className="py-0.5 px-1.5 text-[#5CC45C] tabular-nums truncate max-w-[120px]" title={renderVal(newValue?.[k])}>{renderVal(newValue?.[k])}</td>
+              {snapshot ? (
+                <td className="py-0.5 px-1.5 text-[#AAAAAA] truncate max-w-[260px]" title={renderVal(snap?.[k])}>
+                  {renderVal(snap?.[k])}
+                </td>
+              ) : (
+                <>
+                  <td className="py-0.5 px-1.5 text-[#FF7A00] tabular-nums truncate max-w-[120px]" title={renderVal(oldValue?.[k])}>{renderVal(oldValue?.[k])}</td>
+                  <td className="py-0.5 px-1 text-[#555555]">→</td>
+                  <td className="py-0.5 px-1.5 text-[#5CC45C] tabular-nums truncate max-w-[120px]" title={renderVal(newValue?.[k])}>{renderVal(newValue?.[k])}</td>
+                </>
+              )}
             </tr>
           ))}
         </tbody>
