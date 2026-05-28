@@ -235,8 +235,26 @@ function DiffRows({ oldValue, newValue }: { oldValue: Record<string, unknown> | 
 
 function EntryRow({ row }: { row: FeedRow }) {
   const meta = ACTION_META[row.action] ?? FALLBACK_META;
-  const hasDiff = (row.old_value && Object.keys(row.old_value).length > 0)
-    || (row.new_value && Object.keys(row.new_value).length > 0);
+  // Cancellations render as a clean one-liner: description + amount + (optional)
+  // reason chip. The raw old_value/new_value remains in the DB for forensics
+  // but is not surfaced in the audit panel — it was an unreadable UUID/column
+  // dump for non-technical staff.
+  const isCancel = row.action.endsWith("_cancel");
+  const cancelReason = isCancel
+    ? (row.new_value?.cancelled_reason ?? row.old_value?.cancelled_reason ?? null)
+    : null;
+  const cancelReasonText = typeof cancelReason === "string" && cancelReason.trim()
+    ? cancelReason.trim()
+    : null;
+  const hasDiff = !isCancel && (
+    (row.old_value && Object.keys(row.old_value).length > 0)
+    || (row.new_value && Object.keys(row.new_value).length > 0)
+  );
+  // intake.ts embeds the reason in parens at the end of cancel descriptions;
+  // strip it so the reason appears only as the chip below, not twice.
+  const renderedDescription = isCancel && cancelReasonText
+    ? row.description.replace(/\s*\([^)]*\)\s*$/, "")
+    : row.description;
   return (
     <div className={`flex items-start gap-3 px-4 py-2.5 border-b border-[#252525] border-l-2 ${meta.borderColor} hover:bg-[#111111]/60 transition-colors`}>
       <div className="shrink-0 flex flex-col items-end pt-px w-[52px]">
@@ -247,13 +265,22 @@ function EntryRow({ row }: { row: FeedRow }) {
       </div>
       <div className={`shrink-0 mt-0.5 ${meta.color}`}>{meta.icon}</div>
       <div className="flex-1 min-w-0">
-        <p className="font-body text-sm text-[#AAAAAA] leading-snug">{row.description}</p>
+        <p className="font-body text-sm text-[#AAAAAA] leading-snug">{renderedDescription}</p>
         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
           <span className="font-mono text-[10px] text-[#777777]">{row.created_by_name ?? "—"}</span>
           {row.amount_usd != null && row.amount_usd !== 0 && (
             <>
               <span className="text-[#252525] text-[10px]">·</span>
               <span className="font-mono text-[10px] text-[#5CC45C] tabular-nums">${Number(row.amount_usd).toFixed(2)}</span>
+            </>
+          )}
+          {cancelReasonText && (
+            <>
+              <span className="text-[#252525] text-[10px]">·</span>
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-[#FF3333]/10 border border-[#FF3333]/25 rounded-sm font-mono text-[10px] text-[#FF7A7A]">
+                <span className="text-[#FF3333]/70">السبب:</span>
+                <span>{cancelReasonText}</span>
+              </span>
             </>
           )}
         </div>
