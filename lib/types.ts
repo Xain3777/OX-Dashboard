@@ -22,7 +22,8 @@ export type PlanType =
   | "3_months"
   | "6_months"
   | "9_months"
-  | "12_months";
+  | "12_months"
+  | "custom";       // arbitrary start/end dates — used by the custom_registration offer
 
 export type OfferType =
   | "none"

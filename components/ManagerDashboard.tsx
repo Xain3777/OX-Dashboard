@@ -1326,6 +1326,7 @@ const PLAN_AR: Record<string, string> = {
   daily: "يومي", "15_days": "١٥ يوم", "1_month": "شهر",
   "3_months": "٣ أشهر", "6_months": "٦ أشهر",
   "9_months": "٩ أشهر", "12_months": "١٢ شهر",
+  custom: "مخصص",
   other: "أخرى",
 };
 

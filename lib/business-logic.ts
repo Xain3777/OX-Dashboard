@@ -12,6 +12,7 @@ const PLAN_DAYS: Record<PlanType, number> = {
   "6_months": 180,
   "9_months": 270,
   "12_months": 365,
+  custom: 0,        // duration comes from the picked end_date — this constant is unused for custom
 };
 
 export const PLAN_PRICES: Record<PlanType, number> = {
@@ -22,6 +23,7 @@ export const PLAN_PRICES: Record<PlanType, number> = {
   "6_months": 170,
   "9_months": 235,
   "12_months": 300,
+  custom: 0,        // price entered manually by reception
 };
 
 const OFFER_BONUS_DAYS: Record<OfferType, number> = {
@@ -100,6 +102,7 @@ export function getPlanLabel(plan: PlanType): string {
     "6_months": "٦ أشهر",
     "9_months": "٩ أشهر",
     "12_months": "١٢ شهر",
+    custom: "مخصص",
   };
   return labels[plan];
 }

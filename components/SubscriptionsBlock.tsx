@@ -41,6 +41,7 @@ const PLAN_BASE_PRICES: Record<PlanType, number> = {
   "6_months":  170,
   "9_months":  235,
   "12_months": 300,
+  custom:      0,       // custom subs price-by-hand
 };
 
 function groupOfferPaidShares(groupSize: 5 | 9): 4 | 7 {
@@ -70,6 +71,7 @@ const OWNER_FAMILY_MONTHS: Record<PlanType, number> = {
   "6_months":  6,
   "9_months":  9,
   "12_months": 12,
+  custom:      0,       // custom plans aren't eligible for owner_family pricing
 };
 
 const PLAN_DISCOUNTS: Record<PlanType, number> = {
@@ -80,6 +82,7 @@ const PLAN_DISCOUNTS: Record<PlanType, number> = {
   "6_months":  20,
   "9_months":  25,
   "12_months": 30,
+  custom:      0,
 };
 
 // All plans, in display order. Used by the normal subscription form and the
@@ -120,6 +123,7 @@ const PLAN_MONTHS: Record<PlanType, number> = {
   "6_months": 6,
   "9_months": 9,
   "12_months": 12,
+  custom: 0,
 };
 
 function coachPrivateSubscriptionAmount(plan: PlanType): number {
@@ -177,6 +181,7 @@ function PlanBadge({ plan }: { plan: PlanType }) {
     "6_months": "bg-gold-dim/30 text-gold-bright border-gold-dim/50",
     "9_months": "bg-gold/15 text-gold-bright border-gold/30",
     "12_months":"bg-gold/25 text-gold-bright border-gold/40 glow-gold-sm",
+    custom:     "bg-slate/15 text-ghost border-slate/30",
   };
   return (
     <span
@@ -384,11 +389,17 @@ export default function SubscriptionsBlock() {
   const [collegeBusy,      setCollegeBusy]      = useState(false);
   const [collegeError,     setCollegeError]     = useState<string | null>(null);
 
-  // Free / custom registration offer
+  // Free / custom registration offer — arbitrary date range, free-form duration.
+  // Stored with plan_type="custom" so reports never confuse this with a fixed plan.
+  const customDefaultEnd = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 30);
+    return d.toISOString().split("T")[0];
+  })();
   const [customName,    setCustomName]    = useState("");
   const [customPhone,   setCustomPhone]   = useState("");
-  const [customPlan,    setCustomPlan]    = useState<PlanType>("1_month");
   const [customStart,   setCustomStart]   = useState(new Date().toISOString().split("T")[0]);
+  const [customEnd,     setCustomEnd]     = useState(customDefaultEnd);
   const [customAmount,  setCustomAmount]  = useState("0");      // empty/zero by default — editable
   const [customPaid,    setCustomPaid]    = useState("0");
   const [customNote,    setCustomNote]    = useState("");
@@ -1101,10 +1112,14 @@ export default function SubscriptionsBlock() {
     if (!user) return;
     setCustomError(null);
     if (!customName.trim()) { setCustomError("أدخل اسم العضو"); return; }
+    if (!customStart || !customEnd) { setCustomError("أدخل تاريخ البدء والانتهاء"); return; }
+    if (new Date(customEnd) <= new Date(customStart)) {
+      setCustomError("تاريخ الانتهاء يجب أن يكون بعد تاريخ البدء");
+      return;
+    }
     const pay = computePayment(customAmount, customPaid);
     if (pay.overpaid) { setCustomError("المبلغ المدفوع لا يمكن أن يتجاوز المبلغ الإجمالي"); return; }
     setCustomBusy(true);
-    const endDate = calculateEndDate(customStart, customPlan, "custom_registration");
 
     const m = await findOrCreateMember({ user: { id: user.id, displayName: user.displayName }, name: customName, phone: customPhone });
     if (m.error) { setCustomError(m.error); setCustomBusy(false); return; }
@@ -1114,8 +1129,8 @@ export default function SubscriptionsBlock() {
       memberName: customName.trim(),
       memberId: m.data?.id,
       phone: customPhone,
-      planType: customPlan, offer: "custom_registration",
-      startDate: customStart, endDate,
+      planType: "custom", offer: "custom_registration",
+      startDate: customStart, endDate: customEnd,
       amount: pay.totalNum, paidAmount: pay.paidNum,
       paymentStatus: pay.status,
       currency: "usd", exchangeRate,
@@ -1123,14 +1138,14 @@ export default function SubscriptionsBlock() {
     });
     if (r.error) { setCustomError(r.error); setCustomBusy(false); return; }
 
-    const rem = calculateRemainingDays(endDate);
+    const rem = calculateRemainingDays(customEnd);
     addSubscription({
       id: String(r.data!.id),
       memberId: String(r.data!.member_id ?? m.data?.id ?? ""),
       memberName: customName.trim(),
       phone: customPhone.trim() || null,
-      planType: customPlan, offer: "custom_registration",
-      startDate: customStart, endDate,
+      planType: "custom", offer: "custom_registration",
+      startDate: customStart, endDate: customEnd,
       remainingDays: rem, amount: pay.totalNum, paidAmount: pay.paidNum,
       paymentStatus: pay.status, paymentMethod: "cash",
       currency: "usd",
@@ -1144,8 +1159,11 @@ export default function SubscriptionsBlock() {
     });
 
     setCustomBusy(false);
-    setCustomName(""); setCustomPhone(""); setCustomPlan("1_month");
-    setCustomStart(new Date().toISOString().split("T")[0]);
+    setCustomName(""); setCustomPhone("");
+    const today = new Date().toISOString().split("T")[0];
+    const plus30 = (() => { const d = new Date(); d.setDate(d.getDate() + 30); return d.toISOString().split("T")[0]; })();
+    setCustomStart(today);
+    setCustomEnd(plus30);
     setCustomAmount("0"); setCustomPaid("0"); setCustomNote("");
     setToastMessage(`تم تسجيل تسجيل مخصص — $${pay.totalNum} — ${pay.status}`);
   };
@@ -2129,21 +2147,20 @@ export default function SubscriptionsBlock() {
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                      <label className={labelCls}>نوع الخطة</label>
-                      <div className="relative">
-                        <select className={selectCls} value={customPlan}
-                          onChange={(e) => setCustomPlan(e.target.value as PlanType)}>
-                          {ALL_PLAN_TYPES.map((p) => (
-                            <option key={p} value={p}>{getPlanLabel(p)}</option>
-                          ))}
-                        </select>
-                        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-secondary"><ChevronIcon open={false} /></span>
-                      </div>
-                    </div>
-                    <div>
                       <label className={labelCls}>تاريخ البدء</label>
                       <input required type="date" className={inputCls} value={customStart}
                         onChange={(e) => setCustomStart(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className={labelCls}>تاريخ الانتهاء</label>
+                      <input required type="date" className={inputCls} value={customEnd}
+                        min={customStart}
+                        onChange={(e) => setCustomEnd(e.target.value)} />
+                      {customStart && customEnd && new Date(customEnd) > new Date(customStart) && (
+                        <p className="font-mono text-[10px] text-secondary mt-1">
+                          المدة: {Math.ceil((new Date(customEnd).getTime() - new Date(customStart).getTime()) / (1000 * 60 * 60 * 24))} يوم
+                        </p>
+                      )}
                     </div>
                   </div>
                   <PaymentFields
@@ -2252,6 +2269,7 @@ export default function SubscriptionsBlock() {
                       <select className={selectCls} value={editForm.planType}
                         onChange={(e) => setEditForm({ ...editForm, planType: e.target.value as PlanType })}>
                         {ALL_PLAN_TYPES.map((p) => (<option key={p} value={p}>{getPlanLabel(p)}</option>))}
+                        <option value="custom">{getPlanLabel("custom")}</option>
                       </select>
                       <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-secondary"><ChevronIcon open={false} /></span>
                     </div>
