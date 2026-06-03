@@ -1993,7 +1993,7 @@ export default function SubscriptionsBlock() {
                     : tab === "corporate" ? "شركات / بنوك"
                     : tab === "college" ? "طلاب جامعات"
                     : tab === "owner_family" ? "عائلة المالك"
-                    : "تسجيل مجاني / مخصص"}
+                    : "تسجيل مخصص"}
                 </button>
               ))}
             </div>
@@ -2375,7 +2375,7 @@ export default function SubscriptionsBlock() {
             {offerTab === "custom_registration" && (
               <div className="border border-gunmetal bg-charcoal rounded clip-corner p-5">
                 <div className="mb-4">
-                  <p className="font-mono text-[10px] text-secondary uppercase tracking-widest">تسجيل مجاني / مخصص</p>
+                  <p className="font-mono text-[10px] text-secondary uppercase tracking-widest">تسجيل مخصص</p>
                   <p className="font-mono text-[9px] text-slate mt-0.5">
                     حالات خاصة: صديق المالك، اتفاق يدوي، خصم خاص — المبلغ قابل للتعديل من قبل الاستقبال
                   </p>
@@ -2612,7 +2612,7 @@ export default function SubscriptionsBlock() {
                         <option value="corporate">شركات</option>
                         <option value="college">طلاب</option>
                         <option value="owner_family">عائلة المالك</option>
-                        <option value="custom_registration">تسجيل مجاني / مخصص</option>
+                        <option value="custom_registration">تسجيل مخصص</option>
                       </select>
                       <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-secondary"><ChevronIcon open={false} /></span>
                     </div>

@@ -117,7 +117,7 @@ export function getOfferLabel(offer: OfferType): string {
     corporate: "شركات / بنك (خصم ١٥٪)",
     college: "خصم طلاب ٢٠٪",
     owner_family: "عائلة المالك",
-    custom_registration: "تسجيل مجاني / مخصص",
+    custom_registration: "تسجيل مخصص",
     group_5: "مجموعة ٥ (٥ يدفعون ثمن ٤)",
     group_9: "مجموعة ٩ (٩ يدفعون ثمن ٧)",
   };
