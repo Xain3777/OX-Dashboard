@@ -12,7 +12,7 @@ import {
 import {
   Product, Sale, Expense, ExpenseCategory, ExpenseFrequency, PaymentMethod, Subscription, FoodItem, FoodItemCategory,
   CatalogItem, CatalogItemCategory, CatalogItemType, ItemSale,
-  PlanType, OfferType, PaymentStatus, SubStatus, Currency, Coach,
+  PlanType, OfferType, PaymentStatus, SubStatus, Currency, Coach, CoachKind, CoachTrainee,
 } from "./types";
 import { PRODUCTS, FOOD_ITEMS } from "./mock-data";
 import { generateId, calculateRemainingDays } from "./business-logic";
@@ -26,8 +26,46 @@ import {
   fetchCoaches as fetchCoachesRemote,
   addCoach as addCoachRemote,
   updateCoach as updateCoachRemote,
+  fetchCoachTrainees as fetchCoachTraineesRemote,
+  addCoachTrainees as addCoachTraineesRemote,
+  deactivateCoachTrainee as deactivateCoachTraineeRemote,
   CoachRow,
+  CoachTraineeRow,
 } from "./supabase/intake";
+
+// Row → domain mappers for the coach roster, reused across hydration,
+// reloads, and optimistic inserts.
+function mapCoachRow(c: CoachRow): Coach {
+  return {
+    id: c.id,
+    name: c.name,
+    phone: c.phone,
+    kind: c.kind === "gym" ? "gym" : "private",
+    sharePercentage: c.share_percentage,
+    isActive: c.is_active,
+    notes: c.notes,
+    createdAt: c.created_at,
+    createdBy: c.created_by,
+  };
+}
+
+function mapTraineeRow(t: CoachTraineeRow): CoachTrainee {
+  return {
+    id: t.id,
+    coachId: t.coach_id,
+    coachName: t.coach_name,
+    name: t.name,
+    phone: t.phone,
+    source: t.source,
+    privateSessionId: t.private_session_id,
+    subscriptionId: t.subscription_id,
+    amount: t.amount,
+    isActive: t.is_active,
+    notes: t.notes,
+    createdAt: t.created_at,
+    createdByName: t.created_by_name,
+  };
+}
 
 // ─── InBody ───────────────────────────────────────────────────────────────────
 
@@ -124,6 +162,7 @@ export interface StoreState {
   lastClosingCash: number;
   lastClosedByName: string;
   coaches: Coach[];
+  coachTrainees: CoachTrainee[];
 
   // Legacy compat fields — derived from catalogItems / itemSales for any
   // component that still reads them. Will be removed once the cutover is
@@ -174,9 +213,12 @@ export interface StoreContextType extends StoreState {
   replaceSubscription: (id: string, sub: Subscription) => void;
   cancelSubscriptionLocal: (id: string) => void;
   markSubscriptionRenewed: (oldId: string, newSubscriptionId: string) => void;
-  addCoach: (coach: { name: string; phone?: string | null; sharePercentage?: number | null; notes?: string | null }) => Promise<{ data?: Coach; error?: string }>;
+  addCoach: (coach: { name: string; phone?: string | null; kind?: CoachKind; sharePercentage?: number | null; notes?: string | null }) => Promise<{ data?: Coach; error?: string }>;
   updateCoach: (id: string, fields: { name?: string; phone?: string | null; sharePercentage?: number | null; notes?: string | null; isActive?: boolean }) => Promise<{ error?: string }>;
   reloadCoaches: () => Promise<void>;
+  addCoachTrainees: (input: { coachId: string | null; coachName: string; source: "private" | "coach_private"; players: { name: string; phone: string; amount?: number | null }[]; privateSessionId?: string | null; subscriptionId?: string | null }) => Promise<{ data?: CoachTrainee[]; error?: string }>;
+  deactivateCoachTrainee: (id: string) => Promise<{ error?: string }>;
+  reloadCoachTrainees: () => Promise<void>;
   addInBodySession: (session: InBodySession) => void;
   cancelInBodySession: (id: string) => void;
   updateInBodyPrices: (member: number, nonMember: number) => void;
@@ -222,6 +264,7 @@ const INITIAL_STATE: StoreState = {
   lastClosingCash: 0,
   lastClosedByName: "",
   coaches: [],
+  coachTrainees: [],
 };
 
 // ─── Row mappers + legacy adapters (shared by hydration + realtime) ──────────
@@ -384,7 +427,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
     const supabase = supabaseBrowser();
     const today = new Date().toISOString().slice(0, 10);
 
-    const [subsRes, salesRes, inbodyRes, expensesRes, catalogRes, rateRes, activeSession, lastClosed, coachesRes] = await Promise.all([
+    const [subsRes, salesRes, inbodyRes, expensesRes, catalogRes, rateRes, activeSession, lastClosed, coachesRes, coachTraineesRes] = await Promise.all([
       supabase
         .from("gym_subscriptions")
         .select("*")
@@ -415,6 +458,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       getActiveSession(),
       getLastClosedSession(),
       fetchCoachesRemote(),
+      fetchCoachTraineesRemote(),
     ]);
 
     type Row = Record<string, unknown>;
@@ -534,16 +578,8 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       exchangeRate,
     });
 
-    const coaches: Coach[] = (coachesRes?.data ?? []).map((c: CoachRow) => ({
-      id: c.id,
-      name: c.name,
-      phone: c.phone,
-      sharePercentage: c.share_percentage,
-      isActive: c.is_active,
-      notes: c.notes,
-      createdAt: c.created_at,
-      createdBy: c.created_by,
-    }));
+    const coaches: Coach[] = (coachesRes?.data ?? []).map(mapCoachRow);
+    const coachTrainees: CoachTrainee[] = (coachTraineesRes?.data ?? []).map(mapTraineeRow);
 
     return {
       catalogItems,
@@ -556,6 +592,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       lastClosingCash,
       lastClosedByName,
       coaches,
+      coachTrainees,
       // Legacy compat fields derived from canonical state
       foodItems,
       products,
@@ -593,6 +630,9 @@ const StoreContext = createContext<StoreContextType>({
   addCoach: async () => ({}),
   updateCoach: async () => ({}),
   reloadCoaches: async () => {},
+  addCoachTrainees: async () => ({}),
+  deactivateCoachTrainee: async () => ({}),
+  reloadCoachTrainees: async () => {},
   addInBodySession: () => {},
   cancelInBodySession: () => {},
   updateInBodyPrices: () => {},
@@ -1139,40 +1179,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const reloadCoaches = useCallback(async () => {
     const res = await fetchCoachesRemote();
     if (res.error || !res.data) return;
-    const coaches: Coach[] = res.data.map((c) => ({
-      id: c.id,
-      name: c.name,
-      phone: c.phone,
-      sharePercentage: c.share_percentage,
-      isActive: c.is_active,
-      notes: c.notes,
-      createdAt: c.created_at,
-      createdBy: c.created_by,
-    }));
-    setState((prev) => ({ ...prev, coaches }));
+    setState((prev) => ({ ...prev, coaches: res.data!.map(mapCoachRow) }));
   }, [setState]);
 
-  const addCoach = useCallback(async (input: { name: string; phone?: string | null; sharePercentage?: number | null; notes?: string | null }) => {
+  const addCoach = useCallback(async (input: { name: string; phone?: string | null; kind?: CoachKind; sharePercentage?: number | null; notes?: string | null }) => {
     if (!user) return { error: "غير مسجل الدخول" };
     const res = await addCoachRemote({
       user: { id: user.id, displayName: user.displayName },
       name: input.name,
       phone: input.phone ?? null,
+      kind: input.kind ?? "private",
       sharePercentage: input.sharePercentage ?? null,
       notes: input.notes ?? null,
     });
     if (res.error || !res.data) return { error: res.error };
-    const c = res.data;
-    const coach: Coach = {
-      id: c.id,
-      name: c.name,
-      phone: c.phone,
-      sharePercentage: c.share_percentage,
-      isActive: c.is_active,
-      notes: c.notes,
-      createdAt: c.created_at,
-      createdBy: c.created_by,
-    };
+    const coach = mapCoachRow(res.data);
     setState((prev) => ({ ...prev, coaches: [coach, ...prev.coaches] }));
     return { data: coach };
   }, [setState, user]);
@@ -1181,24 +1202,43 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (!user) return { error: "غير مسجل الدخول" };
     const res = await updateCoachRemote(id, fields, { id: user.id, displayName: user.displayName });
     if (res.error || !res.data) return { error: res.error };
-    const c = res.data;
+    const coach = mapCoachRow(res.data);
     setState((prev) => ({
       ...prev,
-      coaches: prev.coaches.map((co) =>
-        co.id === id
-          ? {
-              id: c.id,
-              name: c.name,
-              phone: c.phone,
-              sharePercentage: c.share_percentage,
-              isActive: c.is_active,
-              notes: c.notes,
-              createdAt: c.created_at,
-              createdBy: c.created_by,
-            }
-          : co
-      ),
+      coaches: prev.coaches.map((co) => (co.id === id ? coach : co)),
     }));
+    return {};
+  }, [setState, user]);
+
+  const reloadCoachTrainees = useCallback(async () => {
+    const res = await fetchCoachTraineesRemote();
+    if (res.error || !res.data) return;
+    setState((prev) => ({ ...prev, coachTrainees: res.data!.map(mapTraineeRow) }));
+  }, [setState]);
+
+  const addCoachTrainees = useCallback(async (input: { coachId: string | null; coachName: string; source: "private" | "coach_private"; players: { name: string; phone: string; amount?: number | null }[]; privateSessionId?: string | null; subscriptionId?: string | null }) => {
+    if (!user) return { error: "غير مسجل الدخول" };
+    const res = await addCoachTraineesRemote({
+      user: { id: user.id, displayName: user.displayName },
+      coachId: input.coachId,
+      coachName: input.coachName,
+      source: input.source,
+      players: input.players,
+      privateSessionId: input.privateSessionId ?? null,
+      subscriptionId: input.subscriptionId ?? null,
+      exchangeRate: state.exchangeRate,
+    });
+    if (res.error || !res.data) return { error: res.error };
+    const trainees = res.data.map(mapTraineeRow);
+    setState((prev) => ({ ...prev, coachTrainees: [...trainees, ...prev.coachTrainees] }));
+    return { data: trainees };
+  }, [setState, user, state.exchangeRate]);
+
+  const deactivateCoachTrainee = useCallback(async (id: string) => {
+    if (!user) return { error: "غير مسجل الدخول" };
+    const res = await deactivateCoachTraineeRemote(id, { id: user.id, displayName: user.displayName });
+    if (res.error) return { error: res.error };
+    setState((prev) => ({ ...prev, coachTrainees: prev.coachTrainees.filter((t) => t.id !== id) }));
     return {};
   }, [setState, user]);
 
@@ -1347,6 +1387,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     addCoach,
     updateCoach,
     reloadCoaches,
+    addCoachTrainees,
+    deactivateCoachTrainee,
+    reloadCoachTrainees,
     addInBodySession,
     cancelInBodySession,
     updateInBodyPrices,

@@ -636,6 +636,7 @@ export interface CoachRow {
   id: string;
   name: string;
   phone: string | null;
+  kind: "private" | "gym";
   share_percentage: number | null;
   is_active: boolean;
   notes: string | null;
@@ -648,7 +649,7 @@ export async function fetchCoaches(): Promise<{ data?: CoachRow[]; error?: strin
     const supabase = supabaseBrowser();
     const { data, error } = await supabase
       .from("coaches")
-      .select("id, name, phone, share_percentage, is_active, notes, created_at, created_by")
+      .select("id, name, phone, kind, share_percentage, is_active, notes, created_at, created_by")
       .order("is_active", { ascending: false })
       .order("name", { ascending: true });
     if (error) { logError("coaches", "select", error); return { error: error.message }; }
@@ -663,6 +664,7 @@ export async function addCoach(opts: {
   user: CurrentUser;
   name: string;
   phone?: string | null;
+  kind?: "private" | "gym";
   sharePercentage?: number | null;
   notes?: string | null;
 }): Promise<{ data?: CoachRow; error?: string }> {
@@ -674,6 +676,7 @@ export async function addCoach(opts: {
     const payload = {
       name: trimmedName,
       phone: (opts.phone ?? "").toString().trim() || null,
+      kind: opts.kind === "gym" ? "gym" : "private",
       share_percentage:
         opts.sharePercentage != null && Number.isFinite(opts.sharePercentage)
           ? opts.sharePercentage
@@ -732,6 +735,117 @@ export async function updateCoach(
     return { data: data as CoachRow };
   } catch (e) {
     logError("coaches", "update", e);
+    return { error: String(e) };
+  }
+}
+
+// ── coach trainees (roster) ───────────────────────────────────
+//
+// Players training under a coach. Roster records — NOT revenue. The
+// money already lives on private_sessions / gym_subscriptions, so
+// these rows never need a cash_session_id. Insert is a bulk path: the
+// subscription forms register all players for one coach at once.
+
+export interface CoachTraineeRow {
+  id: string;
+  coach_id: string | null;
+  coach_name: string;
+  name: string;
+  phone: string;
+  source: "private" | "coach_private";
+  private_session_id: string | null;
+  subscription_id: string | null;
+  amount: number | null;
+  is_active: boolean;
+  notes: string | null;
+  created_at: string;
+  created_by_name: string | null;
+}
+
+export async function fetchCoachTrainees(): Promise<{ data?: CoachTraineeRow[]; error?: string }> {
+  try {
+    const supabase = supabaseBrowser();
+    const { data, error } = await supabase
+      .from("coach_trainees")
+      .select("id, coach_id, coach_name, name, phone, source, private_session_id, subscription_id, amount, is_active, notes, created_at, created_by_name")
+      .eq("is_active", true)
+      .order("created_at", { ascending: false });
+    if (error) { logError("coach_trainees", "select", error); return { error: error.message }; }
+    return { data: (data ?? []) as CoachTraineeRow[] };
+  } catch (e) {
+    logError("coach_trainees", "select", e);
+    return { error: String(e) };
+  }
+}
+
+export async function addCoachTrainees(opts: {
+  user: CurrentUser;
+  coachId: string | null;
+  coachName: string;
+  source: "private" | "coach_private";
+  players: { name: string; phone: string; amount?: number | null }[];
+  privateSessionId?: string | null;
+  subscriptionId?: string | null;
+  exchangeRate?: number;
+}): Promise<{ data?: CoachTraineeRow[]; error?: string }> {
+  try {
+    assertUser(opts.user);
+    const coachName = opts.coachName.trim();
+    if (!coachName) return { error: "اسم الكوتش مطلوب" };
+    const rows = opts.players
+      .map((p) => ({ name: p.name.trim(), phone: (p.phone ?? "").trim(), amount: p.amount ?? null }))
+      .filter((p) => p.name);
+    if (rows.length === 0) return { error: "أدخل لاعباً واحداً على الأقل" };
+
+    const supabase = supabaseBrowser();
+    const payload = rows.map((p) => ({
+      coach_id: opts.coachId ?? null,
+      coach_name: coachName,
+      name: p.name,
+      phone: p.phone,
+      source: opts.source,
+      private_session_id: opts.privateSessionId ?? null,
+      subscription_id: opts.subscriptionId ?? null,
+      amount: p.amount,
+      amount_syp:
+        p.amount != null && opts.exchangeRate
+          ? Math.round(p.amount * opts.exchangeRate)
+          : null,
+      is_active: true,
+      created_by: opts.user.id,
+      created_by_name: opts.user.displayName,
+    }));
+
+    const { data, error } = await supabase
+      .from("coach_trainees")
+      .insert(payload)
+      .select();
+    if (error) { logError("coach_trainees", "insert", error); return { error: error.message }; }
+    if (!data || data.length === 0) {
+      logError("coach_trainees", "insert", "no rows returned");
+      return { error: "لم يُسجَّل اللاعبون — تحقق من RLS" };
+    }
+    logSuccess("coach_trainees", "insert", data);
+    return { data: data as CoachTraineeRow[] };
+  } catch (e) {
+    logError("coach_trainees", "insert", e);
+    return { error: String(e) };
+  }
+}
+
+export async function deactivateCoachTrainee(id: string, user: CurrentUser): Promise<{ error?: string }> {
+  try {
+    assertUser(user);
+    if (!id) return { error: "معرّف اللاعب مفقود" };
+    const supabase = supabaseBrowser();
+    const { error } = await supabase
+      .from("coach_trainees")
+      .update({ is_active: false })
+      .eq("id", id);
+    if (error) { logError("coach_trainees", "update", error); return { error: error.message }; }
+    return {};
+  } catch (e) {
+    logError("coach_trainees", "update", e);
     return { error: String(e) };
   }
 }

@@ -8,6 +8,7 @@ import {
   OfferType,
   PaymentStatus,
   SubStatus,
+  CoachKind,
 } from "@/lib/types";
 import {
   formatCurrency,
@@ -152,7 +153,7 @@ type MainTab  = "subscriptions" | "offers";
 type SubType  = "normal" | "private" | "coach_private";
 type OfferTab = "couple" | "referral" | "corporate" | "college" | "owner_family" | "custom_registration";
 type SortMode = "alpha" | "date";
-type FilterTab = "all" | "active" | "expiring" | "unpaid" | "expired" | "partial" | "renew";
+type FilterTab = "all" | "active" | "expiring" | "unpaid" | "expired" | "partial" | "renew" | "coaches";
 // ─── Form state ───────────────────────────────────────────────────────────────
 
 interface FormState {
@@ -306,6 +307,7 @@ function CoachPicker({
   value,
   onChange,
   required,
+  kind,
   selectCls,
   inputCls,
   labelCls,
@@ -313,6 +315,8 @@ function CoachPicker({
   value: { id: string | null; name: string };
   onChange: (next: { id: string | null; name: string }) => void;
   required?: boolean;
+  /** Filter the roster to one kind and stamp new coaches with it. */
+  kind?: CoachKind;
   selectCls: string;
   inputCls: string;
   labelCls: string;
@@ -324,7 +328,10 @@ function CoachPicker({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const active = useMemo(() => coaches.filter((c) => c.isActive), [coaches]);
+  const active = useMemo(
+    () => coaches.filter((c) => c.isActive && (!kind || c.kind === kind)),
+    [coaches, kind]
+  );
 
   const handlePick = (raw: string) => {
     if (raw === "__add__") { setAdding(true); return; }
@@ -337,7 +344,7 @@ function CoachPicker({
     setErr(null);
     if (!newName.trim()) { setErr("اسم الكوتش مطلوب"); return; }
     setBusy(true);
-    const res = await addCoach({ name: newName.trim(), phone: newPhone.trim() || null });
+    const res = await addCoach({ name: newName.trim(), phone: newPhone.trim() || null, kind: kind ?? "private" });
     setBusy(false);
     if (res.error || !res.data) { setErr(res.error ?? "تعذر إضافة الكوتش"); return; }
     onChange({ id: res.data.id, name: res.data.name });
@@ -398,7 +405,7 @@ function CoachPicker({
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function SubscriptionsBlock() {
-  const { subscriptions, addSubscription, replaceSubscription, cancelSubscriptionLocal, markSubscriptionRenewed } = useStore();
+  const { subscriptions, addSubscription, replaceSubscription, cancelSubscriptionLocal, markSubscriptionRenewed, coaches, coachTrainees, addCoachTrainees, deactivateCoachTrainee } = useStore();
   const { user } = useAuth();
   const { exchangeRate } = useCurrency();
 
@@ -417,6 +424,7 @@ export default function SubscriptionsBlock() {
   // ── Private training state ─────────────────────────────────────────────────
   const [ptCount, setPtCount]   = useState(1);
   const [ptNames, setPtNames]   = useState<string[]>([""]);
+  const [ptPhones, setPtPhones] = useState<string[]>([""]);
   const [ptCoach, setPtCoach]   = useState("");
   const [ptCoachId, setPtCoachId] = useState<string | null>(null);
   const [ptNotes, setPtNotes]   = useState("");
@@ -436,6 +444,9 @@ export default function SubscriptionsBlock() {
   const [coachPrivateStart, setCoachPrivateStart] = useState(new Date().toISOString().split("T")[0]);
   const [coachPrivateTotalAmount, setCoachPrivateTotalAmount] = useState(String(coachPrivateTotal("1_month")));
   const [coachPrivatePaid,  setCoachPrivatePaid]  = useState(String(coachPrivateTotal("1_month")));
+  // Additional players training under the SAME gym coach (roster only —
+  // the main member above carries the membership/revenue). name + phone.
+  const [cpExtraPlayers, setCpExtraPlayers] = useState<{ name: string; phone: string }[]>([]);
   const [coachPrivateBusy,  setCoachPrivateBusy]  = useState(false);
   const [coachPrivateError, setCoachPrivateError] = useState<string | null>(null);
 
@@ -487,8 +498,8 @@ export default function SubscriptionsBlock() {
   const [collegePhone,     setCollegePhone]     = useState("");
   const [collegePlan,      setCollegePlan]      = useState<PlanType>("1_month");
   const [collegeStart,     setCollegeStart]     = useState(new Date().toISOString().split("T")[0]);
-  const [collegeTotal,     setCollegeTotal]     = useState(String(calculateDiscountedPrice(PLAN_BASE_PRICES["1_month"], "college")));
-  const [collegePaid,      setCollegePaid]      = useState(String(calculateDiscountedPrice(PLAN_BASE_PRICES["1_month"], "college")));
+  const [collegeTotal,     setCollegeTotal]     = useState(String(calculateDiscountedPrice(PLAN_BASE_PRICES["1_month"], "college", "1_month")));
+  const [collegePaid,      setCollegePaid]      = useState(String(calculateDiscountedPrice(PLAN_BASE_PRICES["1_month"], "college", "1_month")));
   const [collegeBusy,      setCollegeBusy]      = useState(false);
   const [collegeError,     setCollegeError]     = useState<string | null>(null);
 
@@ -685,7 +696,7 @@ export default function SubscriptionsBlock() {
   }, []);
   const handleCollegePlanChange = useCallback((p: PlanType) => {
     setCollegePlan(p);
-    const t = String(calculateDiscountedPrice(PLAN_BASE_PRICES[p], "college"));
+    const t = String(calculateDiscountedPrice(PLAN_BASE_PRICES[p], "college", p));
     setCollegeTotal(t);
     setCollegePaid(t);
   }, []);
@@ -705,6 +716,7 @@ export default function SubscriptionsBlock() {
     const safe = Math.max(1, n);
     setPtCount(safe);
     setPtNames((prev) => Array.from({ length: safe }, (_, i) => prev[i] ?? ""));
+    setPtPhones((prev) => Array.from({ length: safe }, (_, i) => prev[i] ?? ""));
     const t = String(ptCalc(safe).total);
     setPtTotal(t);
     setPtPaid(t);
@@ -791,7 +803,34 @@ export default function SubscriptionsBlock() {
     partial:  subscriptions.filter((s) => s.paymentStatus === "partial" && s.status !== "cancelled" && s.status !== "renewed").length,
     expired:  subscriptions.filter((s) => s.status === "expired").length,
     renew:    subscriptions.filter((s) => s.status === "expired").length,
+    coaches:  coaches.filter((c) => c.isActive).length,
   };
+
+  // ── Coach roster: active coaches with their trainees grouped under
+  //    them. Trainees whose coach was deactivated/deleted fall into a
+  //    synthetic "غير محدد" bucket keyed by snapshot name. ───────────
+  const coachRoster = useMemo(() => {
+    const byCoach = new Map<string, typeof coachTrainees>();
+    for (const t of coachTrainees) {
+      const key = t.coachId ?? `name:${t.coachName}`;
+      const arr = byCoach.get(key) ?? [];
+      arr.push(t);
+      byCoach.set(key, arr);
+    }
+    const rows = coaches
+      .filter((c) => c.isActive)
+      .map((c) => ({ coach: c, trainees: byCoach.get(c.id) ?? [] }));
+    // Orphan trainees (coach not in active roster) grouped by snapshot name.
+    const knownIds = new Set(coaches.map((c) => c.id));
+    const orphans = new Map<string, typeof coachTrainees>();
+    for (const t of coachTrainees) {
+      if (t.coachId && knownIds.has(t.coachId)) continue;
+      const arr = orphans.get(t.coachName) ?? [];
+      arr.push(t);
+      orphans.set(t.coachName, arr);
+    }
+    return { rows, orphans: Array.from(orphans.entries()) };
+  }, [coaches, coachTrainees]);
 
   // ── Normal subscription submit ─────────────────────────────────────────────
   const handleSubmit = async (e: React.FormEvent) => {
@@ -859,15 +898,20 @@ export default function SubscriptionsBlock() {
     e.preventDefault();
     if (!user) return;
     setPtError(null);
-    const validNames = ptNames.filter((n) => n.trim());
-    if (validNames.length === 0) { setPtError("أدخل اسم لاعب واحد على الأقل"); return; }
+    // Pair each name with its phone, keeping only rows that have a name.
+    const players = ptNames
+      .map((n, i) => ({ name: n.trim(), phone: (ptPhones[i] ?? "").trim() }))
+      .filter((p) => p.name);
+    if (players.length === 0) { setPtError("أدخل اسم لاعب واحد على الأقل"); return; }
+    if (!ptCoach.trim()) { setPtError("اختر الكوتش أو أضف كوتشاً جديداً"); return; }
+    if (players.some((p) => !p.phone)) { setPtError("رقم هاتف كل لاعب مطلوب"); return; }
     const pay = computePayment(ptTotal, ptPaid);
     if (pay.overpaid) { setPtError("المبلغ المدفوع لا يمكن أن يتجاوز المبلغ الإجمالي"); return; }
     setPtBusy(true);
     const r = await pushPrivateSession({
       user: { id: user.id, displayName: user.displayName },
       numberOfPlayers: ptCount,
-      playerNames: validNames,
+      playerNames: players.map((p) => p.name),
       notes: ptNotes,
       exchangeRate,
       privateCoachName: ptCoach.trim() || null,
@@ -875,9 +919,20 @@ export default function SubscriptionsBlock() {
       paidAmount: pay.paidNum,
       paymentStatus: pay.status,
     });
+    if (r.error) { setPtBusy(false); setPtError(r.error); return; }
+    // Register the players under the coach (roster). Failure here is
+    // non-fatal — the revenue row already landed.
+    const perPlayer = players.length > 0 ? Number((pay.totalNum / players.length).toFixed(2)) : null;
+    const tr = await addCoachTrainees({
+      coachId: ptCoachId,
+      coachName: ptCoach.trim(),
+      source: "private",
+      players: players.map((p) => ({ ...p, amount: perPlayer })),
+      privateSessionId: r.data ? String(r.data.id) : null,
+    });
     setPtBusy(false);
-    if (r.error) { setPtError(r.error); return; }
-    setPtCount(1); setPtNames([""]); setPtNotes(""); setPtCoach(""); setPtCoachId(null);
+    if (tr.error) { setPtError(`حُفظت الجلسة لكن تعذّر تسجيل اللاعبين في قائمة الكوتش: ${tr.error}`); return; }
+    setPtCount(1); setPtNames([""]); setPtPhones([""]); setPtNotes(""); setPtCoach(""); setPtCoachId(null);
     setPtTotal(String(ptCalc(1).total));
     setPtPaid(String(ptCalc(1).total));
     setFormOpen(false);
@@ -890,7 +945,9 @@ export default function SubscriptionsBlock() {
     if (!user) return;
     setCoachPrivateError(null);
     if (!coachPrivateName.trim()) { setCoachPrivateError("أدخل اسم المشترك"); return; }
+    if (!coachPrivatePhone.trim()) { setCoachPrivateError("رقم هاتف المشترك مطلوب"); return; }
     if (!coachPrivateCoach.trim()) { setCoachPrivateError("أدخل اسم الكوتش"); return; }
+    if (cpExtraPlayers.some((p) => p.name.trim() && !p.phone.trim())) { setCoachPrivateError("رقم هاتف كل لاعب إضافي مطلوب"); return; }
     const pay = computePayment(coachPrivateTotalAmount, coachPrivatePaid);
     if (pay.overpaid) { setCoachPrivateError("المبلغ المدفوع لا يمكن أن يتجاوز المبلغ الإجمالي"); return; }
 
@@ -975,6 +1032,21 @@ export default function SubscriptionsBlock() {
       lockedAt: String(row.created_at ?? new Date().toISOString()),
     });
 
+    // Roster: the main member + any extra players, all under this gym coach.
+    const rosterPlayers = [
+      { name: coachPrivateName.trim(), phone: (coachPrivatePhone || "").trim() },
+      ...cpExtraPlayers.map((p) => ({ name: p.name.trim(), phone: p.phone.trim() })),
+    ].filter((p) => p.name);
+    const tr = await addCoachTrainees({
+      coachId: coachPrivateCoachId,
+      coachName: coachPrivateCoach.trim(),
+      source: "coach_private",
+      players: rosterPlayers,
+      privateSessionId: privateRow.data ? String(privateRow.data.id) : null,
+      subscriptionId: String(row.id),
+    });
+    if (tr.error) { setCoachPrivateBusy(false); setCoachPrivateError(`حُفظ الاشتراك لكن تعذّر تسجيل اللاعبين في قائمة الكوتش: ${tr.error}`); return; }
+
     setCoachPrivateBusy(false);
     setCoachPrivateName("");
     setCoachPrivatePhone("");
@@ -984,6 +1056,7 @@ export default function SubscriptionsBlock() {
     setCoachPrivateStart(new Date().toISOString().split("T")[0]);
     setCoachPrivateTotalAmount(String(coachPrivateTotal("1_month")));
     setCoachPrivatePaid(String(coachPrivateTotal("1_month")));
+    setCpExtraPlayers([]);
     setFormOpen(false);
     setToastMessage("تم حفظ اشتراك Our Gym Coach Private");
   };
@@ -1325,9 +1398,9 @@ export default function SubscriptionsBlock() {
     setCollegeBusy(false);
     setCollegeName(""); setCollegePhone(""); setCollegePlan("1_month");
     setCollegeStart(new Date().toISOString().split("T")[0]);
-    const reset = String(calculateDiscountedPrice(PLAN_BASE_PRICES["1_month"], "college"));
+    const reset = String(calculateDiscountedPrice(PLAN_BASE_PRICES["1_month"], "college", "1_month"));
     setCollegeTotal(reset); setCollegePaid(reset);
-    setToastMessage(`تم تسجيل اشتراك طالب جامعي بخصم ٢٠٪ — $${pay.totalNum}`);
+    setToastMessage(`تم تسجيل اشتراك طالب جامعي — $${pay.totalNum}`);
   };
 
   // ── Custom / free registration submit ─────────────────────────────────────
@@ -1407,6 +1480,7 @@ export default function SubscriptionsBlock() {
     { key: "partial",  label: "جزئي" },
     { key: "expired",  label: "منتهي" },
     { key: "renew",    label: "تجديد" },
+    { key: "coaches",  label: "المدربون" },
   ];
 
   const inputCls  = "ox-input w-full bg-charcoal border border-gunmetal text-offwhite font-body text-sm px-3 py-2 rounded focus:outline-none focus:border-gold/60 focus:ring-1 focus:ring-gold/20 placeholder:text-slate transition-colors";
@@ -1622,28 +1696,40 @@ export default function SubscriptionsBlock() {
                     />
 
                     <div>
-                      <label className={labelCls}>أسماء اللاعبين</label>
+                      <label className={labelCls}>اللاعبون (الاسم + رقم الهاتف)</label>
                       <div className="space-y-2">
                         {ptNames.map((name, i) => (
-                          <input key={i} type="text" className={inputCls}
-                            placeholder={`اللاعب ${i + 1}`}
-                            value={name}
-                            onChange={(e) => {
-                              const next = [...ptNames]; next[i] = e.target.value; setPtNames(next);
-                            }}
-                          />
+                          <div key={i} className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <input type="text" className={inputCls}
+                              placeholder={`اسم اللاعب ${i + 1}`}
+                              value={name}
+                              onChange={(e) => {
+                                const next = [...ptNames]; next[i] = e.target.value; setPtNames(next);
+                              }}
+                            />
+                            <input type="tel" className={inputCls}
+                              placeholder={`هاتف اللاعب ${i + 1}`}
+                              value={ptPhones[i] ?? ""}
+                              onChange={(e) => {
+                                const next = [...ptPhones]; next[i] = e.target.value; setPtPhones(next);
+                              }}
+                            />
+                          </div>
                         ))}
                       </div>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div>
-                        <label className={labelCls}>المدرب الخاص (اختياري)</label>
+                        <label className={labelCls}>المدرب الخاص</label>
                         <CoachPicker
+                          required
+                          kind="private"
                           value={{ id: ptCoachId, name: ptCoach }}
                           onChange={(v) => { setPtCoachId(v.id); setPtCoach(v.name); }}
                           selectCls={selectCls} inputCls={inputCls} labelCls={labelCls}
                         />
+                        <p className="font-mono text-[9px] text-slate mt-1">اختر كوتشاً موجوداً لإضافة لاعبين جدد إلى قائمته — الكوتش لا يُحتسب من جديد.</p>
                       </div>
                       <div>
                         <label className={labelCls}>ملاحظات (اختياري)</label>
@@ -1660,7 +1746,7 @@ export default function SubscriptionsBlock() {
                         <LockIcon size={13} />{ptBusy ? "جاري الحفظ…" : "حفظ جلسة التدريب"}
                       </button>
                       <button type="button"
-                        onClick={() => { setPtCount(1); setPtNames([""]); setPtNotes(""); setPtCoach(""); setPtCoachId(null); setFormOpen(false); }}
+                        onClick={() => { setPtCount(1); setPtNames([""]); setPtPhones([""]); setPtNotes(""); setPtCoach(""); setPtCoachId(null); setFormOpen(false); }}
                         className="px-4 py-2.5 border border-gunmetal text-secondary hover:text-ghost font-body text-sm rounded transition-colors">
                         إلغاء
                       </button>
@@ -1680,7 +1766,7 @@ export default function SubscriptionsBlock() {
                       </div>
                       <div>
                         <label className={labelCls}>رقم الهاتف</label>
-                        <input type="tel" className={inputCls} placeholder="+963 9x xxx xxxx"
+                        <input required type="tel" className={inputCls} placeholder="+963 9x xxx xxxx"
                           value={coachPrivatePhone}
                           onChange={(e) => setCoachPrivatePhone(e.target.value)} />
                       </div>
@@ -1691,6 +1777,7 @@ export default function SubscriptionsBlock() {
                         <label className={labelCls}>الكوتش</label>
                         <CoachPicker
                           required
+                          kind="gym"
                           value={{ id: coachPrivateCoachId, name: coachPrivateCoach }}
                           onChange={(v) => { setCoachPrivateCoachId(v.id); setCoachPrivateCoach(v.name); }}
                           selectCls={selectCls} inputCls={inputCls} labelCls={labelCls}
@@ -1732,6 +1819,39 @@ export default function SubscriptionsBlock() {
                       </div>
                     </div>
 
+                    {/* Extra players training under the same gym coach.
+                        Roster-only — they appear under the coach in the
+                        "المدربون" tab. The amount above is the main member's. */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className={labelCls + " mb-0"}>لاعبون إضافيون مع نفس الكوتش (اختياري)</label>
+                        <button type="button"
+                          onClick={() => setCpExtraPlayers((prev) => [...prev, { name: "", phone: "" }])}
+                          className="px-2 py-1 font-mono text-[10px] text-gold hover:text-gold-bright border border-gold/30 rounded transition-colors">
+                          + لاعب
+                        </button>
+                      </div>
+                      {cpExtraPlayers.length > 0 && (
+                        <div className="space-y-2">
+                          {cpExtraPlayers.map((p, i) => (
+                            <div key={i} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2">
+                              <input type="text" className={inputCls} placeholder={`اسم اللاعب ${i + 1}`}
+                                value={p.name}
+                                onChange={(e) => setCpExtraPlayers((prev) => prev.map((x, j) => j === i ? { ...x, name: e.target.value } : x))} />
+                              <input type="tel" className={inputCls} placeholder="رقم الهاتف"
+                                value={p.phone}
+                                onChange={(e) => setCpExtraPlayers((prev) => prev.map((x, j) => j === i ? { ...x, phone: e.target.value } : x))} />
+                              <button type="button"
+                                onClick={() => setCpExtraPlayers((prev) => prev.filter((_, j) => j !== i))}
+                                className="px-2.5 font-mono text-xs text-red border border-red/30 rounded hover:bg-red/10 transition-colors">
+                                حذف
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
                     <PaymentFields
                       totalAmount={coachPrivateTotalAmount}
                       onTotalChange={setCoachPrivateTotalAmount}
@@ -1758,6 +1878,7 @@ export default function SubscriptionsBlock() {
                           setCoachPrivateStart(new Date().toISOString().split("T")[0]);
                           setCoachPrivateTotalAmount(String(coachPrivateTotal("1_month")));
                           setCoachPrivatePaid(String(coachPrivateTotal("1_month")));
+                          setCpExtraPlayers([]);
                           setFormOpen(false);
                         }}
                         className="px-4 py-2.5 border border-gunmetal text-secondary hover:text-ghost font-body text-sm rounded transition-colors">
@@ -1827,7 +1948,9 @@ export default function SubscriptionsBlock() {
               </div>
             </div>
 
-            {/* ── Table ─────────────────────────────────────────────────── */}
+            {/* ── Table (hidden on the coach roster tab) ───────────────── */}
+            {activeFilter !== "coaches" && (
+            <>
             <div className="overflow-x-auto overflow-y-auto max-h-[60vh] rounded border border-gunmetal">
               <table className="w-full min-w-[860px] border-collapse">
                 <thead className="sticky top-0 z-10">
@@ -1972,6 +2095,78 @@ export default function SubscriptionsBlock() {
                 </span>
               </p>
             </div>
+            </>
+            )}
+
+            {/* ── Coach roster ─────────────────────────────────────────── */}
+            {activeFilter === "coaches" && (
+              <div className="space-y-3">
+                {coachRoster.rows.length === 0 && coachRoster.orphans.length === 0 && (
+                  <div className="px-4 py-10 text-center font-mono text-xs text-slate uppercase tracking-wider border border-gunmetal rounded">
+                    لا يوجد مدربون بعد — سجّل تدريباً خاصاً أو تدريباً مع مدربينا
+                  </div>
+                )}
+                {coachRoster.rows.map(({ coach, trainees }) => (
+                  <div key={coach.id} className="border border-gunmetal rounded overflow-hidden">
+                    <div className="flex items-center justify-between gap-3 bg-charcoal px-4 py-2.5 border-b border-gunmetal">
+                      <div className="flex items-center gap-2.5 flex-wrap">
+                        <span className="font-display text-base tracking-wide text-offwhite">{coach.name}</span>
+                        <span className={`font-mono text-[9px] px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                          coach.kind === "gym" ? "bg-gold/15 text-gold" : "bg-gunmetal text-secondary"
+                        }`}>
+                          {coach.kind === "gym" ? "مدرب الصالة" : "مدرب خاص"}
+                        </span>
+                        {coach.phone && <span className="font-mono text-[11px] text-secondary tabular-nums" dir="ltr">{coach.phone}</span>}
+                      </div>
+                      <span className="font-mono text-[10px] text-slate">{trainees.length} لاعب</span>
+                    </div>
+                    {trainees.length === 0 ? (
+                      <p className="px-4 py-3 font-mono text-[11px] text-slate">لا يوجد لاعبون تحت هذا الكوتش</p>
+                    ) : (
+                      <ul className="divide-y divide-gunmetal/60">
+                        {trainees.map((t) => (
+                          <li key={t.id} className="flex items-center justify-between gap-3 px-4 py-2 hover:bg-gunmetal/40 transition-colors">
+                            <div className="flex items-center gap-3 flex-wrap">
+                              <span className="font-body text-sm text-ghost">{t.name}</span>
+                              <span className="font-mono text-[11px] text-secondary tabular-nums" dir="ltr">{t.phone}</span>
+                              <span className="font-mono text-[9px] text-slate">{t.source === "coach_private" ? "مع مدربينا" : "تدريب خاص"} — {formatDate(t.createdAt)}</span>
+                            </div>
+                            <button type="button"
+                              onClick={() => { if (window.confirm(`إزالة ${t.name} من قائمة ${coach.name}؟`)) deactivateCoachTrainee(t.id); }}
+                              className="px-2 py-0.5 font-mono text-[10px] text-red/80 hover:text-red border border-red/20 hover:border-red/40 rounded transition-colors">
+                              إزالة
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+                {coachRoster.orphans.map(([name, trainees]) => (
+                  <div key={`orphan:${name}`} className="border border-gunmetal/60 rounded overflow-hidden opacity-80">
+                    <div className="flex items-center justify-between gap-3 bg-charcoal/60 px-4 py-2.5 border-b border-gunmetal">
+                      <span className="font-display text-base tracking-wide text-secondary">{name || "غير محدد"} <span className="font-mono text-[9px] text-slate">(كوتش غير نشط)</span></span>
+                      <span className="font-mono text-[10px] text-slate">{trainees.length} لاعب</span>
+                    </div>
+                    <ul className="divide-y divide-gunmetal/60">
+                      {trainees.map((t) => (
+                        <li key={t.id} className="flex items-center justify-between gap-3 px-4 py-2">
+                          <div className="flex items-center gap-3 flex-wrap">
+                            <span className="font-body text-sm text-ghost">{t.name}</span>
+                            <span className="font-mono text-[11px] text-secondary tabular-nums" dir="ltr">{t.phone}</span>
+                          </div>
+                          <button type="button"
+                            onClick={() => { if (window.confirm(`إزالة ${t.name}؟`)) deactivateCoachTrainee(t.id); }}
+                            className="px-2 py-0.5 font-mono text-[10px] text-red/80 hover:text-red border border-red/20 hover:border-red/40 rounded transition-colors">
+                            إزالة
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            )}
           </>
         )}
 
@@ -2285,10 +2480,10 @@ export default function SubscriptionsBlock() {
                   </div>
                   <div className="flex items-center justify-between p-3 bg-void border border-gunmetal rounded">
                     <div>
-                      <p className="font-mono text-[9px] text-slate uppercase tracking-wider">السعر بعد خصم ٢٠٪</p>
+                      <p className="font-mono text-[9px] text-slate uppercase tracking-wider">{collegePlan === "1_month" ? "سعر الطالب الثابت" : "السعر بعد خصم ٢٠٪"}</p>
                       <p className="font-mono text-xs text-secondary line-through mt-0.5">{PLAN_BASE_PRICES[collegePlan]} $</p>
                     </div>
-                    <span className="font-display text-2xl text-gold-bright">${calculateDiscountedPrice(PLAN_BASE_PRICES[collegePlan], "college")}</span>
+                    <span className="font-display text-2xl text-gold-bright">${calculateDiscountedPrice(PLAN_BASE_PRICES[collegePlan], "college", collegePlan)}</span>
                   </div>
                   <PaymentFields
                     totalAmount={collegeTotal}

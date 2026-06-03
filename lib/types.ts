@@ -40,18 +40,44 @@ export type OfferType =
 export type PaymentStatus = "paid" | "partial" | "unpaid";
 export type SubStatus = "active" | "expired" | "frozen" | "cancelled" | "renewed";
 
-// Roster of the gym's employed trainers. Surfaced as a dropdown on the
-// private + coach_private subscription forms; managed via the manager
-// dashboard. Coaches are NOT members.
+// 'private' = an external private trainer renting the gym; 'gym' = one
+// of our own employed trainers. Drives the label in the roster tab and
+// which form's coach picker the coach shows up in.
+export type CoachKind = "private" | "gym";
+
+// Roster of trainers. Surfaced as a dropdown on the private +
+// coach_private subscription forms, and grouped in the "المدربون" tab.
+// Coaches are NOT members.
 export interface Coach {
   id: string;
   name: string;
   phone: string | null;
+  kind: CoachKind;
   sharePercentage: number | null;
   isActive: boolean;
   notes: string | null;
   createdAt: string;
   createdBy: string | null;
+}
+
+// A player training UNDER a coach. One row per person, fed from both
+// subscription forms. This is a roster record, not a revenue row — the
+// money lives on private_sessions / gym_subscriptions; `amount` here is
+// only an informational snapshot.
+export interface CoachTrainee {
+  id: string;
+  coachId: string | null;
+  coachName: string;
+  name: string;
+  phone: string;
+  source: "private" | "coach_private";
+  privateSessionId: string | null;
+  subscriptionId: string | null;
+  amount: number | null;
+  isActive: boolean;
+  notes: string | null;
+  createdAt: string;
+  createdByName: string | null;
 }
 
 export interface Subscription {
