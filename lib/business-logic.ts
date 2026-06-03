@@ -78,6 +78,7 @@ export function calculateDiscountedPrice(
   plan?: PlanType
 ): number {
   if (offer === "couple" && plan === "1_month") return 60;
+  if (offer === "college" && plan === "1_month") return 30;
   if (offer === "owner_family" && plan) {
     return Math.round(20 * (PLAN_DAYS[plan] / 30));
   }

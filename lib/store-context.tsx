@@ -12,7 +12,7 @@ import {
 import {
   Product, Sale, Expense, ExpenseCategory, ExpenseFrequency, PaymentMethod, Subscription, FoodItem, FoodItemCategory,
   CatalogItem, CatalogItemCategory, CatalogItemType, ItemSale,
-  PlanType, OfferType, PaymentStatus, SubStatus, Currency,
+  PlanType, OfferType, PaymentStatus, SubStatus, Currency, Coach,
 } from "./types";
 import { PRODUCTS, FOOD_ITEMS } from "./mock-data";
 import { generateId, calculateRemainingDays } from "./business-logic";
@@ -23,6 +23,10 @@ import {
   persistCatalogItemInsert,
   persistCatalogItemUpdate,
   persistCatalogItemDelete,
+  fetchCoaches as fetchCoachesRemote,
+  addCoach as addCoachRemote,
+  updateCoach as updateCoachRemote,
+  CoachRow,
 } from "./supabase/intake";
 
 // ─── InBody ───────────────────────────────────────────────────────────────────
@@ -119,6 +123,7 @@ export interface StoreState {
   sessionHistory: LocalSession[];
   lastClosingCash: number;
   lastClosedByName: string;
+  coaches: Coach[];
 
   // Legacy compat fields — derived from catalogItems / itemSales for any
   // component that still reads them. Will be removed once the cutover is
@@ -168,6 +173,10 @@ export interface StoreContextType extends StoreState {
   addSubscription: (sub: Subscription) => void;
   replaceSubscription: (id: string, sub: Subscription) => void;
   cancelSubscriptionLocal: (id: string) => void;
+  markSubscriptionRenewed: (oldId: string, newSubscriptionId: string) => void;
+  addCoach: (coach: { name: string; phone?: string | null; sharePercentage?: number | null; notes?: string | null }) => Promise<{ data?: Coach; error?: string }>;
+  updateCoach: (id: string, fields: { name?: string; phone?: string | null; sharePercentage?: number | null; notes?: string | null; isActive?: boolean }) => Promise<{ error?: string }>;
+  reloadCoaches: () => Promise<void>;
   addInBodySession: (session: InBodySession) => void;
   cancelInBodySession: (id: string) => void;
   updateInBodyPrices: (member: number, nonMember: number) => void;
@@ -212,6 +221,7 @@ const INITIAL_STATE: StoreState = {
   sessionHistory: [],
   lastClosingCash: 0,
   lastClosedByName: "",
+  coaches: [],
 };
 
 // ─── Row mappers + legacy adapters (shared by hydration + realtime) ──────────
@@ -374,7 +384,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
     const supabase = supabaseBrowser();
     const today = new Date().toISOString().slice(0, 10);
 
-    const [subsRes, salesRes, inbodyRes, expensesRes, catalogRes, rateRes, activeSession, lastClosed] = await Promise.all([
+    const [subsRes, salesRes, inbodyRes, expensesRes, catalogRes, rateRes, activeSession, lastClosed, coachesRes] = await Promise.all([
       supabase
         .from("gym_subscriptions")
         .select("*")
@@ -404,6 +414,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
         .maybeSingle(),
       getActiveSession(),
       getLastClosedSession(),
+      fetchCoachesRemote(),
     ]);
 
     type Row = Record<string, unknown>;
@@ -414,7 +425,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       // Derive status from the end date so expired subs move out of "active"
       // automatically once their end_date has passed. Preserve cancelled/frozen.
       const status: SubStatus =
-        dbStatus === "cancelled" || dbStatus === "frozen"
+        dbStatus === "cancelled" || dbStatus === "frozen" || dbStatus === "renewed"
           ? dbStatus
           : remaining > 0
             ? "active"
@@ -437,6 +448,8 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       currency: String(row.currency ?? "usd") as Currency,
       status,
       privateCoachName: row.private_coach_name == null ? null : String(row.private_coach_name),
+      coachId: row.coach_id == null ? null : String(row.coach_id),
+      renewedToSubscriptionId: row.renewed_to_subscription_id == null ? null : String(row.renewed_to_subscription_id),
       note: row.note == null ? null : String(row.note),
       activationCode: row.activation_code == null ? null : String(row.activation_code),
       createdAt: String(row.created_at ?? ""),
@@ -521,6 +534,17 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       exchangeRate,
     });
 
+    const coaches: Coach[] = (coachesRes?.data ?? []).map((c: CoachRow) => ({
+      id: c.id,
+      name: c.name,
+      phone: c.phone,
+      sharePercentage: c.share_percentage,
+      isActive: c.is_active,
+      notes: c.notes,
+      createdAt: c.created_at,
+      createdBy: c.created_by,
+    }));
+
     return {
       catalogItems,
       itemSales,
@@ -531,6 +555,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       exchangeRate,
       lastClosingCash,
       lastClosedByName,
+      coaches,
       // Legacy compat fields derived from canonical state
       foodItems,
       products,
@@ -564,6 +589,10 @@ const StoreContext = createContext<StoreContextType>({
   addSubscription: () => {},
   replaceSubscription: () => {},
   cancelSubscriptionLocal: () => {},
+  markSubscriptionRenewed: () => {},
+  addCoach: async () => ({}),
+  updateCoach: async () => ({}),
+  reloadCoaches: async () => {},
   addInBodySession: () => {},
   cancelInBodySession: () => {},
   updateInBodyPrices: () => {},
@@ -1096,6 +1125,83 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }));
   }, [setState]);
 
+  const markSubscriptionRenewed = useCallback((oldId: string, newSubscriptionId: string) => {
+    setState((prev) => ({
+      ...prev,
+      subscriptions: prev.subscriptions.map((s) =>
+        s.id === oldId
+          ? { ...s, status: "renewed" as const, renewedToSubscriptionId: newSubscriptionId }
+          : s
+      ),
+    }));
+  }, [setState]);
+
+  const reloadCoaches = useCallback(async () => {
+    const res = await fetchCoachesRemote();
+    if (res.error || !res.data) return;
+    const coaches: Coach[] = res.data.map((c) => ({
+      id: c.id,
+      name: c.name,
+      phone: c.phone,
+      sharePercentage: c.share_percentage,
+      isActive: c.is_active,
+      notes: c.notes,
+      createdAt: c.created_at,
+      createdBy: c.created_by,
+    }));
+    setState((prev) => ({ ...prev, coaches }));
+  }, [setState]);
+
+  const addCoach = useCallback(async (input: { name: string; phone?: string | null; sharePercentage?: number | null; notes?: string | null }) => {
+    if (!user) return { error: "غير مسجل الدخول" };
+    const res = await addCoachRemote({
+      user: { id: user.id, displayName: user.displayName },
+      name: input.name,
+      phone: input.phone ?? null,
+      sharePercentage: input.sharePercentage ?? null,
+      notes: input.notes ?? null,
+    });
+    if (res.error || !res.data) return { error: res.error };
+    const c = res.data;
+    const coach: Coach = {
+      id: c.id,
+      name: c.name,
+      phone: c.phone,
+      sharePercentage: c.share_percentage,
+      isActive: c.is_active,
+      notes: c.notes,
+      createdAt: c.created_at,
+      createdBy: c.created_by,
+    };
+    setState((prev) => ({ ...prev, coaches: [coach, ...prev.coaches] }));
+    return { data: coach };
+  }, [setState, user]);
+
+  const updateCoach = useCallback(async (id: string, fields: { name?: string; phone?: string | null; sharePercentage?: number | null; notes?: string | null; isActive?: boolean }) => {
+    if (!user) return { error: "غير مسجل الدخول" };
+    const res = await updateCoachRemote(id, fields, { id: user.id, displayName: user.displayName });
+    if (res.error || !res.data) return { error: res.error };
+    const c = res.data;
+    setState((prev) => ({
+      ...prev,
+      coaches: prev.coaches.map((co) =>
+        co.id === id
+          ? {
+              id: c.id,
+              name: c.name,
+              phone: c.phone,
+              sharePercentage: c.share_percentage,
+              isActive: c.is_active,
+              notes: c.notes,
+              createdAt: c.created_at,
+              createdBy: c.created_by,
+            }
+          : co
+      ),
+    }));
+    return {};
+  }, [setState, user]);
+
   const pushActivity = useCallback((entry: Omit<ActivityEntry, "id" | "timestamp">) => {
     const full: ActivityEntry = { ...entry, id: generateId(), timestamp: new Date().toISOString() };
     setState((prev) => ({
@@ -1237,6 +1343,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     addSubscription,
     replaceSubscription,
     cancelSubscriptionLocal,
+    markSubscriptionRenewed,
+    addCoach,
+    updateCoach,
+    reloadCoaches,
     addInBodySession,
     cancelInBodySession,
     updateInBodyPrices,

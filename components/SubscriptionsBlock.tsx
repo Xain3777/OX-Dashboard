@@ -28,6 +28,7 @@ import {
   pushGroupOffer,
   findOrCreateMember,
   updateSubscription,
+  renewSubscription,
 } from "@/lib/supabase/intake";
 import PaymentFields, { computePayment } from "@/components/PaymentFields";
 
@@ -151,7 +152,7 @@ type MainTab  = "subscriptions" | "offers";
 type SubType  = "normal" | "private" | "coach_private";
 type OfferTab = "couple" | "referral" | "corporate" | "college" | "owner_family" | "custom_registration";
 type SortMode = "alpha" | "date";
-type FilterTab = "all" | "active" | "expiring" | "unpaid" | "expired" | "partial";
+type FilterTab = "all" | "active" | "expiring" | "unpaid" | "expired" | "partial" | "renew";
 // ─── Form state ───────────────────────────────────────────────────────────────
 
 interface FormState {
@@ -202,7 +203,7 @@ function OfferTag({ offer }: { offer: OfferType }) {
 }
 
 function RemainingDaysBadge({ days, status }: { days: number; status: SubStatus }) {
-  if (status === "expired" || days === 0) {
+  if (status === "expired" || status === "renewed" || days === 0) {
     return <span className="font-mono text-xs text-slate tabular-nums">—</span>;
   }
   if (status === "frozen") {
@@ -242,6 +243,7 @@ function SubStatusChip({ status }: { status: SubStatus }) {
     expired:   { label: "منتهي",  cls: "bg-gunmetal text-secondary border-gunmetal" },
     frozen:    { label: "مجمّد",  cls: "bg-slate/10 text-slate border-slate/20" },
     cancelled: { label: "ملغي",   cls: "bg-red/10 text-red border-red/20" },
+    renewed:   { label: "مُجدَّد", cls: "bg-gold/10 text-gold border-gold/25" },
   };
   const { label, cls } = map[status];
   return (
@@ -294,10 +296,109 @@ function Toast({ message, onDone }: { message: string; onDone: () => void }) {
   );
 }
 
+// ─── Coach picker ─────────────────────────────────────────────────────────────
+// Dropdown of active coaches with an inline "add new" path. The cashier sees
+// real-time-synced roster and can onboard a brand-new coach without leaving
+// the subscription form. Calls back with (coachId, coachName) so the form
+// can stamp both the FK and the snapshot name onto the subscription row.
+
+function CoachPicker({
+  value,
+  onChange,
+  required,
+  selectCls,
+  inputCls,
+  labelCls,
+}: {
+  value: { id: string | null; name: string };
+  onChange: (next: { id: string | null; name: string }) => void;
+  required?: boolean;
+  selectCls: string;
+  inputCls: string;
+  labelCls: string;
+}) {
+  const { coaches, addCoach } = useStore();
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newPhone, setNewPhone] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const active = useMemo(() => coaches.filter((c) => c.isActive), [coaches]);
+
+  const handlePick = (raw: string) => {
+    if (raw === "__add__") { setAdding(true); return; }
+    if (raw === "") { onChange({ id: null, name: "" }); return; }
+    const found = active.find((c) => c.id === raw);
+    if (found) onChange({ id: found.id, name: found.name });
+  };
+
+  const handleSaveNew = async () => {
+    setErr(null);
+    if (!newName.trim()) { setErr("اسم الكوتش مطلوب"); return; }
+    setBusy(true);
+    const res = await addCoach({ name: newName.trim(), phone: newPhone.trim() || null });
+    setBusy(false);
+    if (res.error || !res.data) { setErr(res.error ?? "تعذر إضافة الكوتش"); return; }
+    onChange({ id: res.data.id, name: res.data.name });
+    setNewName(""); setNewPhone(""); setAdding(false);
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="relative">
+        <select
+          className={selectCls}
+          value={value.id ?? ""}
+          onChange={(e) => handlePick(e.target.value)}
+          required={required && !value.id}
+        >
+          <option value="">— اختر كوتش —</option>
+          {active.map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+          <option value="__add__">+ إضافة كوتش جديد</option>
+        </select>
+        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-secondary"><ChevronIcon open={false} /></span>
+      </div>
+
+      {adding && (
+        <div className="border border-gold/30 bg-void rounded p-3 space-y-2">
+          <p className="font-mono text-[10px] text-gold uppercase tracking-widest">كوتش جديد</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div>
+              <label className={labelCls}>الاسم</label>
+              <input type="text" className={inputCls} value={newName}
+                onChange={(e) => setNewName(e.target.value)} placeholder="اسم الكوتش" />
+            </div>
+            <div>
+              <label className={labelCls}>الهاتف (اختياري)</label>
+              <input type="tel" className={inputCls} value={newPhone}
+                onChange={(e) => setNewPhone(e.target.value)} placeholder="+963 …" />
+            </div>
+          </div>
+          {err && <p className="font-mono text-[10px] text-red">{err}</p>}
+          <div className="flex items-center gap-2 pt-1">
+            <button type="button" disabled={busy} onClick={handleSaveNew}
+              className="px-3 py-1.5 bg-gold hover:bg-gold-bright text-void font-mono text-[10px] uppercase tracking-wider rounded disabled:opacity-40">
+              {busy ? "جاري الحفظ…" : "حفظ"}
+            </button>
+            <button type="button"
+              onClick={() => { setAdding(false); setNewName(""); setNewPhone(""); setErr(null); }}
+              className="px-3 py-1.5 border border-gunmetal text-secondary hover:text-ghost font-mono text-[10px] uppercase tracking-wider rounded">
+              إلغاء
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function SubscriptionsBlock() {
-  const { subscriptions, addSubscription, replaceSubscription, cancelSubscriptionLocal } = useStore();
+  const { subscriptions, addSubscription, replaceSubscription, cancelSubscriptionLocal, markSubscriptionRenewed } = useStore();
   const { user } = useAuth();
   const { exchangeRate } = useCurrency();
 
@@ -317,6 +418,7 @@ export default function SubscriptionsBlock() {
   const [ptCount, setPtCount]   = useState(1);
   const [ptNames, setPtNames]   = useState<string[]>([""]);
   const [ptCoach, setPtCoach]   = useState("");
+  const [ptCoachId, setPtCoachId] = useState<string | null>(null);
   const [ptNotes, setPtNotes]   = useState("");
   // ptTotal default = trainerFee + groupPrice (computed via ptCalc).
   // Reception can override before saving.
@@ -329,6 +431,7 @@ export default function SubscriptionsBlock() {
   const [coachPrivateName,  setCoachPrivateName]  = useState("");
   const [coachPrivatePhone, setCoachPrivatePhone] = useState("");
   const [coachPrivateCoach, setCoachPrivateCoach] = useState("");
+  const [coachPrivateCoachId, setCoachPrivateCoachId] = useState<string | null>(null);
   const [coachPrivatePlan,  setCoachPrivatePlan]  = useState<PlanType>("1_month");
   const [coachPrivateStart, setCoachPrivateStart] = useState(new Date().toISOString().split("T")[0]);
   const [coachPrivateTotalAmount, setCoachPrivateTotalAmount] = useState(String(coachPrivateTotal("1_month")));
@@ -408,6 +511,119 @@ export default function SubscriptionsBlock() {
 
   // ── Toast ──────────────────────────────────────────────────────────────────
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // ── Renew modal state ──────────────────────────────────────────────────────
+  const [renewSub,    setRenewSub]    = useState<Subscription | null>(null);
+  const [renewForm,   setRenewForm]   = useState<{ planType: PlanType; startDate: string; endDate: string; amount: string; paidAmount: string } | null>(null);
+  const [renewBusy,   setRenewBusy]   = useState(false);
+  const [renewError,  setRenewError]  = useState<string | null>(null);
+  const [renewCustom, setRenewCustom] = useState(false);
+
+  const openRenewModal = useCallback((sub: Subscription, mode: "quick" | "custom") => {
+    const today = new Date().toISOString().split("T")[0];
+    const defaultPlan: PlanType = mode === "quick" ? sub.planType : "1_month";
+    const defaultEnd =
+      defaultPlan === "custom"
+        ? today
+        : calculateEndDate(today, defaultPlan, "none");
+    const defaultAmount =
+      mode === "quick"
+        ? String(sub.amount)
+        : String(PLAN_BASE_PRICES[defaultPlan] ?? 0);
+    setRenewSub(sub);
+    setRenewCustom(mode === "custom");
+    setRenewForm({
+      planType: defaultPlan,
+      startDate: today,
+      endDate: defaultEnd,
+      amount: defaultAmount,
+      paidAmount: defaultAmount,
+    });
+    setRenewError(null);
+  }, []);
+
+  const closeRenewModal = useCallback(() => {
+    setRenewSub(null);
+    setRenewForm(null);
+    setRenewError(null);
+    setRenewCustom(false);
+  }, []);
+
+  const handleRenewPlanChange = useCallback((p: PlanType) => {
+    setRenewForm((prev) => {
+      if (!prev) return prev;
+      const newEnd = p === "custom" ? prev.endDate : calculateEndDate(prev.startDate, p, "none");
+      const newAmount = String(PLAN_BASE_PRICES[p] ?? prev.amount);
+      return { ...prev, planType: p, endDate: newEnd, amount: newAmount, paidAmount: newAmount };
+    });
+  }, []);
+
+  const handleRenewStartChange = useCallback((s: string) => {
+    setRenewForm((prev) => {
+      if (!prev) return prev;
+      const newEnd = prev.planType === "custom" ? prev.endDate : calculateEndDate(s, prev.planType, "none");
+      return { ...prev, startDate: s, endDate: newEnd };
+    });
+  }, []);
+
+  const submitRenew = useCallback(async () => {
+    if (!user || !renewSub || !renewForm) return;
+    setRenewError(null);
+    const pay = computePayment(renewForm.amount, renewForm.paidAmount);
+    if (pay.overpaid) { setRenewError("المبلغ المدفوع لا يمكن أن يتجاوز المبلغ الإجمالي"); return; }
+    if (!renewForm.endDate || renewForm.endDate < renewForm.startDate) {
+      setRenewError("تاريخ النهاية يجب أن يكون بعد البدء"); return;
+    }
+    setRenewBusy(true);
+    const res = await renewSubscription({
+      user: { id: user.id, displayName: user.displayName },
+      oldSubscriptionId: renewSub.id,
+      memberId: renewSub.memberId || undefined,
+      memberName: renewSub.memberName,
+      phone: renewSub.phone ?? undefined,
+      planType: renewForm.planType,
+      startDate: renewForm.startDate,
+      endDate: renewForm.endDate,
+      amount: pay.totalNum,
+      paidAmount: pay.paidNum,
+      paymentStatus: pay.status,
+      currency: "usd",
+      exchangeRate,
+      privateCoachName: renewSub.privateCoachName ?? null,
+      coachId: renewSub.coachId ?? null,
+    });
+    setRenewBusy(false);
+    if (res.error || !res.data) { setRenewError(res.error ?? "تعذر تسجيل التجديد"); return; }
+
+    const newRow = res.data as Record<string, unknown>;
+    const remaining = calculateRemainingDays(renewForm.endDate);
+    addSubscription({
+      id: String(newRow.id),
+      memberId: renewSub.memberId,
+      memberName: renewSub.memberName,
+      phone: renewSub.phone ?? null,
+      planType: renewForm.planType,
+      offer: "none",
+      startDate: renewForm.startDate,
+      endDate: renewForm.endDate,
+      remainingDays: remaining,
+      amount: pay.totalNum,
+      paidAmount: pay.paidNum,
+      paymentStatus: pay.status,
+      paymentMethod: "cash",
+      currency: "usd",
+      status: remaining > 0 ? "active" : "expired",
+      privateCoachName: renewSub.privateCoachName ?? null,
+      coachId: renewSub.coachId ?? null,
+      activationCode: newRow.activation_code == null ? null : String(newRow.activation_code),
+      createdAt: String(newRow.created_at ?? new Date().toISOString()),
+      createdBy: user.id,
+      lockedAt: String(newRow.created_at ?? new Date().toISOString()),
+    });
+    markSubscriptionRenewed(renewSub.id, String(newRow.id));
+    setToastMessage(`تم تجديد اشتراك ${renewSub.memberName} — $${pay.paidNum}`);
+    closeRenewModal();
+  }, [user, renewSub, renewForm, exchangeRate, addSubscription, markSubscriptionRenewed, closeRenewModal]);
 
   // ── Edit modal state ───────────────────────────────────────────────────────
   const [editSub,        setEditSub]        = useState<Subscription | null>(null);
@@ -520,6 +736,9 @@ export default function SubscriptionsBlock() {
   const filtered = useMemo(() => {
     let result = subscriptions.filter((sub) => {
       if (sub.status === "cancelled") return false;
+      // Renewed rows are hidden from every tab except the dedicated "تجديد"
+      // tab, where they're the source list for renewals.
+      if (sub.status === "renewed" && activeFilter !== "renew") return false;
       if (!subMatchesSearch(sub, searchQuery)) return false;
       if (activeFilter === "all")      return true;
       if (activeFilter === "active")   return sub.status === "active";
@@ -527,6 +746,7 @@ export default function SubscriptionsBlock() {
       if (activeFilter === "unpaid")   return sub.paymentStatus === "unpaid" || sub.paymentStatus === "partial";
       if (activeFilter === "partial")  return sub.paymentStatus === "partial";
       if (activeFilter === "expiring") return sub.status === "active" && sub.remainingDays > 0 && sub.remainingDays <= 7;
+      if (activeFilter === "renew")    return sub.status === "expired" || sub.status === "renewed";
       return true;
     });
     if (sortMode === "alpha") {
@@ -564,12 +784,13 @@ export default function SubscriptionsBlock() {
   }, [filtered]);
 
   const filterCounts: Record<FilterTab, number> = {
-    all:      subscriptions.filter((s) => s.status !== "cancelled").length,
+    all:      subscriptions.filter((s) => s.status !== "cancelled" && s.status !== "renewed").length,
     active:   subscriptions.filter((s) => s.status === "active").length,
     expiring: subscriptions.filter((s) => s.status === "active" && s.remainingDays > 0 && s.remainingDays <= 7).length,
-    unpaid:   subscriptions.filter((s) => s.paymentStatus === "unpaid" || s.paymentStatus === "partial").length,
-    partial:  subscriptions.filter((s) => s.paymentStatus === "partial" && s.status !== "cancelled").length,
+    unpaid:   subscriptions.filter((s) => (s.paymentStatus === "unpaid" || s.paymentStatus === "partial") && s.status !== "renewed").length,
+    partial:  subscriptions.filter((s) => s.paymentStatus === "partial" && s.status !== "cancelled" && s.status !== "renewed").length,
     expired:  subscriptions.filter((s) => s.status === "expired").length,
+    renew:    subscriptions.filter((s) => s.status === "expired").length,
   };
 
   // ── Normal subscription submit ─────────────────────────────────────────────
@@ -656,7 +877,7 @@ export default function SubscriptionsBlock() {
     });
     setPtBusy(false);
     if (r.error) { setPtError(r.error); return; }
-    setPtCount(1); setPtNames([""]); setPtNotes(""); setPtCoach("");
+    setPtCount(1); setPtNames([""]); setPtNotes(""); setPtCoach(""); setPtCoachId(null);
     setPtTotal(String(ptCalc(1).total));
     setPtPaid(String(ptCalc(1).total));
     setFormOpen(false);
@@ -707,6 +928,7 @@ export default function SubscriptionsBlock() {
       exchangeRate,
       groupId,
       privateCoachName: coachPrivateCoach.trim(),
+      coachId: coachPrivateCoachId ?? null,
       note: "Our gym coach private",
     });
     if (subRow.error) { setCoachPrivateError(subRow.error); setCoachPrivateBusy(false); return; }
@@ -745,6 +967,7 @@ export default function SubscriptionsBlock() {
       currency: "usd",
       status: remaining > 0 ? "active" : "expired",
       privateCoachName: coachPrivateCoach.trim(),
+      coachId: coachPrivateCoachId ?? null,
       note: "Our gym coach private",
       activationCode: row.activation_code == null ? null : String(row.activation_code),
       createdAt: String(row.created_at ?? new Date().toISOString()),
@@ -756,6 +979,7 @@ export default function SubscriptionsBlock() {
     setCoachPrivateName("");
     setCoachPrivatePhone("");
     setCoachPrivateCoach("");
+    setCoachPrivateCoachId(null);
     setCoachPrivatePlan("1_month");
     setCoachPrivateStart(new Date().toISOString().split("T")[0]);
     setCoachPrivateTotalAmount(String(coachPrivateTotal("1_month")));
@@ -1182,6 +1406,7 @@ export default function SubscriptionsBlock() {
     { key: "unpaid",   label: "غير مدفوع" },
     { key: "partial",  label: "جزئي" },
     { key: "expired",  label: "منتهي" },
+    { key: "renew",    label: "تجديد" },
   ];
 
   const inputCls  = "ox-input w-full bg-charcoal border border-gunmetal text-offwhite font-body text-sm px-3 py-2 rounded focus:outline-none focus:border-gold/60 focus:ring-1 focus:ring-gold/20 placeholder:text-slate transition-colors";
@@ -1413,10 +1638,12 @@ export default function SubscriptionsBlock() {
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div>
-                        <label className={labelCls}>اسم المدرب الخاص (اختياري)</label>
-                        <input type="text" className={inputCls} placeholder="اسم الكوتش"
-                          value={ptCoach}
-                          onChange={(e) => setPtCoach(e.target.value)} />
+                        <label className={labelCls}>المدرب الخاص (اختياري)</label>
+                        <CoachPicker
+                          value={{ id: ptCoachId, name: ptCoach }}
+                          onChange={(v) => { setPtCoachId(v.id); setPtCoach(v.name); }}
+                          selectCls={selectCls} inputCls={inputCls} labelCls={labelCls}
+                        />
                       </div>
                       <div>
                         <label className={labelCls}>ملاحظات (اختياري)</label>
@@ -1433,7 +1660,7 @@ export default function SubscriptionsBlock() {
                         <LockIcon size={13} />{ptBusy ? "جاري الحفظ…" : "حفظ جلسة التدريب"}
                       </button>
                       <button type="button"
-                        onClick={() => { setPtCount(1); setPtNames([""]); setPtNotes(""); setPtCoach(""); setFormOpen(false); }}
+                        onClick={() => { setPtCount(1); setPtNames([""]); setPtNotes(""); setPtCoach(""); setPtCoachId(null); setFormOpen(false); }}
                         className="px-4 py-2.5 border border-gunmetal text-secondary hover:text-ghost font-body text-sm rounded transition-colors">
                         إلغاء
                       </button>
@@ -1461,10 +1688,13 @@ export default function SubscriptionsBlock() {
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div>
-                        <label className={labelCls}>اسم الكوتش</label>
-                        <input required type="text" className={inputCls} placeholder="اسم الكوتش"
-                          value={coachPrivateCoach}
-                          onChange={(e) => setCoachPrivateCoach(e.target.value)} />
+                        <label className={labelCls}>الكوتش</label>
+                        <CoachPicker
+                          required
+                          value={{ id: coachPrivateCoachId, name: coachPrivateCoach }}
+                          onChange={(v) => { setCoachPrivateCoachId(v.id); setCoachPrivateCoach(v.name); }}
+                          selectCls={selectCls} inputCls={inputCls} labelCls={labelCls}
+                        />
                       </div>
                       <div>
                         <label className={labelCls}>الخطة</label>
@@ -1683,7 +1913,25 @@ export default function SubscriptionsBlock() {
                               </svg>
                             </button>
                           ) : null}
-                          {sub.status !== "expired" && sub.status !== "cancelled" ? (
+                          {sub.status === "expired" ? (
+                            <>
+                              <button
+                                onClick={() => openRenewModal(sub, "quick")}
+                                className="px-2 py-0.5 bg-gold/15 hover:bg-gold/25 border border-gold/30 text-gold font-mono text-[10px] uppercase tracking-wider rounded cursor-pointer transition-colors"
+                                title="تجديد سريع — نفس الخطة"
+                              >
+                                تجديد
+                              </button>
+                              <button
+                                onClick={() => openRenewModal(sub, "custom")}
+                                className="px-2 py-0.5 bg-void hover:bg-gunmetal border border-gunmetal text-secondary hover:text-gold font-mono text-[10px] uppercase tracking-wider rounded cursor-pointer transition-colors"
+                                title="تجديد مخصص — تعديل الخطة والمبلغ"
+                              >
+                                مخصص
+                              </button>
+                            </>
+                          ) : null}
+                          {sub.status !== "expired" && sub.status !== "cancelled" && sub.status !== "renewed" ? (
                             <button
                               onClick={async () => {
                                 if (!user) return;
@@ -2185,6 +2433,84 @@ export default function SubscriptionsBlock() {
               </div>
             )}
           </div>
+        )}
+
+        {/* ── Renew subscription modal ─────────────────────────────────── */}
+        {renewSub && renewForm && typeof document !== "undefined" && createPortal(
+          <div className="fixed inset-0 z-[150] flex items-center justify-center bg-void/80 backdrop-blur-sm" dir="rtl">
+            <div className="bg-charcoal border border-gunmetal rounded clip-corner p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto" style={{ borderTop: "3px solid #F5C100" }}>
+              <div className="flex items-center justify-between mb-5">
+                <h3 className="font-display text-lg tracking-widest text-offwhite">
+                  {renewCustom ? "تجديد مخصص" : "تجديد اشتراك"} — {renewSub.memberName}
+                </h3>
+                <button onClick={closeRenewModal} className="text-secondary hover:text-offwhite cursor-pointer transition-colors">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 13L8 8M13 3L8 8M8 8L3 3M8 8L13 13" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+                </button>
+              </div>
+
+              <p className="font-mono text-[10px] text-secondary uppercase tracking-widest mb-4">
+                الاشتراك السابق انتهى في {formatDate(renewSub.endDate)} — سيُسجَّل سجل جديد بنفس العضو
+              </p>
+
+              <form onSubmit={(e) => { e.preventDefault(); void submitRenew(); }} className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className={labelCls}>الخطة</label>
+                    <div className="relative">
+                      <select className={selectCls} value={renewForm.planType}
+                        onChange={(e) => handleRenewPlanChange(e.target.value as PlanType)}>
+                        {ALL_PLAN_TYPES.map((p) => (
+                          <option key={p} value={p}>{getPlanLabel(p)} — {PLAN_BASE_PRICES[p]} $</option>
+                        ))}
+                        <option value="custom">مخصص — تاريخ نهاية يدوي</option>
+                      </select>
+                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-secondary"><ChevronIcon open={false} /></span>
+                    </div>
+                  </div>
+                  <div>
+                    <label className={labelCls}>تاريخ البدء</label>
+                    <input required type="date" className={inputCls} value={renewForm.startDate}
+                      onChange={(e) => handleRenewStartChange(e.target.value)} />
+                  </div>
+                </div>
+
+                <div>
+                  <label className={labelCls}>تاريخ النهاية</label>
+                  <input
+                    required type="date" className={inputCls}
+                    value={renewForm.endDate}
+                    onChange={(e) => setRenewForm((p) => p ? { ...p, endDate: e.target.value } : p)}
+                    disabled={renewForm.planType !== "custom" && !renewCustom}
+                  />
+                  {renewForm.planType !== "custom" && !renewCustom && (
+                    <p className="font-mono text-[9px] text-slate mt-1">يُحسب تلقائياً من الخطة — اختر &quot;مخصص&quot; لتعديله يدوياً</p>
+                  )}
+                </div>
+
+                <PaymentFields
+                  totalAmount={renewForm.amount}
+                  onTotalChange={(v) => setRenewForm((p) => p ? { ...p, amount: v } : p)}
+                  paidAmount={renewForm.paidAmount}
+                  onPaidChange={(v) => setRenewForm((p) => p ? { ...p, paidAmount: v } : p)}
+                  inputCls={inputCls}
+                  labelCls={labelCls}
+                  error={renewError}
+                />
+
+                <div className="flex items-center gap-3 pt-2">
+                  <button type="submit" disabled={renewBusy}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 bg-gold hover:bg-gold-bright text-void font-display text-sm tracking-widest uppercase clip-corner-sm transition-colors disabled:opacity-40">
+                    <LockIcon size={13} />{renewBusy ? "جاري الحفظ…" : "تأكيد التجديد"}
+                  </button>
+                  <button type="button" onClick={closeRenewModal}
+                    className="px-4 py-2.5 border border-gunmetal text-secondary hover:text-ghost font-body text-sm rounded transition-colors">
+                    إلغاء
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
         )}
 
         {/* ── Edit subscription modal — portal-rendered so it can't be

@@ -38,7 +38,21 @@ export type OfferType =
   | "group_9";            // 9 people pay for 7
 
 export type PaymentStatus = "paid" | "partial" | "unpaid";
-export type SubStatus = "active" | "expired" | "frozen" | "cancelled";
+export type SubStatus = "active" | "expired" | "frozen" | "cancelled" | "renewed";
+
+// Roster of the gym's employed trainers. Surfaced as a dropdown on the
+// private + coach_private subscription forms; managed via the manager
+// dashboard. Coaches are NOT members.
+export interface Coach {
+  id: string;
+  name: string;
+  phone: string | null;
+  sharePercentage: number | null;
+  isActive: boolean;
+  notes: string | null;
+  createdAt: string;
+  createdBy: string | null;
+}
 
 export interface Subscription {
   id: string;
@@ -58,6 +72,8 @@ export interface Subscription {
   currency?: Currency;
   status: SubStatus;
   privateCoachName?: string | null;
+  coachId?: string | null;
+  renewedToSubscriptionId?: string | null;
   note?: string | null;
   activationCode?: string | null;
   createdAt: string;

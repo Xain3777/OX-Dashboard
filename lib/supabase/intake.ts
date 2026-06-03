@@ -332,6 +332,7 @@ export async function pushSubscription(opts: {
   exchangeRate: number;
   groupId?: string;
   privateCoachName?: string | null;
+  coachId?: string | null;
   note?: string | null;
 }): Promise<{ data?: DbRow; error?: string }> {
   try {
@@ -421,6 +422,7 @@ export async function pushSubscription(opts: {
       status: "active",
       ...(opts.groupId ? { group_id: opts.groupId } : {}),
       private_coach_name: trimmedCoach || null,
+      ...(opts.coachId ? { coach_id: opts.coachId } : {}),
       note: trimmedNote || null,
       activation_code: activationCode,
       cash_session_id: cashSessionId,
@@ -541,6 +543,195 @@ export async function updateSubscription(
     return { data: data as DbRow };
   } catch (e) {
     logError("gym_subscriptions", "update", e);
+    return { error: String(e) };
+  }
+}
+
+// ── subscriptions: renew ──────────────────────────────────────
+//
+// Renewing a subscription is two writes:
+//   1. INSERT a fresh subscription row for the same member with the
+//      new plan / amount / start / end. This is the row whose
+//      created_at lands in today's session + daily revenue.
+//   2. UPDATE the old row to status='renewed' with a back-link to
+//      the new row's id.
+//
+// Both rows share the same member_id, so member counts stay stable.
+// Activation codes are NOT reused — every row gets a fresh code via
+// pushSubscription's existing generator.
+export async function renewSubscription(opts: {
+  user: CurrentUser;
+  oldSubscriptionId: string;
+  memberId?: string;
+  memberName: string;
+  phone?: string;
+  planType: string;
+  startDate: string;
+  endDate: string;
+  amount: number;
+  paidAmount: number;
+  paymentStatus: "paid" | "partial" | "unpaid";
+  paymentMethod?: string;
+  currency?: Currency;
+  exchangeRate: number;
+  privateCoachName?: string | null;
+  coachId?: string | null;
+  note?: string | null;
+}): Promise<{ data?: DbRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.oldSubscriptionId) return { error: "معرّف الاشتراك القديم مفقود" };
+
+    const created = await pushSubscription({
+      user: opts.user,
+      memberName: opts.memberName,
+      memberId: opts.memberId,
+      phone: opts.phone,
+      planType: opts.planType,
+      offer: "none",
+      startDate: opts.startDate,
+      endDate: opts.endDate,
+      amount: opts.amount,
+      paidAmount: opts.paidAmount,
+      paymentStatus: opts.paymentStatus,
+      paymentMethod: opts.paymentMethod,
+      currency: opts.currency ?? "usd",
+      exchangeRate: opts.exchangeRate,
+      privateCoachName: opts.privateCoachName ?? null,
+      coachId: opts.coachId ?? null,
+      note: opts.note ?? null,
+    });
+    if (created.error || !created.data) return { error: created.error ?? "تعذر إنشاء الاشتراك الجديد" };
+
+    const newRow = created.data as DbRow;
+    const newId  = String(newRow.id);
+
+    const supabase = supabaseBrowser();
+    const { error: upErr } = await supabase
+      .from("gym_subscriptions")
+      .update({ status: "renewed", renewed_to_subscription_id: newId })
+      .eq("id", opts.oldSubscriptionId);
+    if (upErr) {
+      logError("gym_subscriptions", "renew-mark-old", upErr);
+      // Don't surface as a hard failure — the new row already exists and
+      // money is captured. The cashier can re-mark the old row later.
+    }
+
+    return { data: newRow };
+  } catch (e) {
+    logError("gym_subscriptions", "renew", e);
+    return { error: String(e) };
+  }
+}
+
+// ── coaches roster ────────────────────────────────────────────
+//
+// Coaches are the gym's employed trainers (NOT members). The roster
+// powers the private / coach_private coach picker and per-coach
+// revenue rollups. RLS: read = all authenticated; insert = any
+// authenticated cashier (so a new coach can be onboarded from the
+// subscription form); update / delete = manager only.
+
+export interface CoachRow {
+  id: string;
+  name: string;
+  phone: string | null;
+  share_percentage: number | null;
+  is_active: boolean;
+  notes: string | null;
+  created_at: string;
+  created_by: string | null;
+}
+
+export async function fetchCoaches(): Promise<{ data?: CoachRow[]; error?: string }> {
+  try {
+    const supabase = supabaseBrowser();
+    const { data, error } = await supabase
+      .from("coaches")
+      .select("id, name, phone, share_percentage, is_active, notes, created_at, created_by")
+      .order("is_active", { ascending: false })
+      .order("name", { ascending: true });
+    if (error) { logError("coaches", "select", error); return { error: error.message }; }
+    return { data: (data ?? []) as CoachRow[] };
+  } catch (e) {
+    logError("coaches", "select", e);
+    return { error: String(e) };
+  }
+}
+
+export async function addCoach(opts: {
+  user: CurrentUser;
+  name: string;
+  phone?: string | null;
+  sharePercentage?: number | null;
+  notes?: string | null;
+}): Promise<{ data?: CoachRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    const trimmedName = opts.name.trim();
+    if (!trimmedName) return { error: "اسم الكوتش مطلوب" };
+    const supabase = supabaseBrowser();
+    const payload = {
+      name: trimmedName,
+      phone: (opts.phone ?? "").toString().trim() || null,
+      share_percentage:
+        opts.sharePercentage != null && Number.isFinite(opts.sharePercentage)
+          ? opts.sharePercentage
+          : null,
+      notes: (opts.notes ?? "").toString().trim() || null,
+      is_active: true,
+      created_by: opts.user.id,
+    };
+    const { data, error } = await supabase
+      .from("coaches")
+      .insert(payload)
+      .select()
+      .single();
+    if (error) { logError("coaches", "insert", error); return { error: error.message }; }
+    logSuccess("coaches", "insert", data);
+    return { data: data as CoachRow };
+  } catch (e) {
+    logError("coaches", "insert", e);
+    return { error: String(e) };
+  }
+}
+
+export async function updateCoach(
+  id: string,
+  fields: {
+    name?: string;
+    phone?: string | null;
+    sharePercentage?: number | null;
+    notes?: string | null;
+    isActive?: boolean;
+  },
+  user: CurrentUser
+): Promise<{ data?: CoachRow; error?: string }> {
+  try {
+    assertUser(user);
+    if (!id) return { error: "معرّف الكوتش مفقود" };
+    const mapped: Record<string, unknown> = {};
+    if (fields.name !== undefined) mapped.name = fields.name.trim();
+    if (fields.phone !== undefined) mapped.phone = (fields.phone ?? "").toString().trim() || null;
+    if (fields.sharePercentage !== undefined)
+      mapped.share_percentage =
+        fields.sharePercentage != null && Number.isFinite(fields.sharePercentage)
+          ? fields.sharePercentage
+          : null;
+    if (fields.notes !== undefined) mapped.notes = (fields.notes ?? "").toString().trim() || null;
+    if (fields.isActive !== undefined) mapped.is_active = fields.isActive;
+
+    const supabase = supabaseBrowser();
+    const { data, error } = await supabase
+      .from("coaches")
+      .update(mapped)
+      .eq("id", id)
+      .select()
+      .single();
+    if (error) { logError("coaches", "update", error); return { error: error.message }; }
+    return { data: data as CoachRow };
+  } catch (e) {
+    logError("coaches", "update", e);
     return { error: String(e) };
   }
 }
