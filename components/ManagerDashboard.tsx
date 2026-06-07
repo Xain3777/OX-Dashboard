@@ -8,7 +8,7 @@ import {
   Check, X, AlertTriangle, ChefHat, Package, ReceiptText,
   Users, Dumbbell, Clock, Edit2, ShoppingBag, DollarSign,
   TrendingUp, TrendingDown, Banknote, Activity, CreditCard,
-  Calendar, Snowflake, CalendarX, CalendarClock,
+  Calendar, Snowflake, CalendarX, CalendarClock, DoorOpen,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
@@ -19,7 +19,10 @@ import type { Product } from "@/lib/types";
 import {
   getPlanLabel, getOfferLabel, getProductCategoryLabel, getCategoryLabel,
 } from "@/lib/business-logic";
-import { cancelTransaction, pushExpense, updateExpense } from "@/lib/supabase/intake";
+import {
+  cancelTransaction, pushExpense, updateExpense,
+  upsertAnvizMemberMap, updateAnvizMemberMap, deleteAnvizMemberMap,
+} from "@/lib/supabase/intake";
 import { formatTime, formatDate } from "@/lib/utils/time";
 import KPIStrip from "@/components/KPIStrip";
 import DailyExportButton from "@/components/DailyExportButton";
@@ -41,7 +44,7 @@ import {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-type ManagerSection = "sessions" | "subscriptions" | "inbody" | "store" | "kitchen" | "expenses" | "audit" | "activity";
+type ManagerSection = "sessions" | "subscriptions" | "inbody" | "store" | "kitchen" | "expenses" | "gate" | "audit" | "activity";
 
 const FOOD_CATEGORIES: FoodItemCategory[] = ["meals", "meal_addons", "other", "breakfast", "salads", "drinks", "snacks", "food"];
 const FOOD_CAT_LABELS: Record<FoodItemCategory, string> = {
@@ -1818,6 +1821,279 @@ function ExpensesNetSection({
   );
 }
 
+// ─── Gate access (Anviz) ──────────────────────────────────────────────────────
+//
+// Maps Anviz device UserIDs to gym members by name and shows each member's
+// live gate status. Reads anviz_member_map directly (mirrors useProfileNames);
+// writes go through intake.ts. The external sync script turns these rows +
+// subscription state into UserFlag 1/0 on the physical gate.
+
+interface AnvizMapRow {
+  id: string;
+  anvizUserid: number;
+  memberName: string;
+  blocked: boolean;
+  notes: string | null;
+}
+
+function useAnvizMap(): { rows: AnvizMapRow[]; loading: boolean; refetch: () => void } {
+  const [rows, setRows] = useState<AnvizMapRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [tick, setTick] = useState(0);
+  const refetch = useCallback(() => setTick((t) => t + 1), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const supabase = supabaseBrowser();
+    async function load() {
+      const { data, error } = await supabase
+        .from("anviz_member_map")
+        .select("id, anviz_userid, member_name, blocked, notes")
+        .order("anviz_userid", { ascending: true });
+      if (cancelled) return;
+      if (!error) {
+        setRows((data ?? []).map((r: Record<string, unknown>) => ({
+          id: String(r.id),
+          anvizUserid: Number(r.anviz_userid),
+          memberName: r.member_name == null ? "" : String(r.member_name),
+          blocked: Boolean(r.blocked),
+          notes: r.notes == null ? null : String(r.notes),
+        })));
+      }
+      setLoading(false);
+    }
+    void load();
+    const ch = supabase
+      .channel("anviz-member-map")
+      .on("postgres_changes", { event: "*", schema: "public", table: "anviz_member_map" }, () => { if (!cancelled) void load(); })
+      .subscribe();
+    return () => { cancelled = true; void supabase.removeChannel(ch); };
+  }, [tick]);
+
+  return { rows, loading, refetch };
+}
+
+// Arabic has no letter case, so this just lowercases (no-op for Arabic) and
+// trims, so trailing spaces / casing don't accidentally unlink a member.
+const normalizeGateName = (s: string) => s.toLocaleLowerCase("ar-SY").trim();
+
+function GateManager() {
+  const { user } = useAuth();
+  const { subscriptions } = useStore();
+  const { rows, loading, refetch } = useAnvizMap();
+
+  // normalized member name -> presence flags, from the local subscription mirror.
+  const subIndex = useMemo(() => {
+    const m = new Map<string, { hasAny: boolean; hasActive: boolean }>();
+    for (const s of subscriptions) {
+      const key = normalizeGateName(s.memberName);
+      if (!key) continue;
+      const cur = m.get(key) ?? { hasAny: false, hasActive: false };
+      cur.hasAny = true;
+      if (s.status === "active") cur.hasActive = true;
+      m.set(key, cur);
+    }
+    return m;
+  }, [subscriptions]);
+
+  const gateStatus = useCallback((row: AnvizMapRow): { label: string; cls: string } => {
+    const found = subIndex.get(normalizeGateName(row.memberName));
+    if (!found)         return { label: "غير مرتبط", cls: "text-[#777777] border-[#555555]/30 bg-[#252525]" };
+    if (row.blocked)    return { label: "محظور",     cls: "text-[#FF3333] border-[#FF3333]/30 bg-[#FF3333]/10" };
+    if (found.hasActive) return { label: "مفعّل",     cls: "text-[#5CC45C] border-[#5CC45C]/30 bg-[#5CC45C]/10" };
+    return { label: "منتهي", cls: "text-[#FF3333] border-[#FF3333]/30 bg-[#FF3333]/10" };
+  }, [subIndex]);
+
+  // ── Add form ──
+  const [newId, setNewId] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newBlocked, setNewBlocked] = useState(false);
+  const [newNotes, setNewNotes] = useState("");
+  const [msg, setMsg] = useState("");
+  const [ok, setOk] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function handleAdd() {
+    setMsg(""); setOk("");
+    if (!user) return;
+    const id = parseInt(newId, 10);
+    if (!Number.isInteger(id) || id <= 0) { setMsg("رقم البوابة غير صحيح."); return; }
+    if (!newName.trim()) { setMsg("أدخل اسم العضو."); return; }
+    setBusy(true);
+    const r = await upsertAnvizMemberMap({
+      user: { id: user.id, displayName: user.displayName },
+      anvizUserid: id, memberName: newName.trim(),
+      blocked: newBlocked, notes: newNotes.trim() || null,
+    });
+    setBusy(false);
+    if (r.error) { setMsg(r.error); return; }
+    setNewId(""); setNewName(""); setNewBlocked(false); setNewNotes("");
+    setOk("تم الحفظ."); setTimeout(() => setOk(""), 2000);
+    void refetch();
+  }
+
+  // ── Inline edit ──
+  const [editId, setEditId] = useState<string | null>(null);
+  const [eAnviz, setEAnviz] = useState("");
+  const [eName, setEName] = useState("");
+  const [eBlocked, setEBlocked] = useState(false);
+  const [eNotes, setENotes] = useState("");
+
+  function startEdit(row: AnvizMapRow) {
+    setEditId(row.id);
+    setEAnviz(String(row.anvizUserid));
+    setEName(row.memberName);
+    setEBlocked(row.blocked);
+    setENotes(row.notes ?? "");
+    setMsg("");
+  }
+
+  async function saveEdit(row: AnvizMapRow) {
+    if (!user) return;
+    const id = parseInt(eAnviz, 10);
+    if (!Number.isInteger(id) || id <= 0) { setMsg("رقم البوابة غير صحيح."); return; }
+    if (!eName.trim()) { setMsg("أدخل اسم العضو."); return; }
+    setBusy(true);
+    const r = await updateAnvizMemberMap({
+      user: { id: user.id, displayName: user.displayName },
+      id: row.id, anvizUserid: id, memberName: eName.trim(),
+      blocked: eBlocked, notes: eNotes.trim() || null,
+    });
+    setBusy(false);
+    if (r.error) { setMsg(r.error); return; }
+    setEditId(null);
+    void refetch();
+  }
+
+  async function toggleBlocked(row: AnvizMapRow) {
+    if (!user) return;
+    setBusy(true);
+    const r = await updateAnvizMemberMap({ user: { id: user.id, displayName: user.displayName }, id: row.id, blocked: !row.blocked });
+    setBusy(false);
+    if (r.error) { setMsg(r.error); return; }
+    void refetch();
+  }
+
+  async function handleDelete(row: AnvizMapRow) {
+    if (!user) return;
+    if (!window.confirm(`حذف ربط البوابة للعضو ${row.memberName} (رقم ${row.anvizUserid})؟`)) return;
+    setBusy(true);
+    const r = await deleteAnvizMemberMap({ user: { id: user.id, displayName: user.displayName }, id: row.id });
+    setBusy(false);
+    if (r.error) { setMsg(r.error); return; }
+    if (editId === row.id) setEditId(null);
+    void refetch();
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Add / link form */}
+      <div className="bg-[#1A1A1A] border border-[#252525] rounded-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-[#252525] bg-[#111111]">
+          <SubHeader label="ربط رقم بوابة بعضو" />
+          <div className="flex flex-wrap gap-2">
+            <input value={newId} onChange={(e) => setNewId(e.target.value)} placeholder="رقم البوابة" type="number" min="1" className={`w-28 ${INPUT}`} />
+            <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="اسم العضو (كما في الاشتراكات)" className={`flex-1 min-w-[200px] ${INPUT}`} />
+            <input value={newNotes} onChange={(e) => setNewNotes(e.target.value)} placeholder="ملاحظات (اختياري)" className={`flex-1 min-w-[160px] ${INPUT}`} />
+            <button type="button" onClick={() => setNewBlocked((v) => !v)}
+              className={`font-mono text-[10px] px-3 py-1.5 rounded-sm border cursor-pointer transition-colors ${newBlocked ? "text-[#FF3333] border-[#FF3333]/30 bg-[#FF3333]/10" : "text-[#777777] border-[#252525]"}`}>
+              {newBlocked ? "محظور ✓" : "حظر يدوي"}
+            </button>
+            <button onClick={handleAdd} disabled={busy} className={`${BTN_ADD} disabled:opacity-40`}><Plus size={12} />حفظ</button>
+          </div>
+          {msg && <p className="mt-2 text-[11px] font-mono text-[#FF3333]">{msg}</p>}
+          {ok  && <p className="mt-2 text-[11px] font-mono text-[#5CC45C]">{ok}</p>}
+          <p className="mt-2 font-mono text-[9px] text-[#555555] leading-relaxed">
+            الحالة تُحسب تلقائياً: «مفعّل» عند وجود اشتراك نشط وعدم الحظر، «منتهي» عند انتهاء الاشتراك، «محظور» عند الحظر اليدوي، «غير مرتبط» إذا لم يُطابق الاسم أي عضو.
+          </p>
+        </div>
+      </div>
+
+      {/* Map table */}
+      <div className="bg-[#1A1A1A] border border-[#252525] rounded-sm overflow-hidden">
+        <div className="flex items-center gap-2 px-5 py-3 border-b border-[#252525] bg-[#111111]">
+          <DoorOpen size={13} className="text-[#F5C100]" />
+          <p className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">روابط البوابة</p>
+          <span className="font-mono text-[10px] text-[#555555]">({rows.length})</span>
+        </div>
+        {loading ? (
+          <EmptyTable label="جاري التحميل…" />
+        ) : rows.length === 0 ? (
+          <EmptyTable label="لا توجد روابط بعد" />
+        ) : (
+          <table className="w-full text-xs table-fixed">
+            <colgroup>
+              <col className="w-[92px]" />
+              <col />
+              <col className="w-[96px]" />
+              <col className="w-[80px]" />
+              <col className="w-[24%]" />
+              <col className="w-[84px]" />
+            </colgroup>
+            <THead cols={["رقم البوابة", "اسم العضو", "الحالة", "حظر يدوي", "ملاحظات", "إجراءات"]} />
+            <tbody className="divide-y divide-[#252525]/60">
+              {rows.map((row) => {
+                const editing = editId === row.id;
+                const st = gateStatus(row);
+                return (
+                  <tr key={row.id} className="hover:bg-[#252525]/20 transition-colors align-top">
+                    <td className="px-3 py-2.5 font-mono tabular-nums text-[#F0EDE6]">
+                      {editing
+                        ? <input value={eAnviz} onChange={(e) => setEAnviz(e.target.value)} type="number" min="1" className={`w-16 ${EDIT_INPUT} text-[#F0EDE6]`} />
+                        : row.anvizUserid}
+                    </td>
+                    <td className="px-3 py-2.5 text-[#F0EDE6]">
+                      {editing
+                        ? <input value={eName} onChange={(e) => setEName(e.target.value)} className={`w-full ${EDIT_INPUT} text-[#F0EDE6]`} />
+                        : <span className="block truncate" title={row.memberName}>{row.memberName}</span>}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded border font-mono text-[10px] whitespace-nowrap ${st.cls}`}>{st.label}</span>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      {editing ? (
+                        <button type="button" onClick={() => setEBlocked((v) => !v)}
+                          className={`font-mono text-[10px] px-2 py-0.5 rounded border cursor-pointer ${eBlocked ? "text-[#FF3333] border-[#FF3333]/30 bg-[#FF3333]/10" : "text-[#777777] border-[#252525]"}`}>
+                          {eBlocked ? "نعم" : "لا"}
+                        </button>
+                      ) : (
+                        <button type="button" onClick={() => void toggleBlocked(row)} disabled={busy}
+                          className={`font-mono text-[10px] px-2 py-0.5 rounded border cursor-pointer disabled:opacity-40 ${row.blocked ? "text-[#FF3333] border-[#FF3333]/30 bg-[#FF3333]/10" : "text-[#777777] border-[#252525]"}`}>
+                          {row.blocked ? "نعم" : "لا"}
+                        </button>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-[#AAAAAA]">
+                      {editing
+                        ? <input value={eNotes} onChange={(e) => setENotes(e.target.value)} className={`w-full ${EDIT_INPUT} text-[#AAAAAA]`} />
+                        : (row.notes ? <span className="block truncate font-mono text-[10px]" title={row.notes}>{row.notes}</span> : <span className="text-[#555555]">—</span>)}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <div className="flex items-center gap-1.5">
+                        {editing ? (
+                          <>
+                            <button onClick={() => void saveEdit(row)} disabled={busy} className="p-1 text-[#5CC45C] hover:opacity-80 cursor-pointer disabled:opacity-40" title="حفظ"><Check size={12} /></button>
+                            <button onClick={() => setEditId(null)} className="p-1 text-[#777777] hover:text-[#FF3333] cursor-pointer" title="إلغاء"><X size={12} /></button>
+                          </>
+                        ) : (
+                          <>
+                            <button onClick={() => startEdit(row)} className="p-1 text-[#777777] hover:text-[#F5C100] cursor-pointer" title="تعديل"><Edit2 size={12} /></button>
+                            <button onClick={() => void handleDelete(row)} disabled={busy} className="p-1 text-[#777777] hover:text-[#FF3333] cursor-pointer disabled:opacity-40" title="حذف"><Trash2 size={12} /></button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 type OverviewSection = "revenue" | "subs" | "members" | "other" | "expensesNet";
@@ -1827,7 +2103,7 @@ export default function ManagerDashboard() {
   const [showLogout, setShowLogout] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<ManagerSection, boolean>>({
     sessions: true, subscriptions: true, inbody: true,
-    store: true, kitchen: true, expenses: true, audit: true, activity: false,
+    store: true, kitchen: true, expenses: true, gate: true, audit: true, activity: false,
   });
   const [ovCollapsed, setOvCollapsed] = useState<Record<OverviewSection, boolean>>({
     revenue: false, subs: false, members: false, other: false, expensesNet: false,
@@ -1964,6 +2240,11 @@ export default function ManagerDashboard() {
         <Section title="المصاريف" icon={<ReceiptText size={18} className="text-[#F5C100]" />}
           collapsed={collapsed.expenses} onToggle={() => toggle("expenses")}>
           <ExpensesManager />
+        </Section>
+
+        <Section title="البوابة" icon={<DoorOpen size={18} className="text-[#F5C100]" />}
+          collapsed={collapsed.gate} onToggle={() => toggle("gate")}>
+          <GateManager />
         </Section>
 
         <Section title="تدقيق ومحاسبة" icon={<Shield size={18} className="text-[#F5C100]" />}

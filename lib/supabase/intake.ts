@@ -28,6 +28,42 @@ function logSuccess(table: string, operation: string, data: unknown) {
 
 function logError(table: string, operation: string, error: unknown) {
   console.error("Supabase write failed:", { table, operation, error });
+  // Persist the failure into activity_feed so it surfaces in the Audit Log
+  // ("سجل المراجعة") instead of dying silently in the console. Fire-and-forget
+  // — never block or throw from the error path. Skip activity_feed's own
+  // failures to avoid infinite recursion (a failed error-row insert would
+  // call logError again).
+  if (table !== "activity_feed") void recordFailure(table, operation, error);
+}
+
+// Writes a single 'error' row into activity_feed describing a failed write.
+// Pulls the current auth user directly (so callers don't have to thread a
+// CurrentUser through every logError site); RLS requires created_by = auth.uid().
+async function recordFailure(table: string, operation: string, error: unknown) {
+  try {
+    const supabase = supabaseBrowser();
+    const { data: auth } = await supabase.auth.getUser();
+    const u = auth?.user;
+    if (!u?.id) return; // can't satisfy RLS without an authenticated uid
+    const msg = ((error as { message?: string })?.message ?? String(error)).slice(0, 400);
+    const name =
+      (u.user_metadata?.display_name as string | undefined) ??
+      (u.user_metadata?.full_name as string | undefined) ??
+      u.email ??
+      "—";
+    let cashSessionId: string | null = null;
+    try { cashSessionId = (await getActiveSession())?.id ?? null; } catch { /* ignore */ }
+    await supabase.from("activity_feed").insert({
+      action: "error",
+      description: `فشل: ${operation} على ${table} — ${msg}`,
+      entity_type: table,
+      cash_session_id: cashSessionId,
+      created_by: u.id,
+      created_by_name: name,
+    });
+  } catch {
+    // Swallow — the failure logger must never throw.
+  }
 }
 
 function isMissingDescriptionColumn(error: unknown): boolean {
@@ -309,6 +345,119 @@ export async function findOrCreateMember(opts: {
     return { data: created as MemberRow };
   } catch (e) {
     logError("members", "findOrCreate", e);
+    return { error: String(e) };
+  }
+}
+
+// ── Anviz gate member map ─────────────────────────────────────
+//
+// Links a CrossChex/Anviz device user (the numeric UserID on the gate)
+// to a gym member by name. Manager-only at the RLS layer (migration
+// 0053). The gate-open decision (UserFlag 1/0) is computed downstream by
+// the external sync script — these writers only maintain the mapping +
+// the manual `blocked` override.
+
+// Upsert on the unique anviz_userid so re-entering a number re-points it
+// to the latest member name instead of erroring on the conflict. Only the
+// columns we pass are written, so an existing row's `blocked`/`notes`
+// (set in the Gate tab) survive a re-link from the subscription form.
+export async function upsertAnvizMemberMap(opts: {
+  user: CurrentUser;
+  anvizUserid: number;
+  memberName: string;
+  blocked?: boolean;
+  notes?: string | null;
+}): Promise<{ data?: DbRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!Number.isInteger(opts.anvizUserid)) return { error: "رقم البوابة يجب أن يكون رقماً صحيحاً" };
+    const memberName = opts.memberName.trim();
+    if (!memberName) return { error: "اسم العضو مطلوب لربط البوابة" };
+
+    const supabase = supabaseBrowser();
+    const payload: Record<string, unknown> = {
+      anviz_userid: opts.anvizUserid,
+      member_name: memberName,
+    };
+    if (opts.blocked !== undefined) payload.blocked = opts.blocked;
+    if (opts.notes !== undefined) payload.notes = opts.notes;
+
+    const { data, error } = await supabase
+      .from("anviz_member_map")
+      .upsert(payload, { onConflict: "anviz_userid" })
+      .select()
+      .single();
+    if (error) { logError("anviz_member_map", "upsert", error); return { error: error.message }; }
+    if (!data) { logError("anviz_member_map", "upsert", "no row returned"); return { error: "تعذّر حفظ ربط البوابة — تحقق من الصلاحيات (RLS)" }; }
+    logSuccess("anviz_member_map", "upsert", data);
+    return { data: data as DbRow };
+  } catch (e) {
+    logError("anviz_member_map", "upsert", e);
+    return { error: String(e) };
+  }
+}
+
+// Update an existing mapping by primary key. Used by the Gate-tab inline
+// editor, which can change any field including the anviz_userid itself.
+export async function updateAnvizMemberMap(opts: {
+  user: CurrentUser;
+  id: string;
+  anvizUserid?: number;
+  memberName?: string;
+  blocked?: boolean;
+  notes?: string | null;
+}): Promise<{ data?: DbRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.id) return { error: "معرّف الصف مطلوب" };
+    const patch: Record<string, unknown> = {};
+    if (opts.anvizUserid !== undefined) {
+      if (!Number.isInteger(opts.anvizUserid)) return { error: "رقم البوابة يجب أن يكون رقماً صحيحاً" };
+      patch.anviz_userid = opts.anvizUserid;
+    }
+    if (opts.memberName !== undefined) {
+      const n = opts.memberName.trim();
+      if (!n) return { error: "اسم العضو مطلوب" };
+      patch.member_name = n;
+    }
+    if (opts.blocked !== undefined) patch.blocked = opts.blocked;
+    if (opts.notes !== undefined) patch.notes = opts.notes;
+    if (Object.keys(patch).length === 0) return { error: "لا توجد تغييرات" };
+
+    const supabase = supabaseBrowser();
+    const { data, error } = await supabase
+      .from("anviz_member_map")
+      .update(patch)
+      .eq("id", opts.id)
+      .select()
+      .single();
+    if (error) { logError("anviz_member_map", "update", error); return { error: error.message }; }
+    if (!data) { logError("anviz_member_map", "update", "no row returned"); return { error: "تعذّر تحديث الصف — تحقق من الصلاحيات (RLS)" }; }
+    logSuccess("anviz_member_map", "update", data);
+    return { data: data as DbRow };
+  } catch (e) {
+    logError("anviz_member_map", "update", e);
+    return { error: String(e) };
+  }
+}
+
+export async function deleteAnvizMemberMap(opts: {
+  user: CurrentUser;
+  id: string;
+}): Promise<{ error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.id) return { error: "معرّف الصف مطلوب" };
+    const supabase = supabaseBrowser();
+    const { error } = await supabase
+      .from("anviz_member_map")
+      .delete()
+      .eq("id", opts.id);
+    if (error) { logError("anviz_member_map", "delete", error); return { error: error.message }; }
+    logSuccess("anviz_member_map", "delete", { id: opts.id });
+    return {};
+  } catch (e) {
+    logError("anviz_member_map", "delete", e);
     return { error: String(e) };
   }
 }

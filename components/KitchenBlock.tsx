@@ -235,7 +235,12 @@ export default function KitchenBlock() {
                     const out       = tracked && it.stockQuantity <= 0;
                     const maxed     = tracked && q >= it.stockQuantity;
                     const showBadge = tracked || FORCE_BADGE_NAMES.has(it.name);
-                    const badgeIsOut = showBadge && it.stockQuantity <= 0;
+                    // Badge shows the live remaining inventory: catalog stock
+                    // minus what's already in this pending order. Drops in
+                    // real-time as the cashier presses "+", so they see
+                    // "what's left after this order" while building it.
+                    const remaining = Math.max(0, it.stockQuantity - q);
+                    const badgeIsOut = showBadge && remaining <= 0;
                     return (
                       <div
                         key={it.id}
@@ -247,7 +252,7 @@ export default function KitchenBlock() {
                             title="المخزون"
                           >
                             <span className={`min-w-5 text-center font-mono tabular-nums text-[10px] ${badgeIsOut ? "text-[#FF3333]" : "text-[#5CC45C]"}`}>
-                              {it.stockQuantity}
+                              {remaining}
                             </span>
                           </div>
                         )}

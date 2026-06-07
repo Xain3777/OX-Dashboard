@@ -20,7 +20,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity, UserPlus, ShoppingCart, RotateCcw, Receipt,
-  LogIn, LogOut, BarChart2, DollarSign, Edit3, Trash2, Plus, XCircle,
+  LogIn, LogOut, BarChart2, DollarSign, Edit3, Trash2, Plus, XCircle, AlertTriangle,
 } from "lucide-react";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { formatTime } from "@/lib/utils/time";
@@ -75,6 +75,9 @@ const ACTION_META: Record<string, ActionMeta> = {
 
   // Exchange rate
   exchange_rate_update:     { label: "تغيير الدولار", color: "text-[#F5C100]", borderColor: "border-l-[#F5C100]", icon: <DollarSign size={13} /> },
+
+  // Write failures — captured by logError() in intake.ts.
+  error:                    { label: "خطأ",          color: "text-[#FF3333]", borderColor: "border-l-[#FF3333]", icon: <AlertTriangle size={13} /> },
 };
 
 const FALLBACK_META: ActionMeta = {
@@ -123,7 +126,7 @@ const VALUE_LABEL: Record<string, string> = {
 
 // ── FILTER TABS ───────────────────────────────────────────────
 
-type FilterTab = "all" | "sales" | "subscriptions" | "expenses" | "inbody" | "sessions" | "catalog" | "rate" | "cancels";
+type FilterTab = "all" | "sales" | "subscriptions" | "expenses" | "inbody" | "sessions" | "catalog" | "rate" | "cancels" | "errors";
 
 const FILTER_TABS: { key: FilterTab; label: string }[] = [
   { key: "all",           label: "الكل" },
@@ -135,6 +138,7 @@ const FILTER_TABS: { key: FilterTab; label: string }[] = [
   { key: "catalog",       label: "المخزون والأسعار" },
   { key: "rate",          label: "سعر الدولار" },
   { key: "cancels",       label: "الإلغاءات" },
+  { key: "errors",        label: "الأخطاء" },
 ];
 
 const FILTER_ACTIONS: Record<FilterTab, string[] | null> = {
@@ -147,6 +151,7 @@ const FILTER_ACTIONS: Record<FilterTab, string[] | null> = {
   catalog:       ["catalog_item_create", "catalog_item_update", "catalog_item_delete", "product_stock_adjust", "product_price_update", "food_item_delete"],
   rate:          ["exchange_rate_update"],
   cancels:       ["sales_cancel", "item_sales_cancel", "gym_subscriptions_cancel", "inbody_sessions_cancel", "expenses_cancel"],
+  errors:        ["error"],
 };
 
 // ── Types ─────────────────────────────────────────────────────

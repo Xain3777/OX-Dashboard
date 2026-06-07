@@ -30,6 +30,7 @@ import {
   findOrCreateMember,
   updateSubscription,
   renewSubscription,
+  upsertAnvizMemberMap,
 } from "@/lib/supabase/intake";
 import PaymentFields, { computePayment } from "@/components/PaymentFields";
 
@@ -162,6 +163,7 @@ interface FormState {
   planType: PlanType;
   startDate: string;
   amount: string;
+  gateNumber: string;
 }
 
 const DEFAULT_FORM: FormState = {
@@ -170,6 +172,7 @@ const DEFAULT_FORM: FormState = {
   planType: "1_month",
   startDate: new Date().toISOString().split("T")[0],
   amount: String(PLAN_BASE_PRICES["1_month"]),
+  gateNumber: "",
 };
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -406,7 +409,7 @@ function CoachPicker({
 
 export default function SubscriptionsBlock() {
   const { subscriptions, addSubscription, replaceSubscription, cancelSubscriptionLocal, markSubscriptionRenewed, coaches, coachTrainees, addCoachTrainees, deactivateCoachTrainee } = useStore();
-  const { user } = useAuth();
+  const { user, isManager } = useAuth();
   const { exchangeRate } = useCurrency();
 
   // ── Main view tabs ─────────────────────────────────────────────────────────
@@ -531,12 +534,15 @@ export default function SubscriptionsBlock() {
   const [renewCustom, setRenewCustom] = useState(false);
 
   const openRenewModal = useCallback((sub: Subscription, mode: "quick" | "custom") => {
-    const today = new Date().toISOString().split("T")[0];
+    // Renewal always counts from the renewal date (today), whether the sub is
+    // expired or being renewed early. The money is booked on today's cash
+    // session via the new row's created_at.
+    const startBase = new Date().toISOString().split("T")[0];
     const defaultPlan: PlanType = mode === "quick" ? sub.planType : "1_month";
     const defaultEnd =
       defaultPlan === "custom"
-        ? today
-        : calculateEndDate(today, defaultPlan, "none");
+        ? startBase
+        : calculateEndDate(startBase, defaultPlan, "none");
     const defaultAmount =
       mode === "quick"
         ? String(sub.amount)
@@ -545,7 +551,7 @@ export default function SubscriptionsBlock() {
     setRenewCustom(mode === "custom");
     setRenewForm({
       planType: defaultPlan,
-      startDate: today,
+      startDate: startBase,
       endDate: defaultEnd,
       amount: defaultAmount,
       paidAmount: defaultAmount,
@@ -887,6 +893,23 @@ export default function SubscriptionsBlock() {
       createdBy: user.id,
       lockedAt: String(row.created_at ?? new Date().toISOString()),
     });
+
+    // Optional gate link. Non-fatal: the subscription already saved, so a
+    // gate-link failure must never block or roll back the sub. Empty field =
+    // skip. Field is only shown to managers (gate writes are manager-only).
+    const gate = form.gateNumber.trim();
+    if (gate) {
+      const gateId = Number(gate);
+      if (Number.isInteger(gateId) && gateId > 0) {
+        const g = await upsertAnvizMemberMap({
+          user: { id: user.id, displayName: user.displayName },
+          anvizUserid: gateId,
+          memberName: form.memberName.trim(),
+        });
+        if (g.error) console.error("anviz gate link failed (non-fatal):", g.error);
+      }
+    }
+
     setForm(DEFAULT_FORM);
     setNormalPaid(String(PLAN_BASE_PRICES[DEFAULT_FORM.planType]));
     setFormOpen(false);
@@ -1587,6 +1610,19 @@ export default function SubscriptionsBlock() {
                       </div>
                     </div>
 
+                    {/* Optional gate link — manager-only (gate writes are
+                        manager-restricted by RLS). Leave empty to skip. */}
+                    {isManager && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                          <label className={labelCls}>رقم البوابة (اختياري)</label>
+                          <input type="number" min={1} className={inputCls} placeholder="رقم العضو على جهاز البوابة"
+                            value={form.gateNumber}
+                            onChange={(e) => setForm((p) => ({ ...p, gateNumber: e.target.value }))} />
+                        </div>
+                      </div>
+                    )}
+
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div>
                         <label className={labelCls}>نوع الخطة</label>
@@ -2036,7 +2072,7 @@ export default function SubscriptionsBlock() {
                               </svg>
                             </button>
                           ) : null}
-                          {sub.status === "expired" ? (
+                          {sub.status !== "cancelled" && sub.status !== "renewed" ? (
                             <>
                               <button
                                 onClick={() => openRenewModal(sub, "quick")}
@@ -2644,7 +2680,9 @@ export default function SubscriptionsBlock() {
               </div>
 
               <p className="font-mono text-[10px] text-secondary uppercase tracking-widest mb-4">
-                الاشتراك السابق انتهى في {formatDate(renewSub.endDate)} — سيُسجَّل سجل جديد بنفس العضو
+                {renewSub.endDate >= new Date().toISOString().split("T")[0]
+                  ? `الاشتراك الحالي ينتهي في ${formatDate(renewSub.endDate)} — يبدأ التجديد من اليوم`
+                  : `الاشتراك السابق انتهى في ${formatDate(renewSub.endDate)}`} — سيُسجَّل سجل جديد بنفس العضو
               </p>
 
               <form onSubmit={(e) => { e.preventDefault(); void submitRenew(); }} className="space-y-4">
