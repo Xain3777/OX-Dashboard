@@ -1155,7 +1155,8 @@ function RevenueSummaryCards({
       />
       <SummaryCard
         label="جلسات خاصة" syp={s.privateSessions.syp} usd={s.privateSessions.usd}
-        icon={<Activity size={14} />} skipped={bucketSkipped(s.privateSessions)}
+        icon={<Activity size={14} />} subtitle="ضمن الاشتراكات"
+        skipped={bucketSkipped(s.privateSessions)}
       />
       <SummaryCard
         label="المصاريف" syp={s.expenses.syp} usd={s.expenses.usd}

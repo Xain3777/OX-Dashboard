@@ -793,7 +793,7 @@ export async function fetchManagerDashboardSummary(
   const privateRows = (privateRes.data  ?? []) as Row[];
   const expRows     = (expensesRes.data ?? []) as Row[];
 
-  const subscriptions = bucketise(subRows, "paid_amount");
+  const subscriptionsBase = bucketise(subRows, "paid_amount");
   const inbody        = bucketise(inbodyRows, "amount");
   const storeRows     = saleRows.filter((r) => String(r.source ?? "store") === "store");
   const kitchenRows   = saleRows.filter((r) => String(r.source ?? "store") === "kitchen");
@@ -802,7 +802,13 @@ export async function fetchManagerDashboardSummary(
   const privateSessions = bucketise(privateRows, "paid_amount");
   const expenses      = bucketise(expRows, "amount");
 
-  const totalRevenue = bucketSum(subscriptions, inbody, store, kitchen, privateSessions);
+  // Private-coach ("جلسات خاصة") revenue is folded INTO the subscriptions line,
+  // so registering a private coach raises "إيرادات الاشتراكات" — matching how the
+  // cash-session running total counts it (session.ts → fetchSessionIncome).
+  // `privateSessions` is still returned for the informational breakdown card; it
+  // is a SUBSET of `subscriptions`, so the grand total counts the money once.
+  const subscriptions = bucketSum(subscriptionsBase, privateSessions);
+  const totalRevenue = bucketSum(subscriptions, inbody, store, kitchen);
   const netIncome    = bucketSubtract(totalRevenue, expenses);
 
   // ── active members (point-in-time, NOT range-filtered) ────────────────────
