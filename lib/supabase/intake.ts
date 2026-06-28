@@ -1314,13 +1314,14 @@ export async function pushExpense(opts: {
       note,
       source: opts.source ?? "manager",
     };
-    // Optional columns added in 0065 — only include when supplied so pre-0065
-    // databases (and existing callers that don't pass them) keep working.
-    if (opts.receiptNumber !== undefined) {
-      payload.receipt_number = opts.receiptNumber == null ? null : String(opts.receiptNumber).trim() || null;
-    }
-    if (opts.purchaseInvoiceId !== undefined) {
-      payload.purchase_invoice_id = opts.purchaseInvoiceId ?? null;
+    // Optional columns added in 0065. Only attach receipt_number when there's
+    // an actual non-empty value, so a normal expense (no receipt) still works
+    // on a database where 0065 hasn't been applied yet. purchase_invoice_id is
+    // only ever passed by the purchase path, which legitimately requires 0065.
+    const rn = opts.receiptNumber == null ? "" : String(opts.receiptNumber).trim();
+    if (rn) payload.receipt_number = rn;
+    if (opts.purchaseInvoiceId != null) {
+      payload.purchase_invoice_id = opts.purchaseInvoiceId;
     }
     console.log("Supabase write payload:", { table: "expenses", operation: "insert", payload });
 
