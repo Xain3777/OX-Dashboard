@@ -13,7 +13,7 @@ import {
   Product, Sale, Expense, ExpenseCategory, ExpenseFrequency, PaymentMethod, Subscription, FoodItem, FoodItemCategory,
   CatalogItem, CatalogItemCategory, CatalogItemType, ItemSale,
   PlanType, OfferType, PaymentStatus, SubStatus, Currency, Coach, CoachKind, CoachTrainee,
-  RawMaterial, PurchaseInvoice, PurchaseInvoiceLine,
+  RawMaterial, PurchaseInvoice, PurchaseInvoiceLine, ItemRecipeLine,
 } from "./types";
 import { PRODUCTS, FOOD_ITEMS } from "./mock-data";
 import { generateId, calculateRemainingDays } from "./business-logic";
@@ -36,10 +36,15 @@ import {
   pushPurchaseInvoice as pushPurchaseInvoiceRemote,
   cancelPurchaseInvoice as cancelPurchaseInvoiceRemote,
   cancelPrivateSession as cancelPrivateSessionRemote,
+  fetchItemRecipes as fetchItemRecipesRemote,
+  pushItemRecipe as pushItemRecipeRemote,
+  updateItemRecipe as updateItemRecipeRemote,
+  deleteItemRecipe as deleteItemRecipeRemote,
   CoachRow,
   CoachTraineeRow,
   RawMaterialRow,
   PurchaseLineInput,
+  ItemRecipeRow,
 } from "./supabase/intake";
 
 // Row → domain mappers for the coach roster, reused across hydration,
@@ -91,6 +96,18 @@ function mapRawMaterialRow(r: RawMaterialRow): RawMaterial {
     createdBy: r.created_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+  };
+}
+
+function mapItemRecipeRow(r: ItemRecipeRow): ItemRecipeLine {
+  return {
+    id: r.id,
+    catalogItemId: r.catalog_item_id,
+    rawMaterialId: r.raw_material_id,
+    quantity: Number(r.quantity ?? 0),
+    unit: r.unit,
+    notes: r.notes,
+    createdAt: r.created_at,
   };
 }
 
@@ -232,9 +249,10 @@ export interface StoreState {
   coaches: Coach[];
   coachTrainees: CoachTrainee[];
 
-  // Inventory subsystem (warehouse + purchases)
+  // Inventory subsystem (warehouse + purchases + recipes)
   rawMaterials: RawMaterial[];
   purchaseInvoices: PurchaseInvoice[];
+  itemRecipes: ItemRecipeLine[];
 
   // Legacy compat fields — derived from catalogItems / itemSales for any
   // component that still reads them. Will be removed once the cutover is
@@ -298,6 +316,10 @@ export interface StoreContextType extends StoreState {
   addPurchaseInvoice: (input: { invoiceNumber?: string | null; invoiceDate?: string; supplier?: string | null; notes?: string | null; currency: Currency; lines: PurchaseLineInput[]; source?: "manager" | "reception_daily" }) => Promise<{ error?: string }>;
   cancelPurchaseInvoice: (id: string) => Promise<{ error?: string }>;
   reloadPurchaseInvoices: () => Promise<void>;
+  addItemRecipe: (input: { catalogItemId: string; rawMaterialId: string; quantity: number; unit: string; notes?: string | null }) => Promise<{ error?: string }>;
+  updateItemRecipe: (id: string, fields: { quantity?: number; unit?: string; notes?: string | null }) => Promise<{ error?: string }>;
+  removeItemRecipe: (id: string) => Promise<{ error?: string }>;
+  reloadItemRecipes: () => Promise<void>;
   addInBodySession: (session: InBodySession) => void;
   cancelInBodySession: (id: string) => void;
   updateInBodyPrices: (member: number, nonMember: number) => void;
@@ -346,6 +368,7 @@ const INITIAL_STATE: StoreState = {
   coachTrainees: [],
   rawMaterials: [],
   purchaseInvoices: [],
+  itemRecipes: [],
 };
 
 // ─── Row mappers + legacy adapters (shared by hydration + realtime) ──────────
@@ -508,7 +531,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
     const supabase = supabaseBrowser();
     const today = new Date().toISOString().slice(0, 10);
 
-    const [subsRes, salesRes, inbodyRes, expensesRes, catalogRes, rateRes, activeSession, lastClosed, coachesRes, coachTraineesRes, rawMaterialsRes, purchasesRes] = await Promise.all([
+    const [subsRes, salesRes, inbodyRes, expensesRes, catalogRes, rateRes, activeSession, lastClosed, coachesRes, coachTraineesRes, rawMaterialsRes, purchasesRes, recipesRes] = await Promise.all([
       supabase
         .from("gym_subscriptions")
         .select("*")
@@ -546,6 +569,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
         .select("*, purchase_invoice_lines(*)")
         .is("cancelled_at", null)
         .order("created_at", { ascending: false }),
+      fetchItemRecipesRemote(),
     ]);
 
     type Row = Record<string, unknown>;
@@ -671,6 +695,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
     const coachTrainees: CoachTrainee[] = (coachTraineesRes?.data ?? []).map(mapTraineeRow);
     const rawMaterials: RawMaterial[] = (rawMaterialsRes?.data ?? []).map(mapRawMaterialRow);
     const purchaseInvoices: PurchaseInvoice[] = ((purchasesRes?.data ?? []) as PurchaseRow[]).map(mapPurchaseInvoiceRow);
+    const itemRecipes: ItemRecipeLine[] = (recipesRes?.data ?? []).map(mapItemRecipeRow);
 
     return {
       catalogItems,
@@ -686,6 +711,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       coachTrainees,
       rawMaterials,
       purchaseInvoices,
+      itemRecipes,
       // Legacy compat fields derived from canonical state
       foodItems,
       products,
@@ -733,6 +759,10 @@ const StoreContext = createContext<StoreContextType>({
   addPurchaseInvoice: async () => ({}),
   cancelPurchaseInvoice: async () => ({}),
   reloadPurchaseInvoices: async () => {},
+  addItemRecipe: async () => ({}),
+  updateItemRecipe: async () => ({}),
+  removeItemRecipe: async () => ({}),
+  reloadItemRecipes: async () => {},
   addInBodySession: () => {},
   cancelInBodySession: () => {},
   updateInBodyPrices: () => {},
@@ -1466,6 +1496,47 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return {};
   }, [user, reloadPurchaseInvoices, reloadRawMaterials, reloadExpenses]);
 
+  // ── Inventory: item recipes (bill-of-materials) ─────────────────────────────
+
+  const reloadItemRecipes = useCallback(async () => {
+    const res = await fetchItemRecipesRemote();
+    if (res.error || !res.data) return;
+    setState((prev) => ({ ...prev, itemRecipes: res.data!.map(mapItemRecipeRow) }));
+  }, [setState]);
+
+  const addItemRecipe = useCallback(async (input: { catalogItemId: string; rawMaterialId: string; quantity: number; unit: string; notes?: string | null }) => {
+    if (!user) return { error: "غير مسجل الدخول" };
+    const res = await pushItemRecipeRemote({
+      user: { id: user.id, displayName: user.displayName },
+      catalogItemId: input.catalogItemId,
+      rawMaterialId: input.rawMaterialId,
+      quantity: input.quantity,
+      unit: input.unit,
+      notes: input.notes ?? null,
+    });
+    if (res.error || !res.data) return { error: res.error };
+    const line = mapItemRecipeRow(res.data);
+    setState((prev) => ({ ...prev, itemRecipes: [...prev.itemRecipes, line] }));
+    return {};
+  }, [setState, user]);
+
+  const updateItemRecipe = useCallback(async (id: string, fields: { quantity?: number; unit?: string; notes?: string | null }) => {
+    if (!user) return { error: "غير مسجل الدخول" };
+    const res = await updateItemRecipeRemote(id, fields, { id: user.id, displayName: user.displayName });
+    if (res.error || !res.data) return { error: res.error };
+    const line = mapItemRecipeRow(res.data);
+    setState((prev) => ({ ...prev, itemRecipes: prev.itemRecipes.map((r) => (r.id === id ? line : r)) }));
+    return {};
+  }, [setState, user]);
+
+  const removeItemRecipe = useCallback(async (id: string) => {
+    if (!user) return { error: "غير مسجل الدخول" };
+    const res = await deleteItemRecipeRemote(id, { id: user.id, displayName: user.displayName });
+    if (res.error) return { error: res.error };
+    setState((prev) => ({ ...prev, itemRecipes: prev.itemRecipes.filter((r) => r.id !== id) }));
+    return {};
+  }, [setState, user]);
+
   const pushActivity = useCallback((entry: Omit<ActivityEntry, "id" | "timestamp">) => {
     const full: ActivityEntry = { ...entry, id: generateId(), timestamp: new Date().toISOString() };
     setState((prev) => ({
@@ -1546,9 +1617,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .on("postgres_changes", { event: "*", schema: "public", table: "raw_materials" }, () => void reloadRawMaterials())
       .on("postgres_changes", { event: "*", schema: "public", table: "purchase_invoices" }, () => void reloadPurchaseInvoices())
       .on("postgres_changes", { event: "*", schema: "public", table: "purchase_invoice_lines" }, () => void reloadPurchaseInvoices())
+      .on("postgres_changes", { event: "*", schema: "public", table: "item_recipes" }, () => void reloadItemRecipes())
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
-  }, [userId, reloadRawMaterials, reloadPurchaseInvoices]);
+  }, [userId, reloadRawMaterials, reloadPurchaseInvoices, reloadItemRecipes]);
 
   // ── Local session ──────────────────────────────────────────────────────────
 
@@ -1634,6 +1706,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     addPurchaseInvoice,
     cancelPurchaseInvoice,
     reloadPurchaseInvoices,
+    addItemRecipe,
+    updateItemRecipe,
+    removeItemRecipe,
+    reloadItemRecipes,
     addInBodySession,
     cancelInBodySession,
     updateInBodyPrices,

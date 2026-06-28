@@ -352,6 +352,23 @@ export interface PurchaseInvoice {
   lines: PurchaseInvoiceLine[];
 }
 
+// --- ITEM RECIPES (bill-of-materials / الوصفات) ---
+// Links a sellable CatalogItem to a warehouse RawMaterial it consumes. The
+// `quantity` is consumed per ONE unit sold, in the material's stocking unit;
+// selling the item deducts quantity × units-sold from the warehouse (DB
+// trigger, 0066), and cancelling the sale restores it. `rawMaterialName` is
+// resolved client-side from the store's rawMaterials for display.
+export interface ItemRecipeLine {
+  id: string;
+  catalogItemId: string;
+  rawMaterialId: string;
+  rawMaterialName?: string;
+  quantity: number;
+  unit: string;
+  notes: string | null;
+  createdAt: string;
+}
+
 // --- CASH SESSION / RECONCILIATION ---
 export type SessionStatus = "open" | "closed" | "discrepancy";
 

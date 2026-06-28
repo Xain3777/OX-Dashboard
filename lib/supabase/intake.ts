@@ -2305,6 +2305,145 @@ export async function cancelPurchaseInvoice(opts: {
   }
 }
 
+// ── Item recipes (bill-of-materials / الوصفات) ────────────────
+//
+// Manager-only configuration linking a sellable catalog_item to the
+// warehouse raw_materials it consumes. The deduct/restore of stock on
+// sale/cancel is handled entirely by DB triggers (0066) — these writers
+// only manage the recipe rows themselves. Read = all authenticated;
+// write = manager only (RLS, 0066).
+
+export interface ItemRecipeRow {
+  id: string;
+  catalog_item_id: string;
+  raw_material_id: string;
+  quantity: number;
+  unit: string;
+  notes: string | null;
+  created_at: string;
+}
+
+const ITEM_RECIPE_COLS =
+  "id, catalog_item_id, raw_material_id, quantity, unit, notes, created_at";
+
+export async function fetchItemRecipes(): Promise<{ data?: ItemRecipeRow[]; error?: string }> {
+  try {
+    const supabase = supabaseBrowser();
+    const { data, error } = await supabase
+      .from("item_recipes")
+      .select(ITEM_RECIPE_COLS)
+      .order("created_at", { ascending: true });
+    if (error) { logError("item_recipes", "select", error); return { error: error.message }; }
+    return { data: (data ?? []) as ItemRecipeRow[] };
+  } catch (e) {
+    logError("item_recipes", "select", e);
+    return { error: String(e) };
+  }
+}
+
+export async function pushItemRecipe(opts: {
+  user: CurrentUser;
+  catalogItemId: string;
+  rawMaterialId: string;
+  quantity: number;
+  unit: string;
+  notes?: string | null;
+}): Promise<{ data?: ItemRecipeRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.catalogItemId) return { error: "الصنف مطلوب" };
+    if (!opts.rawMaterialId) return { error: "المادة مطلوبة" };
+    const quantity = Number(opts.quantity);
+    if (!Number.isFinite(quantity) || quantity <= 0) return { error: "الكمية غير صالحة" };
+    const unit = (opts.unit ?? "").trim() || "piece";
+
+    const supabase = supabaseBrowser();
+    const payload = {
+      catalog_item_id: opts.catalogItemId,
+      raw_material_id: opts.rawMaterialId,
+      quantity,
+      unit,
+      notes: (opts.notes ?? "").toString().trim() || null,
+      created_by: opts.user.id,
+    };
+    const { data, error } = await supabase
+      .from("item_recipes")
+      .insert(payload)
+      .select(ITEM_RECIPE_COLS)
+      .single();
+    if (error) {
+      // 23505 = unique_violation: this material is already in the item's recipe.
+      if ((error as { code?: string }).code === "23505") return { error: "هذه المادة مضافة مسبقاً لوصفة هذا الصنف" };
+      logError("item_recipes", "insert", error);
+      return { error: error.message };
+    }
+    if (!data) { logError("item_recipes", "insert", "no row returned"); return { error: "لم تُحفظ الوصفة — تحقق من RLS" }; }
+    logSuccess("item_recipes", "insert", data);
+
+    await pushActivity({
+      user: opts.user,
+      action: "item_recipe_create",
+      description: `مكوّن وصفة — ${quantity} ${unit}`,
+      entityType: "item_recipe",
+      entityId: (data as DbRow).id as string,
+    });
+    return { data: data as ItemRecipeRow };
+  } catch (e) {
+    logError("item_recipes", "insert", e);
+    return { error: String(e) };
+  }
+}
+
+export async function updateItemRecipe(
+  id: string,
+  fields: { quantity?: number; unit?: string; notes?: string | null },
+  user: CurrentUser,
+): Promise<{ data?: ItemRecipeRow; error?: string }> {
+  try {
+    assertUser(user);
+    if (!id) return { error: "معرّف الوصفة مفقود" };
+    const payload: Record<string, unknown> = {};
+    if (fields.quantity != null) {
+      const q = Number(fields.quantity);
+      if (!Number.isFinite(q) || q <= 0) return { error: "الكمية غير صالحة" };
+      payload.quantity = q;
+    }
+    if (fields.unit != null) payload.unit = fields.unit.trim() || "piece";
+    if (fields.notes !== undefined) payload.notes = (fields.notes ?? "").toString().trim() || null;
+    if (Object.keys(payload).length === 0) return { error: "لا تغييرات" };
+
+    const supabase = supabaseBrowser();
+    const { data, error } = await supabase
+      .from("item_recipes")
+      .update(payload)
+      .eq("id", id)
+      .select(ITEM_RECIPE_COLS)
+      .single();
+    if (error) { logError("item_recipes", "update", error); return { error: error.message }; }
+    if (!data) { logError("item_recipes", "update", "no row returned"); return { error: "لم تُحدّث الوصفة — تحقق من RLS" }; }
+    logSuccess("item_recipes", "update", data);
+    return { data: data as ItemRecipeRow };
+  } catch (e) {
+    logError("item_recipes", "update", e);
+    return { error: String(e) };
+  }
+}
+
+export async function deleteItemRecipe(id: string, user: CurrentUser): Promise<{ error?: string }> {
+  try {
+    assertUser(user);
+    if (!id) return { error: "معرّف الوصفة مفقود" };
+    const supabase = supabaseBrowser();
+    const { error } = await supabase.from("item_recipes").delete().eq("id", id);
+    if (error) { logError("item_recipes", "delete", error); return { error: error.message }; }
+    logSuccess("item_recipes", "delete", { id });
+    return {};
+  } catch (e) {
+    logError("item_recipes", "delete", e);
+    return { error: String(e) };
+  }
+}
+
 // ── Session income helpers ────────────────────────────────────
 
 export async function computeSessionIncome(sessionId: string): Promise<{
