@@ -8,6 +8,7 @@ import { useCurrency } from "@/lib/currency-context";
 import { pushItemSale, cancelTransaction } from "@/lib/supabase/intake";
 import type { ItemSale, PaymentMethod } from "@/lib/types";
 import { formatTime } from "@/lib/utils/time";
+import { recipeAvailability } from "@/lib/inventory";
 
 interface QtyMap { [id: string]: number }
 
@@ -44,7 +45,7 @@ function kitchenGroupOf(category: string): KitchenGroupKey {
 
 export default function KitchenBlock() {
   const { user } = useAuth();
-  const { catalogItems, addItemSale, cancelItemSale, itemSales } = useStore();
+  const { catalogItems, addItemSale, cancelItemSale, itemSales, rawMaterials, itemRecipes } = useStore();
   const { exchangeRate } = useCurrency();
 
   const [qty,     setQty]     = useState<QtyMap>({});
@@ -129,6 +130,15 @@ export default function KitchenBlock() {
     if (short) {
       setError(`مخزون غير كافٍ لـ ${short.it.name}. المتاح: ${short.it.stockQuantity}.`);
       return;
+    }
+    // Soft warning when a recipe item's linked warehouse stock can't cover the
+    // order (recipe stock is allowed to go negative — confirm, don't block).
+    const recipeShort = lines
+      .map(({ it, q }) => ({ it, q, avail: recipeAvailability(it.id, rawMaterials, itemRecipes) }))
+      .filter((l) => l.avail != null && l.q > l.avail);
+    if (recipeShort.length > 0) {
+      const names = recipeShort.map((l) => `${l.it.name} (متوفر ${l.avail})`).join("، ");
+      if (!window.confirm(`المخزون غير كافٍ حسب الوصفة لـ: ${names}.\nتسجيل الطلب على أي حال؟`)) return;
     }
 
     setBusy(true);
@@ -232,14 +242,20 @@ export default function KitchenBlock() {
                     const q         = qty[it.id] ?? 0;
                     const lineTotal = q * Number(it.sellPrice);
                     const tracked   = it.trackStock;
-                    const out       = tracked && it.stockQuantity <= 0;
+                    // Recipe-linked items derive availability from the warehouse
+                    // (how many units the linked materials can make) instead of
+                    // the item's own stock_quantity.
+                    const recipeAvail = recipeAvailability(it.id, rawMaterials, itemRecipes);
+                    const hasRecipe = recipeAvail != null;
+                    const baseStock = hasRecipe ? recipeAvail! : it.stockQuantity;
+                    const out       = (tracked && it.stockQuantity <= 0) || (hasRecipe && recipeAvail! <= 0);
                     const maxed     = tracked && q >= it.stockQuantity;
-                    const showBadge = tracked || FORCE_BADGE_NAMES.has(it.name);
-                    // Badge shows the live remaining inventory: catalog stock
+                    const showBadge = tracked || FORCE_BADGE_NAMES.has(it.name) || hasRecipe;
+                    // Badge shows the live remaining inventory: available stock
                     // minus what's already in this pending order. Drops in
                     // real-time as the cashier presses "+", so they see
                     // "what's left after this order" while building it.
-                    const remaining = Math.max(0, it.stockQuantity - q);
+                    const remaining = Math.max(0, baseStock - q);
                     const badgeIsOut = showBadge && remaining <= 0;
                     return (
                       <div

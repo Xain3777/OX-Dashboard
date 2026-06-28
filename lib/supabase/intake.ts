@@ -2444,6 +2444,119 @@ export async function deleteItemRecipe(id: string, user: CurrentUser): Promise<{
   }
 }
 
+// ── Stock adjustments (wastage / corrections) ─────────────────
+//
+// Append-only warehouse movements that aren't purchases or sales. The signed
+// delta is applied to raw_materials.current_quantity by a DB trigger (0067).
+// Insert is manager-only (RLS). Read = all authenticated.
+
+export interface StockAdjustmentRow {
+  id: string;
+  raw_material_id: string;
+  material_name_snapshot: string;
+  delta: number;
+  reason: "waste" | "breakage" | "count" | "gift" | "other";
+  notes: string | null;
+  created_by: string;
+  created_by_name: string | null;
+  created_at: string;
+}
+
+const STOCK_ADJUSTMENT_COLS =
+  "id, raw_material_id, material_name_snapshot, delta, reason, notes, created_by, created_by_name, created_at";
+
+export async function fetchStockAdjustments(): Promise<{ data?: StockAdjustmentRow[]; error?: string }> {
+  try {
+    const supabase = supabaseBrowser();
+    const { data, error } = await supabase
+      .from("stock_adjustments")
+      .select(STOCK_ADJUSTMENT_COLS)
+      .order("created_at", { ascending: false })
+      .limit(500);
+    if (error) { logError("stock_adjustments", "select", error); return { error: error.message }; }
+    return { data: (data ?? []) as StockAdjustmentRow[] };
+  } catch (e) {
+    logError("stock_adjustments", "select", e);
+    return { error: String(e) };
+  }
+}
+
+export async function pushStockAdjustment(opts: {
+  user: CurrentUser;
+  rawMaterialId: string;
+  materialName: string;
+  delta: number;
+  reason: "waste" | "breakage" | "count" | "gift" | "other";
+  notes?: string | null;
+}): Promise<{ data?: StockAdjustmentRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.rawMaterialId) return { error: "المادة مطلوبة" };
+    const delta = Number(opts.delta);
+    if (!Number.isFinite(delta) || delta === 0) return { error: "قيمة التعديل غير صالحة" };
+
+    const supabase = supabaseBrowser();
+    const payload = {
+      raw_material_id: opts.rawMaterialId,
+      material_name_snapshot: (opts.materialName ?? "").trim() || "مادة",
+      delta,
+      reason: opts.reason,
+      notes: (opts.notes ?? "").toString().trim() || null,
+      created_by: opts.user.id,
+      created_by_name: opts.user.displayName ?? null,
+    };
+    const { data, error } = await supabase
+      .from("stock_adjustments")
+      .insert(payload)
+      .select(STOCK_ADJUSTMENT_COLS)
+      .single();
+    if (error) { logError("stock_adjustments", "insert", error); return { error: error.message }; }
+    if (!data) { logError("stock_adjustments", "insert", "no row returned"); return { error: "لم يُحفظ التعديل — تحقق من RLS" }; }
+    logSuccess("stock_adjustments", "insert", data);
+
+    await pushActivity({
+      user: opts.user,
+      action: "stock_adjustment",
+      description: `تعديل مخزون — ${payload.material_name_snapshot} (${delta > 0 ? "+" : ""}${delta})`,
+      entityType: "stock_adjustment",
+      entityId: (data as DbRow).id as string,
+    });
+    return { data: data as StockAdjustmentRow };
+  } catch (e) {
+    logError("stock_adjustments", "insert", e);
+    return { error: String(e) };
+  }
+}
+
+// ── Item sales over a date range (for consumption reports) ────
+// The store only hydrates today's sales; reports need an arbitrary window.
+export interface ItemSaleRangeRow {
+  id: string;
+  catalog_item_id: string | null;
+  quantity: number;
+  created_at: string;
+}
+
+export async function fetchItemSalesRange(opts: {
+  start: string; // yyyy-mm-dd inclusive
+  end: string;   // yyyy-mm-dd inclusive
+}): Promise<{ data?: ItemSaleRangeRow[]; error?: string }> {
+  try {
+    const supabase = supabaseBrowser();
+    const { data, error } = await supabase
+      .from("item_sales")
+      .select("id, catalog_item_id, quantity, created_at")
+      .gte("created_at", opts.start + "T00:00:00")
+      .lte("created_at", opts.end + "T23:59:59")
+      .is("cancelled_at", null);
+    if (error) { logError("item_sales", "select-range", error); return { error: error.message }; }
+    return { data: (data ?? []) as ItemSaleRangeRow[] };
+  } catch (e) {
+    logError("item_sales", "select-range", e);
+    return { error: String(e) };
+  }
+}
+
 // ── Session income helpers ────────────────────────────────────
 
 export async function computeSessionIncome(sessionId: string): Promise<{

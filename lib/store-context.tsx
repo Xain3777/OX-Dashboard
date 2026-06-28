@@ -13,7 +13,7 @@ import {
   Product, Sale, Expense, ExpenseCategory, ExpenseFrequency, PaymentMethod, Subscription, FoodItem, FoodItemCategory,
   CatalogItem, CatalogItemCategory, CatalogItemType, ItemSale,
   PlanType, OfferType, PaymentStatus, SubStatus, Currency, Coach, CoachKind, CoachTrainee,
-  RawMaterial, PurchaseInvoice, PurchaseInvoiceLine, ItemRecipeLine,
+  RawMaterial, PurchaseInvoice, PurchaseInvoiceLine, ItemRecipeLine, StockAdjustment, AdjustmentReason,
 } from "./types";
 import { PRODUCTS, FOOD_ITEMS } from "./mock-data";
 import { generateId, calculateRemainingDays } from "./business-logic";
@@ -40,11 +40,14 @@ import {
   pushItemRecipe as pushItemRecipeRemote,
   updateItemRecipe as updateItemRecipeRemote,
   deleteItemRecipe as deleteItemRecipeRemote,
+  fetchStockAdjustments as fetchStockAdjustmentsRemote,
+  pushStockAdjustment as pushStockAdjustmentRemote,
   CoachRow,
   CoachTraineeRow,
   RawMaterialRow,
   PurchaseLineInput,
   ItemRecipeRow,
+  StockAdjustmentRow,
 } from "./supabase/intake";
 
 // Row → domain mappers for the coach roster, reused across hydration,
@@ -107,6 +110,20 @@ function mapItemRecipeRow(r: ItemRecipeRow): ItemRecipeLine {
     quantity: Number(r.quantity ?? 0),
     unit: r.unit,
     notes: r.notes,
+    createdAt: r.created_at,
+  };
+}
+
+function mapStockAdjustmentRow(r: StockAdjustmentRow): StockAdjustment {
+  return {
+    id: r.id,
+    rawMaterialId: r.raw_material_id,
+    materialNameSnapshot: r.material_name_snapshot,
+    delta: Number(r.delta ?? 0),
+    reason: r.reason as AdjustmentReason,
+    notes: r.notes,
+    createdBy: r.created_by,
+    createdByName: r.created_by_name,
     createdAt: r.created_at,
   };
 }
@@ -249,10 +266,11 @@ export interface StoreState {
   coaches: Coach[];
   coachTrainees: CoachTrainee[];
 
-  // Inventory subsystem (warehouse + purchases + recipes)
+  // Inventory subsystem (warehouse + purchases + recipes + adjustments)
   rawMaterials: RawMaterial[];
   purchaseInvoices: PurchaseInvoice[];
   itemRecipes: ItemRecipeLine[];
+  stockAdjustments: StockAdjustment[];
 
   // Legacy compat fields — derived from catalogItems / itemSales for any
   // component that still reads them. Will be removed once the cutover is
@@ -320,6 +338,8 @@ export interface StoreContextType extends StoreState {
   updateItemRecipe: (id: string, fields: { quantity?: number; unit?: string; notes?: string | null }) => Promise<{ error?: string }>;
   removeItemRecipe: (id: string) => Promise<{ error?: string }>;
   reloadItemRecipes: () => Promise<void>;
+  addStockAdjustment: (input: { rawMaterialId: string; materialName: string; delta: number; reason: AdjustmentReason; notes?: string | null }) => Promise<{ error?: string }>;
+  reloadStockAdjustments: () => Promise<void>;
   addInBodySession: (session: InBodySession) => void;
   cancelInBodySession: (id: string) => void;
   updateInBodyPrices: (member: number, nonMember: number) => void;
@@ -369,6 +389,7 @@ const INITIAL_STATE: StoreState = {
   rawMaterials: [],
   purchaseInvoices: [],
   itemRecipes: [],
+  stockAdjustments: [],
 };
 
 // ─── Row mappers + legacy adapters (shared by hydration + realtime) ──────────
@@ -531,7 +552,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
     const supabase = supabaseBrowser();
     const today = new Date().toISOString().slice(0, 10);
 
-    const [subsRes, salesRes, inbodyRes, expensesRes, catalogRes, rateRes, activeSession, lastClosed, coachesRes, coachTraineesRes, rawMaterialsRes, purchasesRes, recipesRes] = await Promise.all([
+    const [subsRes, salesRes, inbodyRes, expensesRes, catalogRes, rateRes, activeSession, lastClosed, coachesRes, coachTraineesRes, rawMaterialsRes, purchasesRes, recipesRes, adjustmentsRes] = await Promise.all([
       supabase
         .from("gym_subscriptions")
         .select("*")
@@ -570,6 +591,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
         .is("cancelled_at", null)
         .order("created_at", { ascending: false }),
       fetchItemRecipesRemote(),
+      fetchStockAdjustmentsRemote(),
     ]);
 
     type Row = Record<string, unknown>;
@@ -696,6 +718,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
     const rawMaterials: RawMaterial[] = (rawMaterialsRes?.data ?? []).map(mapRawMaterialRow);
     const purchaseInvoices: PurchaseInvoice[] = ((purchasesRes?.data ?? []) as PurchaseRow[]).map(mapPurchaseInvoiceRow);
     const itemRecipes: ItemRecipeLine[] = (recipesRes?.data ?? []).map(mapItemRecipeRow);
+    const stockAdjustments: StockAdjustment[] = (adjustmentsRes?.data ?? []).map(mapStockAdjustmentRow);
 
     return {
       catalogItems,
@@ -712,6 +735,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       rawMaterials,
       purchaseInvoices,
       itemRecipes,
+      stockAdjustments,
       // Legacy compat fields derived from canonical state
       foodItems,
       products,
@@ -763,6 +787,8 @@ const StoreContext = createContext<StoreContextType>({
   updateItemRecipe: async () => ({}),
   removeItemRecipe: async () => ({}),
   reloadItemRecipes: async () => {},
+  addStockAdjustment: async () => ({}),
+  reloadStockAdjustments: async () => {},
   addInBodySession: () => {},
   cancelInBodySession: () => {},
   updateInBodyPrices: () => {},
@@ -1537,6 +1563,32 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return {};
   }, [setState, user]);
 
+  // ── Inventory: stock adjustments (wastage / corrections) ────────────────────
+
+  const reloadStockAdjustments = useCallback(async () => {
+    const res = await fetchStockAdjustmentsRemote();
+    if (res.error || !res.data) return;
+    setState((prev) => ({ ...prev, stockAdjustments: res.data!.map(mapStockAdjustmentRow) }));
+  }, [setState]);
+
+  const addStockAdjustment = useCallback(async (input: { rawMaterialId: string; materialName: string; delta: number; reason: AdjustmentReason; notes?: string | null }) => {
+    if (!user) return { error: "غير مسجل الدخول" };
+    const res = await pushStockAdjustmentRemote({
+      user: { id: user.id, displayName: user.displayName },
+      rawMaterialId: input.rawMaterialId,
+      materialName: input.materialName,
+      delta: input.delta,
+      reason: input.reason,
+      notes: input.notes ?? null,
+    });
+    if (res.error || !res.data) return { error: res.error };
+    const adj = mapStockAdjustmentRow(res.data);
+    // The trigger moved warehouse stock — refresh materials + prepend the entry.
+    setState((prev) => ({ ...prev, stockAdjustments: [adj, ...prev.stockAdjustments] }));
+    await reloadRawMaterials();
+    return {};
+  }, [setState, user, reloadRawMaterials]);
+
   const pushActivity = useCallback((entry: Omit<ActivityEntry, "id" | "timestamp">) => {
     const full: ActivityEntry = { ...entry, id: generateId(), timestamp: new Date().toISOString() };
     setState((prev) => ({
@@ -1618,9 +1670,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .on("postgres_changes", { event: "*", schema: "public", table: "purchase_invoices" }, () => void reloadPurchaseInvoices())
       .on("postgres_changes", { event: "*", schema: "public", table: "purchase_invoice_lines" }, () => void reloadPurchaseInvoices())
       .on("postgres_changes", { event: "*", schema: "public", table: "item_recipes" }, () => void reloadItemRecipes())
+      .on("postgres_changes", { event: "*", schema: "public", table: "stock_adjustments" }, () => { void reloadStockAdjustments(); void reloadRawMaterials(); })
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
-  }, [userId, reloadRawMaterials, reloadPurchaseInvoices, reloadItemRecipes]);
+  }, [userId, reloadRawMaterials, reloadPurchaseInvoices, reloadItemRecipes, reloadStockAdjustments]);
 
   // ── Local session ──────────────────────────────────────────────────────────
 
@@ -1710,6 +1763,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     updateItemRecipe,
     removeItemRecipe,
     reloadItemRecipes,
+    addStockAdjustment,
+    reloadStockAdjustments,
     addInBodySession,
     cancelInBodySession,
     updateInBodyPrices,

@@ -369,6 +369,24 @@ export interface ItemRecipeLine {
   createdAt: string;
 }
 
+// --- STOCK ADJUSTMENTS (wastage / corrections / المستودع) ---
+// An append-only ledger entry for a manual warehouse stock movement that is
+// neither a purchase nor a sale. `delta` is signed (negative = loss). Applied
+// to raw_materials.current_quantity by a DB trigger (0067).
+export type AdjustmentReason = "waste" | "breakage" | "count" | "gift" | "other";
+
+export interface StockAdjustment {
+  id: string;
+  rawMaterialId: string;
+  materialNameSnapshot: string;
+  delta: number;
+  reason: AdjustmentReason;
+  notes: string | null;
+  createdBy: string;
+  createdByName: string | null;
+  createdAt: string;
+}
+
 // --- CASH SESSION / RECONCILIATION ---
 export type SessionStatus = "open" | "closed" | "discrepancy";
 

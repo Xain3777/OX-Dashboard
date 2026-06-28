@@ -32,6 +32,7 @@ import { useStore } from "@/lib/store-context";
 import { useCurrency } from "@/lib/currency-context";
 import { pushItemSale, cancelTransaction } from "@/lib/supabase/intake";
 import type { ItemSale, PaymentMethod } from "@/lib/types";
+import { recipeAvailability } from "@/lib/inventory";
 import BarcodeScanner, { type CatalogItem } from "@/components/BarcodeScanner";
 
 const PRODUCT_CATEGORY_OPTIONS: ProductCategory[] = [
@@ -272,6 +273,8 @@ export default function StoreBlock() {
     products,
     sales,
     catalogItems,
+    rawMaterials,
+    itemRecipes,
     addItemSale,
     cancelItemSale,
     updateProductPrice,
@@ -369,6 +372,12 @@ export default function StoreBlock() {
     if (catalogRow.trackStock && saleQty > catalogRow.stockQuantity) {
       setSaleError(`مخزون غير كافٍ. المتاح: ${catalogRow.stockQuantity} وحدة.`);
       return;
+    }
+    // Soft warning for recipe-linked items whose warehouse stock falls short
+    // (recipe stock may go negative — confirm rather than block).
+    const recipeAvail = recipeAvailability(catalogRow.id, rawMaterials, itemRecipes);
+    if (recipeAvail != null && saleQty > recipeAvail) {
+      if (!window.confirm(`المخزون غير كافٍ حسب الوصفة (متوفر ${recipeAvail}). تسجيل البيع؟`)) return;
     }
     if (!exchangeRate || exchangeRate <= 0) {
       setSaleError("سعر الصرف غير صالح — حدّثه من أعلى الصفحة.");
@@ -528,13 +537,21 @@ export default function StoreBlock() {
                 if (!list || list.length === 0) return null;
                 return (
                   <optgroup key={cat} label={`— ${getProductCategoryLabel(cat)} —`}>
-                    {list.map(p => (
-                      <option key={p.id} value={p.id} disabled={isOutOfStock(p.stock)}>
-                        {p.name}
-                        {isOutOfStock(p.stock) ? " — نفد المخزون" : isLowStock(p.stock, p.lowStockThreshold) ? ` (${p.stock} متبقي)` : ""}
-                        {" · "}{formatMoney(p.price, p.priceCurrency ?? "usd")}
-                      </option>
-                    ))}
+                    {list.map(p => {
+                      // Recipe-linked items report availability from the
+                      // warehouse; others fall back to their own stock count.
+                      const avail = recipeAvailability(p.id, rawMaterials, itemRecipes);
+                      const hasRecipe = avail !== null;
+                      const out = hasRecipe ? avail! <= 0 : isOutOfStock(p.stock);
+                      const suffix = hasRecipe
+                        ? (avail! <= 0 ? " — نفد المخزون" : ` (متوفر ${avail})`)
+                        : (isOutOfStock(p.stock) ? " — نفد المخزون" : isLowStock(p.stock, p.lowStockThreshold) ? ` (${p.stock} متبقي)` : "");
+                      return (
+                        <option key={p.id} value={p.id} disabled={out}>
+                          {p.name}{suffix}{" · "}{formatMoney(p.price, p.priceCurrency ?? "usd")}
+                        </option>
+                      );
+                    })}
                   </optgroup>
                 );
               })}
@@ -576,6 +593,21 @@ export default function StoreBlock() {
             تسجيل بيع
           </button>
         </div>
+
+        {/* Recipe-availability hint for the selected item */}
+        {selectedProduct && (() => {
+          const avail = recipeAvailability(selectedProduct.id, rawMaterials, itemRecipes);
+          if (avail == null) return null;
+          return avail <= 0 ? (
+            <div className="mt-2.5 flex items-center gap-1.5 text-[11px] font-mono text-[#FF3333]">
+              <AlertTriangle size={11} />نفد المخزون حسب الوصفة — تحقق من المستودع
+            </div>
+          ) : (
+            <div className="mt-2.5 flex items-center gap-1.5 text-[11px] font-mono text-[#5CC45C]">
+              <Package size={11} />متوفر حسب الوصفة: {avail}
+            </div>
+          );
+        })()}
 
         {saleError && (
           <div className="mt-2.5 flex items-center gap-1.5 text-[11px] font-mono text-[#FF3333]">

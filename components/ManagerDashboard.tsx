@@ -9,7 +9,7 @@ import {
   Users, Dumbbell, Clock, Edit2, ShoppingBag, DollarSign,
   TrendingUp, TrendingDown, Banknote, Activity, CreditCard,
   Calendar, Snowflake, CalendarX, CalendarClock, DoorOpen,
-  Layers, Boxes, FileText, Link2,
+  Layers, Boxes, FileText, Link2, BarChart3, SlidersHorizontal,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
@@ -35,6 +35,8 @@ import ItemsManager from "@/components/ItemsManager";
 import WarehouseManager from "@/components/WarehouseManager";
 import PurchasesManager from "@/components/PurchasesManager";
 import RecipesManager from "@/components/RecipesManager";
+import InventoryReports from "@/components/InventoryReports";
+import AdjustmentsManager from "@/components/AdjustmentsManager";
 import AuditLog from "@/components/AuditLog";
 import { findStaffByEmail } from "@/lib/staff-accounts";
 import { supabaseBrowser } from "@/lib/supabase/client";
@@ -50,7 +52,7 @@ import {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-type ManagerSection = "sessions" | "subscriptions" | "inbody" | "items" | "warehouse" | "purchases" | "recipes" | "store" | "kitchen" | "profit" | "expenses" | "gate" | "audit" | "activity";
+type ManagerSection = "sessions" | "subscriptions" | "inbody" | "items" | "warehouse" | "purchases" | "recipes" | "invreports" | "adjustments" | "store" | "kitchen" | "profit" | "expenses" | "gate" | "audit" | "activity";
 
 const FOOD_CATEGORIES: FoodItemCategory[] = ["meals", "meal_addons", "other", "breakfast", "salads", "drinks", "snacks", "food"];
 const FOOD_CAT_LABELS: Record<FoodItemCategory, string> = {
@@ -2128,7 +2130,7 @@ export default function ManagerDashboard() {
   const [showLogout, setShowLogout] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<ManagerSection, boolean>>({
     sessions: true, subscriptions: true, inbody: true,
-    items: true, warehouse: true, purchases: true, recipes: true,
+    items: true, warehouse: true, purchases: true, recipes: true, invreports: true, adjustments: true,
     store: true, kitchen: true, profit: true, expenses: true, gate: true, audit: true, activity: false,
   });
   const [ovCollapsed, setOvCollapsed] = useState<Record<OverviewSection, boolean>>({
@@ -2268,6 +2270,16 @@ export default function ManagerDashboard() {
         <Section title="الوصفات — ربط المبيعات بالمخزون" icon={<Link2 size={18} className="text-[#F5C100]" />}
           collapsed={collapsed.recipes} onToggle={() => toggle("recipes")}>
           <RecipesManager />
+        </Section>
+
+        <Section title="تقارير المخزون" icon={<BarChart3 size={18} className="text-[#F5C100]" />}
+          collapsed={collapsed.invreports} onToggle={() => toggle("invreports")}>
+          <InventoryReports />
+        </Section>
+
+        <Section title="تعديلات وهدر المخزون" icon={<SlidersHorizontal size={18} className="text-[#F5C100]" />}
+          collapsed={collapsed.adjustments} onToggle={() => toggle("adjustments")}>
+          <AdjustmentsManager />
         </Section>
 
         <Section title="المتجر — المبيعات والمخزون" icon={<Package size={18} className="text-[#F5C100]" />}
