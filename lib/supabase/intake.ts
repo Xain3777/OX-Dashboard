@@ -390,6 +390,14 @@ export async function upsertAnvizMemberMap(opts: {
     if (error) { logError("anviz_member_map", "upsert", error); return { error: error.message }; }
     if (!data) { logError("anviz_member_map", "upsert", "no row returned"); return { error: "تعذّر حفظ ربط البوابة — تحقق من الصلاحيات (RLS)" }; }
     logSuccess("anviz_member_map", "upsert", data);
+
+    await pushActivity({
+      user: opts.user,
+      action: "gate_link",
+      description: `ربط بوابة — ${memberName} → رقم ${opts.anvizUserid}`,
+      entityType: "anviz_member_map",
+      entityId: (data as DbRow).id as string,
+    });
     return { data: data as DbRow };
   } catch (e) {
     logError("anviz_member_map", "upsert", e);
@@ -434,6 +442,15 @@ export async function updateAnvizMemberMap(opts: {
     if (error) { logError("anviz_member_map", "update", error); return { error: error.message }; }
     if (!data) { logError("anviz_member_map", "update", "no row returned"); return { error: "تعذّر تحديث الصف — تحقق من الصلاحيات (RLS)" }; }
     logSuccess("anviz_member_map", "update", data);
+
+    const r = data as Record<string, unknown>;
+    await pushActivity({
+      user: opts.user,
+      action: "gate_update",
+      description: `تعديل ربط بوابة — ${(r.member_name as string) ?? ""} → رقم ${r.anviz_userid ?? ""}`,
+      entityType: "anviz_member_map",
+      entityId: opts.id,
+    });
     return { data: data as DbRow };
   } catch (e) {
     logError("anviz_member_map", "update", e);
@@ -449,12 +466,27 @@ export async function deleteAnvizMemberMap(opts: {
     assertUser(opts.user);
     if (!opts.id) return { error: "معرّف الصف مطلوب" };
     const supabase = supabaseBrowser();
+    // Read name/number first so the unlink audit entry is human-readable.
+    const { data: prior } = await supabase
+      .from("anviz_member_map")
+      .select("member_name, anviz_userid")
+      .eq("id", opts.id)
+      .maybeSingle();
     const { error } = await supabase
       .from("anviz_member_map")
       .delete()
       .eq("id", opts.id);
     if (error) { logError("anviz_member_map", "delete", error); return { error: error.message }; }
     logSuccess("anviz_member_map", "delete", { id: opts.id });
+
+    const p = (prior ?? {}) as Record<string, unknown>;
+    await pushActivity({
+      user: opts.user,
+      action: "gate_unlink",
+      description: `إلغاء ربط بوابة — ${(p.member_name as string) ?? ""}${p.anviz_userid != null ? ` (رقم ${p.anviz_userid})` : ""}`,
+      entityType: "anviz_member_map",
+      entityId: opts.id,
+    });
     return {};
   } catch (e) {
     logError("anviz_member_map", "delete", e);
@@ -664,9 +696,34 @@ export async function updateSubscription(
     }
     if (Object.keys(mapped).length === 0) return { error: "لا توجد تغييرات" };
 
+    const supabase = supabaseBrowser();
+
+    // Read the row first so we can (1) capture before/after for the audit log
+    // and (2) refresh the amount_syp snapshot when paid_amount changes — using
+    // the row's own currency + frozen exchange_rate, exactly how
+    // pushSubscription computes it at insert. Without (2), the SYP value the
+    // manager dashboard reports (and the cancel-audit entry) goes stale after
+    // an edit.
+    const auditCols =
+      "member_name, phone, plan_type, offer, start_date, end_date, amount, paid_amount, payment_status, private_coach_name, note, currency, exchange_rate, amount_syp";
+    const { data: priorRow } = await supabase
+      .from("gym_subscriptions")
+      .select(auditCols)
+      .eq("id", id)
+      .maybeSingle();
+
+    if (mapped.paid_amount !== undefined && priorRow) {
+      const before = priorRow as Record<string, unknown>;
+      const currency = String(before.currency ?? "usd");
+      const rate = Number(before.exchange_rate ?? 0);
+      const paid = Number(mapped.paid_amount);
+      if (currency === "syp") mapped.amount_syp = Math.round(paid);
+      else if (rate > 0)      mapped.amount_syp = Math.round(paid * rate);
+      // else: no reliable rate on the row — leave the existing snapshot as-is.
+    }
+
     console.log("Supabase update payload:", { table: "gym_subscriptions", id, payload: mapped });
 
-    const supabase = supabaseBrowser();
     // .maybeSingle() — not .single() — so an RLS-blocked update returns
     // data=null cleanly instead of throwing the cryptic
     // "Cannot coerce the result to a single JSON object" error.
@@ -682,12 +739,27 @@ export async function updateSubscription(
     if (!data)  { logError("gym_subscriptions", "update", "no row returned"); return { error: "تعذّر تحديث الاشتراك — تحقق من الصلاحيات أو أن الصف لم يُحذف" }; }
     logSuccess("gym_subscriptions", "update", data);
 
+    // Diff prior vs new so the audit entry records exactly what changed.
+    const newRow = data as Record<string, unknown>;
+    const diffOld: Record<string, unknown> = {};
+    const diffNew: Record<string, unknown> = {};
+    if (priorRow) {
+      const before = priorRow as Record<string, unknown>;
+      for (const k of Object.keys(mapped)) {
+        if (before[k] !== newRow[k]) { diffOld[k] = before[k] ?? null; diffNew[k] = newRow[k] ?? null; }
+      }
+    } else {
+      for (const k of Object.keys(mapped)) diffNew[k] = newRow[k] ?? null;
+    }
+
     await pushActivity({
       user,
       action: "subscription_update",
-      description: `تعديل اشتراك — ${(data as DbRow).member_name as string} (${Object.keys(mapped).join(", ")})`,
+      description: `تعديل اشتراك — ${newRow.member_name as string} (${Object.keys(diffNew).join(", ") || Object.keys(mapped).join(", ")})`,
       entityType: "subscription",
       entityId: id,
+      oldValue: priorRow ? diffOld : null,
+      newValue: diffNew,
     });
     return { data: data as DbRow };
   } catch (e) {
@@ -788,6 +860,7 @@ export interface CoachRow {
   kind: "private" | "gym";
   share_percentage: number | null;
   is_active: boolean;
+  activation_code: string | null;
   notes: string | null;
   created_at: string;
   created_by: string | null;
@@ -798,7 +871,7 @@ export async function fetchCoaches(): Promise<{ data?: CoachRow[]; error?: strin
     const supabase = supabaseBrowser();
     const { data, error } = await supabase
       .from("coaches")
-      .select("id, name, phone, kind, share_percentage, is_active, notes, created_at, created_by")
+      .select("id, name, phone, kind, share_percentage, is_active, activation_code, notes, created_at, created_by")
       .order("is_active", { ascending: false })
       .order("name", { ascending: true });
     if (error) { logError("coaches", "select", error); return { error: error.message }; }
@@ -841,6 +914,14 @@ export async function addCoach(opts: {
       .single();
     if (error) { logError("coaches", "insert", error); return { error: error.message }; }
     logSuccess("coaches", "insert", data);
+
+    await pushActivity({
+      user: opts.user,
+      action: "coach_create",
+      description: `كوتش جديد — ${trimmedName}`,
+      entityType: "coach",
+      entityId: (data as DbRow).id as string,
+    });
     return { data: data as CoachRow };
   } catch (e) {
     logError("coaches", "insert", e);
@@ -881,6 +962,15 @@ export async function updateCoach(
       .select()
       .single();
     if (error) { logError("coaches", "update", error); return { error: error.message }; }
+    logSuccess("coaches", "update", data);
+
+    await pushActivity({
+      user,
+      action: "coach_update",
+      description: `تعديل كوتش — ${(data as DbRow).name as string} (${Object.keys(mapped).join(", ")})`,
+      entityType: "coach",
+      entityId: id,
+    });
     return { data: data as CoachRow };
   } catch (e) {
     logError("coaches", "update", e);
@@ -975,6 +1065,13 @@ export async function addCoachTrainees(opts: {
       return { error: "لم يُسجَّل اللاعبون — تحقق من RLS" };
     }
     logSuccess("coach_trainees", "insert", data);
+
+    await pushActivity({
+      user: opts.user,
+      action: "coach_trainees_add",
+      description: `إضافة ${data.length} لاعب لقائمة الكوتش ${coachName}`,
+      entityType: "coach_trainee",
+    });
     return { data: data as CoachTraineeRow[] };
   } catch (e) {
     logError("coach_trainees", "insert", e);
@@ -987,11 +1084,29 @@ export async function deactivateCoachTrainee(id: string, user: CurrentUser): Pro
     assertUser(user);
     if (!id) return { error: "معرّف اللاعب مفقود" };
     const supabase = supabaseBrowser();
+    // Read name/coach first so the audit entry is human-readable.
+    const { data: prior } = await supabase
+      .from("coach_trainees")
+      .select("name, coach_name")
+      .eq("id", id)
+      .maybeSingle();
     const { error } = await supabase
       .from("coach_trainees")
       .update({ is_active: false })
       .eq("id", id);
     if (error) { logError("coach_trainees", "update", error); return { error: error.message }; }
+    logSuccess("coach_trainees", "deactivate", { id });
+
+    const p = (prior ?? {}) as Record<string, unknown>;
+    const name = (p.name as string) ?? id;
+    const coachName = (p.coach_name as string) ?? "";
+    await pushActivity({
+      user,
+      action: "coach_trainee_remove",
+      description: `إزالة لاعب من قائمة الكوتش${coachName ? ` ${coachName}` : ""} — ${name}`,
+      entityType: "coach_trainee",
+      entityId: id,
+    });
     return {};
   } catch (e) {
     logError("coach_trainees", "update", e);
@@ -1158,6 +1273,11 @@ export async function pushExpense(opts: {
   exchangeRate?: number;
   /** Free-form note from the reception daily-expenses block. */
   note?: string | null;
+  /** رقم الإيصال — optional receipt number (electricity/water/tax bills…).
+   *  Only written when defined so pre-0065 databases keep working. */
+  receiptNumber?: string | null;
+  /** Set only on the mirrored expense row written for a purchase invoice. */
+  purchaseInvoiceId?: string | null;
   /** Where the row originated. Defaults to 'manager'; reception's daily
    *  block writes 'reception_daily' so the manager UI can badge it. */
   source?: "manager" | "reception_daily";
@@ -1181,7 +1301,7 @@ export async function pushExpense(opts: {
           : null;
 
     const note = opts.note == null ? null : String(opts.note).trim() || null;
-    const payload = {
+    const payload: Record<string, unknown> = {
       description: opts.description,
       amount: opts.amount,
       currency: opts.currency,
@@ -1194,6 +1314,14 @@ export async function pushExpense(opts: {
       note,
       source: opts.source ?? "manager",
     };
+    // Optional columns added in 0065 — only include when supplied so pre-0065
+    // databases (and existing callers that don't pass them) keep working.
+    if (opts.receiptNumber !== undefined) {
+      payload.receipt_number = opts.receiptNumber == null ? null : String(opts.receiptNumber).trim() || null;
+    }
+    if (opts.purchaseInvoiceId !== undefined) {
+      payload.purchase_invoice_id = opts.purchaseInvoiceId ?? null;
+    }
     console.log("Supabase write payload:", { table: "expenses", operation: "insert", payload });
 
     const { data, error } = await supabase
@@ -1235,6 +1363,7 @@ export async function updateExpense(opts: {
   category: string;
   exchangeRate?: number;
   note?: string | null;
+  receiptNumber?: string | null;
 }): Promise<{ data?: DbRow; error?: string }> {
   try {
     assertUser(opts.user);
@@ -1265,6 +1394,9 @@ export async function updateExpense(opts: {
     if (opts.note !== undefined) {
       const trimmed = opts.note == null ? null : String(opts.note).trim() || null;
       payload.note = trimmed;
+    }
+    if (opts.receiptNumber !== undefined) {
+      payload.receipt_number = opts.receiptNumber == null ? null : String(opts.receiptNumber).trim() || null;
     }
 
     const { data, error } = await supabase
@@ -1688,7 +1820,7 @@ export async function persistCatalogItemDelete(opts: {
 
 // ── Cancellation (soft-delete) ────────────────────────────────
 
-export type CancellableTable = "sales" | "gym_subscriptions" | "inbody_sessions" | "item_sales" | "expenses";
+export type CancellableTable = "sales" | "gym_subscriptions" | "inbody_sessions" | "item_sales" | "expenses" | "purchase_invoices" | "private_sessions";
 
 export async function cancelTransaction(opts: {
   user: CurrentUser;
@@ -1756,7 +1888,12 @@ export async function cancelTransaction(opts: {
     }
 
     const r = row as Record<string, unknown>;
-    const label = r.product_name || r.member_name || r.description || r.item_name_snapshot || "عملية";
+    const privatePlayers = Array.isArray(r.player_names) ? (r.player_names as unknown[]).join("، ") : "";
+    const label =
+      r.product_name || r.member_name || r.description || r.item_name_snapshot ||
+      (opts.table === "purchase_invoices" ? `فاتورة مشتريات${r.invoice_number ? ` (${r.invoice_number})` : ""}` : null) ||
+      (opts.table === "private_sessions" ? `تدريب خاص${r.private_coach_name ? ` — ${r.private_coach_name}` : ""}${privatePlayers ? ` (${privatePlayers})` : ""}` : null) ||
+      "عملية";
     const amtSYP = Number(r.amount_syp ?? 0);
     await pushActivity({
       user: opts.user,
@@ -1771,6 +1908,398 @@ export async function cancelTransaction(opts: {
     return {};
   } catch (e) {
     logError(opts.table, "cancel", e);
+    return { error: String(e) };
+  }
+}
+
+// ── Raw materials (warehouse / المستودع) ──────────────────────
+//
+// Stock items held in the warehouse, separate from sellable catalog_items.
+// Read = all authenticated; insert = any authenticated user (so reception
+// can create a material while recording a purchase); update/delete =
+// manager only (RLS, migration 0063). Stock quantity is bumped by the
+// purchase-line trigger (0064), never written directly here on a purchase.
+
+export interface RawMaterialRow {
+  id: string;
+  name: string;
+  unit: string;
+  current_quantity: number;
+  last_purchase_price: number | null;
+  cost_currency: "syp" | "usd" | null;
+  low_stock_threshold: number;
+  notes: string | null;
+  is_active: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+const RAW_MATERIAL_COLS =
+  "id, name, unit, current_quantity, last_purchase_price, cost_currency, low_stock_threshold, notes, is_active, created_by, created_at, updated_at";
+
+export async function fetchRawMaterials(): Promise<{ data?: RawMaterialRow[]; error?: string }> {
+  try {
+    const supabase = supabaseBrowser();
+    const { data, error } = await supabase
+      .from("raw_materials")
+      .select(RAW_MATERIAL_COLS)
+      .order("is_active", { ascending: false })
+      .order("name", { ascending: true });
+    if (error) { logError("raw_materials", "select", error); return { error: error.message }; }
+    return { data: (data ?? []) as RawMaterialRow[] };
+  } catch (e) {
+    logError("raw_materials", "select", e);
+    return { error: String(e) };
+  }
+}
+
+export async function pushRawMaterial(opts: {
+  user: CurrentUser;
+  name: string;
+  unit: string;
+  lowStockThreshold?: number;
+  costCurrency?: Currency | null;
+  lastPurchasePrice?: number | null;
+  notes?: string | null;
+}): Promise<{ data?: RawMaterialRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    const name = opts.name.trim();
+    if (!name) return { error: "اسم المادة مطلوب" };
+    const unit = (opts.unit ?? "").trim() || "piece";
+
+    const supabase = supabaseBrowser();
+    const payload = {
+      name,
+      unit,
+      low_stock_threshold:
+        opts.lowStockThreshold != null && Number.isFinite(opts.lowStockThreshold) && opts.lowStockThreshold >= 0
+          ? opts.lowStockThreshold
+          : 0,
+      cost_currency: opts.costCurrency ?? null,
+      last_purchase_price:
+        opts.lastPurchasePrice != null && Number.isFinite(opts.lastPurchasePrice) && opts.lastPurchasePrice >= 0
+          ? opts.lastPurchasePrice
+          : null,
+      notes: (opts.notes ?? "").toString().trim() || null,
+      is_active: true,
+      created_by: opts.user.id,
+    };
+    const { data, error } = await supabase
+      .from("raw_materials")
+      .insert(payload)
+      .select(RAW_MATERIAL_COLS)
+      .single();
+    if (error) { logError("raw_materials", "insert", error); return { error: error.message }; }
+    if (!data) { logError("raw_materials", "insert", "no row returned"); return { error: "لم تُحفظ المادة — تحقق من RLS" }; }
+    logSuccess("raw_materials", "insert", data);
+
+    await pushActivity({
+      user: opts.user,
+      action: "raw_material_create",
+      description: `مادة مستودع جديدة — ${name} (${unit})`,
+      entityType: "raw_material",
+      entityId: (data as DbRow).id as string,
+    });
+    return { data: data as RawMaterialRow };
+  } catch (e) {
+    logError("raw_materials", "insert", e);
+    return { error: String(e) };
+  }
+}
+
+export async function updateRawMaterial(
+  id: string,
+  fields: {
+    name?: string;
+    unit?: string;
+    currentQuantity?: number;
+    lowStockThreshold?: number;
+    costCurrency?: Currency | null;
+    lastPurchasePrice?: number | null;
+    notes?: string | null;
+    isActive?: boolean;
+  },
+  user: CurrentUser,
+): Promise<{ data?: RawMaterialRow; error?: string }> {
+  try {
+    assertUser(user);
+    if (!id) return { error: "معرّف المادة مفقود" };
+    const mapped: Record<string, unknown> = {};
+    if (fields.name !== undefined) {
+      const n = fields.name.trim();
+      if (!n) return { error: "اسم المادة مطلوب" };
+      mapped.name = n;
+    }
+    if (fields.unit !== undefined) mapped.unit = (fields.unit ?? "").trim() || "piece";
+    if (fields.currentQuantity !== undefined) {
+      if (!Number.isFinite(fields.currentQuantity) || fields.currentQuantity < 0) return { error: "الكمية غير صالحة" };
+      mapped.current_quantity = fields.currentQuantity;
+    }
+    if (fields.lowStockThreshold !== undefined) {
+      if (!Number.isFinite(fields.lowStockThreshold) || fields.lowStockThreshold < 0) return { error: "حد التنبيه غير صالح" };
+      mapped.low_stock_threshold = fields.lowStockThreshold;
+    }
+    if (fields.costCurrency !== undefined) mapped.cost_currency = fields.costCurrency ?? null;
+    if (fields.lastPurchasePrice !== undefined)
+      mapped.last_purchase_price =
+        fields.lastPurchasePrice == null || !Number.isFinite(fields.lastPurchasePrice) ? null : fields.lastPurchasePrice;
+    if (fields.notes !== undefined) mapped.notes = (fields.notes ?? "").toString().trim() || null;
+    if (fields.isActive !== undefined) mapped.is_active = fields.isActive;
+    if (Object.keys(mapped).length === 0) return { error: "لا توجد تغييرات" };
+
+    const supabase = supabaseBrowser();
+    const { data, error } = await supabase
+      .from("raw_materials")
+      .update(mapped)
+      .eq("id", id)
+      .select(RAW_MATERIAL_COLS)
+      .maybeSingle();
+    if (error) { logError("raw_materials", "update", error); return { error: error.message }; }
+    if (!data) { logError("raw_materials", "update", "no row returned"); return { error: "تعذّر تعديل المادة — صلاحيات المدير مطلوبة" }; }
+    logSuccess("raw_materials", "update", data);
+
+    await pushActivity({
+      user,
+      action: "raw_material_update",
+      description: `تعديل مادة مستودع — ${(data as DbRow).name as string} (${Object.keys(mapped).join(", ")})`,
+      entityType: "raw_material",
+      entityId: id,
+    });
+    return { data: data as RawMaterialRow };
+  } catch (e) {
+    logError("raw_materials", "update", e);
+    return { error: String(e) };
+  }
+}
+
+// Find an existing material by case-insensitive name, else create it.
+// Used by the purchase form when a line references a brand-new material.
+export async function findOrCreateRawMaterial(opts: {
+  user: CurrentUser;
+  name: string;
+  unit: string;
+}): Promise<{ data?: RawMaterialRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    const name = opts.name.trim();
+    if (!name) return { error: "اسم المادة مطلوب" };
+    const supabase = supabaseBrowser();
+    // Escape LIKE wildcards so a name like "حليب 3%" or "زيت_نباتي" matches
+    // literally instead of as a pattern (which could link to the wrong row).
+    const escaped = name.replace(/[\\%_]/g, (m) => `\\${m}`);
+    const { data: existing, error: lookErr } = await supabase
+      .from("raw_materials")
+      .select(RAW_MATERIAL_COLS)
+      .ilike("name", escaped)
+      .limit(10);
+    if (lookErr) { logError("raw_materials", "select-by-name", lookErr); return { error: lookErr.message }; }
+    // Belt-and-suspenders: confirm an exact (case-insensitive) name match
+    // before reusing a row, so we never silently merge into a near-name.
+    const exact = (existing ?? []).find(
+      (r) => String((r as RawMaterialRow).name).trim().toLocaleLowerCase() === name.toLocaleLowerCase(),
+    );
+    if (exact) return { data: exact as RawMaterialRow };
+    return pushRawMaterial({ user: opts.user, name, unit: opts.unit });
+  } catch (e) {
+    logError("raw_materials", "findOrCreate", e);
+    return { error: String(e) };
+  }
+}
+
+// ── Purchase invoices (فواتير المشتريات) ──────────────────────
+//
+// An inventory-affecting expense. Writes the invoice header + lines (the
+// 0064 trigger bumps warehouse stock), then mirrors the total into ONE
+// expenses row (category 'inventory_purchase', purchase_invoice_id) so the
+// purchase flows into expense breakdowns and the cash-session close with
+// no read-side changes.
+
+export interface PurchaseLineInput {
+  rawMaterialId?: string | null;
+  materialName: string;
+  quantity: number;
+  unit: string;
+  unitPurchasePrice: number;
+  notes?: string | null;
+}
+
+export async function pushPurchaseInvoice(opts: {
+  user: CurrentUser;
+  invoiceNumber?: string | null;
+  invoiceDate?: string; // yyyy-mm-dd; defaults to today
+  supplier?: string | null;
+  notes?: string | null;
+  currency: Currency;
+  exchangeRate: number;
+  lines: PurchaseLineInput[];
+  source?: "manager" | "reception_daily";
+}): Promise<{ data?: DbRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.exchangeRate || opts.exchangeRate <= 0) return { error: "سعر الصرف غير صالح" };
+
+    const cleanLines = (opts.lines ?? [])
+      .map((l) => ({
+        rawMaterialId: l.rawMaterialId ?? null,
+        materialName: (l.materialName ?? "").trim(),
+        quantity: Number(l.quantity),
+        unit: (l.unit ?? "").trim() || "piece",
+        unitPurchasePrice: Number(l.unitPurchasePrice),
+        notes: (l.notes ?? "").toString().trim() || null,
+      }))
+      .filter((l) => l.materialName);
+    if (cleanLines.length === 0) return { error: "أضف بنداً واحداً على الأقل" };
+    for (const l of cleanLines) {
+      if (!Number.isFinite(l.quantity) || l.quantity <= 0) return { error: `الكمية غير صالحة للمادة: ${l.materialName}` };
+      if (!Number.isFinite(l.unitPurchasePrice) || l.unitPurchasePrice < 0) return { error: `سعر الشراء غير صالح للمادة: ${l.materialName}` };
+    }
+
+    const supabase = supabaseBrowser();
+    const cashSessionId = (await getActiveSession())?.id ?? null;
+    const currency = opts.currency;
+    const total = Number(cleanLines.reduce((a, l) => a + l.quantity * l.unitPurchasePrice, 0).toFixed(4));
+    const amountSYP = currency === "syp" ? Math.round(total) : Math.round(total * opts.exchangeRate);
+    const source = opts.source ?? "manager";
+
+    // 1. resolve raw_material_id for every line (create new materials as needed).
+    for (const l of cleanLines) {
+      if (!l.rawMaterialId) {
+        const r = await findOrCreateRawMaterial({ user: opts.user, name: l.materialName, unit: l.unit });
+        if (r.error || !r.data) return { error: r.error ?? `تعذّر إنشاء المادة: ${l.materialName}` };
+        l.rawMaterialId = r.data.id;
+      }
+    }
+
+    // 2. insert the invoice header.
+    const headerPayload = {
+      invoice_number: (opts.invoiceNumber ?? "").toString().trim() || null,
+      invoice_date: opts.invoiceDate || new Date().toISOString().slice(0, 10),
+      supplier: (opts.supplier ?? "").toString().trim() || null,
+      notes: (opts.notes ?? "").toString().trim() || null,
+      total,
+      currency,
+      exchange_rate: opts.exchangeRate,
+      amount_syp: amountSYP,
+      cash_session_id: cashSessionId,
+      source,
+      created_by: opts.user.id,
+      created_by_name: opts.user.displayName,
+    };
+    const { data: invoice, error: invErr } = await supabase
+      .from("purchase_invoices")
+      .insert(headerPayload)
+      .select()
+      .single();
+    if (invErr) { logError("purchase_invoices", "insert", invErr); return { error: invErr.message }; }
+    if (!invoice) { logError("purchase_invoices", "insert", "no row returned"); return { error: "لم تُحفظ الفاتورة — تحقق من RLS" }; }
+    logSuccess("purchase_invoices", "insert", invoice);
+    const invoiceId = String((invoice as DbRow).id);
+
+    // Best-effort rollback: mark the invoice cancelled so the 0064 reverse
+    // trigger undoes any stock the lines added, leaving no half-registered
+    // purchase (stock up but no expense) to corrupt reconciliation.
+    const rollback = async (reason: string) => {
+      const c = await cancelTransaction({ user: opts.user, table: "purchase_invoices", id: invoiceId, reason });
+      if (c.error) logError("purchase_invoices", "rollback", c.error);
+    };
+
+    // 3. insert the lines — the 0064 trigger bumps raw_materials stock.
+    const linePayload = cleanLines.map((l) => ({
+      invoice_id: invoiceId,
+      raw_material_id: l.rawMaterialId,
+      material_name_snapshot: l.materialName,
+      quantity: l.quantity,
+      unit: l.unit,
+      unit_purchase_price: l.unitPurchasePrice,
+      notes: l.notes,
+    }));
+    const { data: lines, error: lineErr } = await supabase
+      .from("purchase_invoice_lines")
+      .insert(linePayload)
+      .select();
+    if (lineErr) {
+      logError("purchase_invoice_lines", "insert", lineErr);
+      await rollback("تراجع: فشل حفظ بنود الفاتورة");
+      return { error: lineErr.message };
+    }
+    if (!lines || (lines as unknown[]).length === 0) {
+      logError("purchase_invoice_lines", "insert", "no rows returned");
+      await rollback("تراجع: لم تُحفظ بنود الفاتورة");
+      return { error: "لم تُحفظ بنود الفاتورة — تحقق من RLS" };
+    }
+    logSuccess("purchase_invoice_lines", "insert", { count: (lines as unknown[]).length });
+
+    // 4. mirror the total into ONE expenses row so totals + cash close include it.
+    const invLabel = headerPayload.invoice_number ? ` (${headerPayload.invoice_number})` : "";
+    const exp = await pushExpense({
+      user: opts.user,
+      description: `مشتريات مخزون${invLabel}`,
+      amount: total,
+      currency,
+      category: "inventory_purchase",
+      exchangeRate: opts.exchangeRate,
+      note: headerPayload.supplier ? `المورّد: ${headerPayload.supplier}` : null,
+      receiptNumber: headerPayload.invoice_number,
+      purchaseInvoiceId: invoiceId,
+      source,
+    });
+    if (exp.error) {
+      // The mirrored expense failed — without it the purchase wouldn't count
+      // toward expenses / cash close. Roll the whole purchase back (reversing
+      // the stock the lines added) so the user can retry cleanly rather than
+      // be left with stock that has no recorded cost.
+      logError("expenses", "purchase-mirror", exp.error);
+      await rollback("تراجع: فشل تسجيل مصروف الفاتورة");
+      return { error: `تعذّر تسجيل مصروف الفاتورة — تم التراجع عن العملية. ${exp.error}` };
+    }
+
+    await pushActivity({
+      user: opts.user,
+      action: "purchase_create",
+      description: `فاتورة مشتريات${invLabel} — ${cleanLines.length} بند — ${
+        currency === "syp" ? `${Math.round(total).toLocaleString("en-US")} ل.س` : `$${total}`
+      }`,
+      amountUSD: currency === "usd" ? total : opts.exchangeRate > 0 ? total / opts.exchangeRate : undefined,
+      amountSYP: amountSYP,
+      entityType: "purchase_invoice",
+      entityId: invoiceId,
+    });
+    return { data: { ...(invoice as DbRow), lines } };
+  } catch (e) {
+    logError("purchase_invoices", "insert", e);
+    return { error: String(e) };
+  }
+}
+
+// Cancel a purchase invoice: flag the invoice (the 0064 trigger reverses
+// warehouse stock) and cancel the linked mirrored expense row.
+export async function cancelPurchaseInvoice(opts: {
+  user: CurrentUser;
+  id: string;
+  reason?: string;
+}): Promise<{ error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.id) return { error: "معرّف الفاتورة مفقود" };
+    const supabase = supabaseBrowser();
+
+    // Cancel the mirrored expense first (best-effort — don't block on it).
+    const { data: linkedExpenses } = await supabase
+      .from("expenses")
+      .select("id")
+      .eq("purchase_invoice_id", opts.id)
+      .is("cancelled_at", null);
+    for (const row of (linkedExpenses ?? []) as Array<{ id: string }>) {
+      const r = await cancelTransaction({ user: opts.user, table: "expenses", id: String(row.id), reason: "إلغاء فاتورة مشتريات" });
+      if (r.error) logError("expenses", "cancel-purchase-mirror", r.error);
+    }
+
+    // Cancel the invoice — the cancelled_at trigger reverses stock.
+    return cancelTransaction({ user: opts.user, table: "purchase_invoices", id: opts.id, reason: opts.reason });
+  } catch (e) {
+    logError("purchase_invoices", "cancel", e);
     return { error: String(e) };
   }
 }
@@ -1818,12 +2347,15 @@ export async function computeSessionIncome(sessionId: string): Promise<{
     );
   };
 
-  const [subsTotal, inbodyTotal, storeTotal, mealsTotal] = await Promise.all([
+  const [subsBase, inbodyTotal, storeTotal, mealsTotal, privateTotal] = await Promise.all([
     sumUSD("gym_subscriptions", "paid_amount"),
     sumUSD("inbody_sessions", "amount"),
     sumItemSalesUSD("store"),
     sumItemSalesUSD("kitchen"),
+    sumUSD("private_sessions", "paid_amount"),
   ]);
+  // Private training money rolls into the subscriptions line.
+  const subsTotal = subsBase + privateTotal;
 
   return {
     subsTotal: Number(subsTotal.toFixed(2)),
@@ -1993,15 +2525,18 @@ export async function closeCashSession(
       );
     };
 
-    const [subsTotal, storeTotal, mealsTotal, inbodyTotal, expensesTotal] = await Promise.all([
+    const [subsTotal, storeTotal, mealsTotal, inbodyTotal, privateTotal, expensesTotal] = await Promise.all([
       sumCol("gym_subscriptions", "paid_amount"),
       sumItemSalesUSD("store"),
       sumItemSalesUSD("kitchen"),
       sumCol("inbody_sessions", "amount"),
+      // Private training ("تدريب خاص") revenue — its own table, USD paid_amount.
+      // Must be in expectedCash or the drawer reads short by the private take.
+      sumCol("private_sessions", "paid_amount"),
       sumExpenses(),
     ]);
 
-    const totalIncome  = subsTotal + storeTotal + mealsTotal + inbodyTotal;
+    const totalIncome  = subsTotal + storeTotal + mealsTotal + inbodyTotal + privateTotal;
     const expectedCash = Number((openingCash + totalIncome - expensesTotal).toFixed(4));
     const difference   = Number((actualCashUSD - expectedCash).toFixed(4));
 
@@ -2153,6 +2688,40 @@ export async function pushPrivateSession(opts: {
     return { data: data as DbRow };
   } catch (e) {
     logError("private_sessions", "insert", e);
+    return { error: String(e) };
+  }
+}
+
+// Cancel a private training session: soft-cancel the revenue row (so it
+// drops out of subscriptions income / cash close) AND deactivate every
+// roster player attached to that session, so the coaches tab and counts
+// stay consistent. A group private session can have several players.
+export async function cancelPrivateSession(opts: {
+  user: CurrentUser;
+  id: string;
+  reason?: string;
+}): Promise<{ error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.id) return { error: "معرّف الجلسة مفقود" };
+
+    // 1. cancel the revenue row (shared soft-cancel path + activity log).
+    const c = await cancelTransaction({ user: opts.user, table: "private_sessions", id: opts.id, reason: opts.reason });
+    if (c.error) return { error: c.error };
+
+    // 2. deactivate the roster players tied to this session (best-effort —
+    //    the money is already reversed; a roster cleanup failure is logged
+    //    but not surfaced as a hard error).
+    const supabase = supabaseBrowser();
+    const { error: rosterErr } = await supabase
+      .from("coach_trainees")
+      .update({ is_active: false })
+      .eq("private_session_id", opts.id);
+    if (rosterErr) logError("coach_trainees", "deactivate-by-private-session", rosterErr);
+
+    return {};
+  } catch (e) {
+    logError("private_sessions", "cancel", e);
     return { error: String(e) };
   }
 }

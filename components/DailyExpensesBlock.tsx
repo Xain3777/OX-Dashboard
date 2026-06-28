@@ -1,13 +1,14 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ReceiptText, Plus, AlertTriangle, CheckCircle, Undo2 } from "lucide-react";
+import { ReceiptText, Plus, AlertTriangle, CheckCircle, Undo2, FileText } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
 import { useCurrency } from "@/lib/currency-context";
 import { pushExpense, cancelTransaction } from "@/lib/supabase/intake";
 import { formatTime } from "@/lib/utils/time";
 import type { Currency, Expense, ExpenseCategory, ExpenseFrequency, PaymentMethod } from "@/lib/types";
+import PurchaseInvoiceForm from "@/components/PurchaseInvoiceForm";
 
 // Reception-side daily expenses. Writes go into the same public.expenses
 // table that the manager dashboard reads — so totals roll into the live
@@ -27,10 +28,12 @@ export default function DailyExpensesBlock() {
   const { exchangeRate } = useCurrency();
   const { expenses, addExpense, removeExpenseLocal } = useStore();
 
+  const [mode,        setMode]        = useState<"expense" | "purchase">("expense");
   const [description, setDescription] = useState("");
   const [amount,      setAmount]      = useState("");
   const [currency,    setCurrency]    = useState<Currency>("syp");
   const [note,        setNote]        = useState("");
+  const [receiptNumber, setReceiptNumber] = useState("");
   const [error,       setError]       = useState("");
   const [success,     setSuccess]     = useState("");
   const [busy,        setBusy]        = useState(false);
@@ -78,6 +81,7 @@ export default function DailyExpensesBlock() {
       category: "miscellaneous",
       exchangeRate,
       note: note.trim() || null,
+      receiptNumber: receiptNumber.trim() || null,
       source: "reception_daily",
     });
     setBusy(false);
@@ -97,10 +101,11 @@ export default function DailyExpensesBlock() {
       createdBy: user.id,
       createdByName: user.displayName,
       note: note.trim() || null,
+      receiptNumber: receiptNumber.trim() || null,
       source: "reception_daily",
     };
     addExpense(full);
-    setDescription(""); setAmount(""); setNote("");
+    setDescription(""); setAmount(""); setNote(""); setReceiptNumber("");
     setSuccess("تم تسجيل المصروف.");
     setTimeout(() => setSuccess(""), 2500);
   }
@@ -143,7 +148,30 @@ export default function DailyExpensesBlock() {
         )}
       </div>
 
+      {/* Mode toggle: plain expense vs inventory purchase invoice */}
+      <div className="flex items-center gap-2 px-5 pt-3">
+        <button
+          onClick={() => setMode("expense")}
+          className={`flex items-center gap-1.5 font-mono text-[10px] px-3 py-1.5 rounded border cursor-pointer transition-colors ${mode === "expense" ? "text-[#F5C100] border-[#F5C100]/40 bg-[#F5C100]/10" : "text-[#777777] border-[#252525] hover:border-[#555555]"}`}
+        >
+          <ReceiptText size={11} /> مصروف عادي
+        </button>
+        <button
+          onClick={() => setMode("purchase")}
+          className={`flex items-center gap-1.5 font-mono text-[10px] px-3 py-1.5 rounded border cursor-pointer transition-colors ${mode === "purchase" ? "text-[#F5C100] border-[#F5C100]/40 bg-[#F5C100]/10" : "text-[#777777] border-[#252525] hover:border-[#555555]"}`}
+        >
+          <FileText size={11} /> فاتورة مشتريات (تزيد المخزون)
+        </button>
+      </div>
+
+      {mode === "purchase" && (
+        <div className="px-5 py-4 border-b border-[#252525] bg-[#111111]/40">
+          <PurchaseInvoiceForm source="reception_daily" />
+        </div>
+      )}
+
       {/* Entry form */}
+      {mode === "expense" && (
       <div className="px-5 py-4 border-b border-[#252525] bg-[#111111]/40">
         <div className="flex flex-wrap items-end gap-2">
           <div className="flex flex-col gap-1 min-w-[180px] flex-1">
@@ -176,7 +204,16 @@ export default function DailyExpensesBlock() {
               <option value="usd">{CURRENCY_LABEL.usd}</option>
             </select>
           </div>
-          <div className="flex flex-col gap-1 min-w-[180px] flex-1">
+          <div className="flex flex-col gap-1 w-32">
+            <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">رقم الإيصال</label>
+            <input
+              value={receiptNumber}
+              onChange={(e) => setReceiptNumber(e.target.value)}
+              placeholder="—"
+              className="bg-[#0A0A0A] border border-[#252525] rounded-sm px-3 py-2 text-xs text-[#AAAAAA] focus:outline-none focus:border-[#F5C100]/40"
+            />
+          </div>
+          <div className="flex flex-col gap-1 min-w-[160px] flex-1">
             <label className="font-mono text-[10px] uppercase tracking-widest text-[#555555]">ملاحظة (اختيارية)</label>
             <input
               value={note}
@@ -197,6 +234,7 @@ export default function DailyExpensesBlock() {
         {error   && <div className="mt-2.5 flex items-center gap-1.5 text-[11px] font-mono text-[#FF3333]"><AlertTriangle size={11} />{error}</div>}
         {success && <div className="mt-2.5 flex items-center gap-1.5 text-[11px] font-mono text-[#5CC45C]"><CheckCircle  size={11} />{success}</div>}
       </div>
+      )}
 
       {/* Today's list */}
       {todayMine.length === 0 ? (
@@ -208,7 +246,12 @@ export default function DailyExpensesBlock() {
           {todayMine.map((e) => (
             <div key={e.id} className="flex items-center gap-3 px-5 py-2.5 hover:bg-[#252525]/20 transition-colors">
               <div className="flex-1 min-w-0">
-                <p className="text-xs text-[#F0EDE6] truncate">{e.description}</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-xs text-[#F0EDE6] truncate">{e.description}</p>
+                  {e.purchaseInvoiceId != null && (
+                    <span className="px-1.5 py-0.5 bg-[#F5C100]/15 border border-[#F5C100]/40 rounded text-[9px] font-mono text-[#F5C100] whitespace-nowrap">مشتريات مخزون</span>
+                  )}
+                </div>
                 {e.note && (
                   <p className="font-mono text-[10px] text-[#777777] truncate">{e.note}</p>
                 )}
@@ -217,13 +260,22 @@ export default function DailyExpensesBlock() {
               <span className="font-mono tabular-nums text-xs text-[#FF7A7A]" dir="ltr">
                 {fmtAmount(e.amount, (e.currency ?? "usd") as Currency)}
               </span>
-              <button
-                onClick={() => void handleCancel(e)}
-                className="p-1 text-[#555555] hover:text-[#FF3333] transition-colors cursor-pointer"
-                title="حذف"
-              >
-                <Undo2 size={12} />
-              </button>
+              {e.purchaseInvoiceId != null ? (
+                // Purchase-mirrored row: deleting only the expense would leave
+                // the warehouse stock + invoice intact and break reconciliation.
+                // Cancellation must go through the manager's Purchases section.
+                <span className="p-1 text-[#555555]" title="فاتورة مشتريات — يُلغى من قسم المشتريات لدى المدير">
+                  <FileText size={12} />
+                </span>
+              ) : (
+                <button
+                  onClick={() => void handleCancel(e)}
+                  className="p-1 text-[#555555] hover:text-[#FF3333] transition-colors cursor-pointer"
+                  title="حذف"
+                >
+                  <Undo2 size={12} />
+                </button>
+              )}
             </div>
           ))}
         </div>

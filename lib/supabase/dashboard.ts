@@ -111,10 +111,12 @@ export async function fetchLiveKPI(): Promise<LiveKPI> {
     todayStoreUSD,
     todayKitchenUSD,
     todayInbodyUSD,
+    todayPrivateUSD,
     monthSubsUSD,
     monthStoreUSD,
     monthKitchenUSD,
     monthInbodyUSD,
+    monthPrivateUSD,
     activeSubs,
     expiringSoon,
     endedSubs,
@@ -126,10 +128,12 @@ export async function fetchLiveKPI(): Promise<LiveKPI> {
     sumItemSalesUSD(today, "store"),
     sumItemSalesUSD(today, "kitchen"),
     sumUSD("inbody_sessions", "amount",      today),
+    sumUSD("private_sessions", "paid_amount", today),
     sumUSD("gym_subscriptions", "paid_amount", month),
     sumItemSalesUSD(month, "store"),
     sumItemSalesUSD(month, "kitchen"),
     sumUSD("inbody_sessions", "amount",      month),
+    sumUSD("private_sessions", "paid_amount", month),
     supabase
       .from("gym_subscriptions")
       .select("member_name", { count: "exact", head: true })
@@ -176,8 +180,8 @@ export async function fetchLiveKPI(): Promise<LiveKPI> {
       .not("member_name", "ilike", "%test%"),
   ]);
 
-  const todayRevenueUSD   = todaySubsUSD + todayStoreUSD + todayKitchenUSD + todayInbodyUSD;
-  const monthlyRevenueUSD = monthSubsUSD + monthStoreUSD + monthKitchenUSD + monthInbodyUSD;
+  const todayRevenueUSD   = todaySubsUSD + todayStoreUSD + todayKitchenUSD + todayInbodyUSD + todayPrivateUSD;
+  const monthlyRevenueUSD = monthSubsUSD + monthStoreUSD + monthKitchenUSD + monthInbodyUSD + monthPrivateUSD;
   const openOpening = (openSessions.data ?? []).reduce(
     (a: number, r: Record<string, unknown>) => a + Number(r.opening_cash ?? 0),
     0,
@@ -388,7 +392,7 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
     nameMap[String(pr.id)] = String(pr.display_name ?? "");
   }
 
-  const [sessionsRes, subsRes, salesRes, inbodyRes, expensesRes, activityRes, catalogRes] = await Promise.all([
+  const [sessionsRes, subsRes, salesRes, inbodyRes, expensesRes, activityRes, catalogRes, privateRes] = await Promise.all([
     supabase
       .from("cash_sessions")
       .select(
@@ -448,6 +452,18 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
       .select(
         "id, name, category, item_type, sell_currency, cost_currency, cost_price, stock_quantity, track_stock, is_active"
       ),
+    // Private training ("تدريب خاص") — its own table, USD paid_amount. Folded
+    // into the subscriptions section so the report reconciles with the cash
+    // session + KPI. No member_name column, so no test-name filter applies.
+    supabase
+      .from("private_sessions")
+      .select(
+        "created_at, player_names, private_coach_name, total_price, paid_amount, " +
+        "payment_status, currency, exchange_rate, created_by, created_by_name, cash_session_id"
+      )
+      .gte("created_at", dayStart)
+      .lte("created_at", dayEnd)
+      .is("cancelled_at", null),
   ]);
 
   const sessionsCount = (sessionsRes.data ?? []).length;
@@ -528,6 +544,36 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
     };
   });
 
+  // Fold private training sessions into the subscriptions detail list, so the
+  // subscriptions total/count below reconciles with the cashier + KPI.
+  for (const s of privateRes.data ?? []) {
+    const r = s as unknown as Record<string, unknown>;
+    const currency = String(r.currency ?? "usd");
+    const rate = Number(r.exchange_rate ?? 0);
+    const amount     = toUSD(Number(r.total_price ?? 0), currency, rate);
+    const paidAmount = toUSD(Number(r.paid_amount ?? 0), currency, rate);
+    const players = Array.isArray(r.player_names)
+      ? (r.player_names as unknown[]).map(String).filter(Boolean)
+      : [];
+    const coach = String(r.private_coach_name ?? "").trim();
+    const who = players.length ? players.join("، ") : coach ? `كوتش: ${coach}` : "تدريب خاص";
+    subscriptions.push({
+      time: String(r.created_at ?? ""),
+      memberName: who,
+      phone: "",
+      planType: "تدريب خاص",
+      offer: "none",
+      startDate: String(r.created_at ?? "").slice(0, 10),
+      endDate: String(r.created_at ?? "").slice(0, 10),
+      amount: Number(amount.toFixed(2)),
+      paidAmount: Number(paidAmount.toFixed(2)),
+      remaining: Number((amount - paidAmount).toFixed(2)),
+      paymentStatus: String(r.payment_status ?? ""),
+      paymentMethod: "cash",
+      by: String(r.created_by_name ?? nameMap[String(r.created_by ?? "")] ?? ""),
+    });
+  }
+
   const sortByTime = <T extends { time: string }>(rows: T[]) =>
     rows.sort((a, b) => a.time.localeCompare(b.time));
   sortByTime(subscriptions);
@@ -567,15 +613,20 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
   const saleRowsAll = (salesRes.data ?? [])    as unknown as Record<string, unknown>[];
   const ibRowsAll   = (inbodyRes.data ?? [])   as unknown as Record<string, unknown>[];
   const expRowsAll  = (expensesRes.data ?? []) as unknown as Record<string, unknown>[];
+  const privRowsAll = (privateRes.data ?? [])  as unknown as Record<string, unknown>[];
 
   const shifts: ShiftBreakdown[] = sessionRows.map((s) => {
     const sid = String(s.id);
     const openedAt = String(s.opened_at ?? "");
     const subRowsForSession    = subRowsAll.filter((r) => String(r.cash_session_id ?? "") === sid);
+    const privRowsForSession   = privRowsAll.filter((r) => String(r.cash_session_id ?? "") === sid);
     const inbodyRowsForSession = ibRowsAll.filter((r)  => String(r.cash_session_id ?? "") === sid);
     // Cancelled expenses are excluded from per-shift totals/counts.
     const expRowsForSession    = expRowsAll.filter((r) => String(r.cash_session_id ?? "") === sid && r.cancelled_at == null);
+    // Private training paid_amount rolls into the subscriptions line.
     const subsUSD = subRowsForSession.reduce((a, row) =>
+      a + toUSD(Number(row.paid_amount ?? 0), String(row.currency ?? "usd"), Number(row.exchange_rate ?? 0)), 0)
+      + privRowsForSession.reduce((a, row) =>
       a + toUSD(Number(row.paid_amount ?? 0), String(row.currency ?? "usd"), Number(row.exchange_rate ?? 0)), 0);
     const inbodyUSDs = inbodyRowsForSession.reduce((a, row) =>
       a + toUSD(Number(row.amount ?? 0), String(row.currency ?? "usd"), Number(row.exchange_rate ?? 0)), 0);
@@ -607,7 +658,7 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
       incomeUSD:        Number(incomeUSDs.toFixed(2)),
       netUSD:           Number((incomeUSDs - expUSDs).toFixed(2)),
       counts: {
-        subscriptions: subRowsForSession.length,
+        subscriptions: subRowsForSession.length + privRowsForSession.length,
         storeSales:    storeRowsForSession.length,
         kitchenSales:  kitchenRowsForSession.length,
         inbody:        inbodyRowsForSession.length,
@@ -840,7 +891,7 @@ export async function fetchMonthlyReport(
     nameMap[String(pr.id)] = String(pr.display_name ?? "");
   }
 
-  const [sessionsRes, subsRes, salesRes, inbodyRes, expensesRes, activityRes] = await Promise.all([
+  const [sessionsRes, subsRes, salesRes, inbodyRes, expensesRes, activityRes, privateRes] = await Promise.all([
     supabase
       .from("cash_sessions")
       .select(
@@ -883,6 +934,13 @@ export async function fetchMonthlyReport(
       .gte("created_at", rangeStart)
       .lte("created_at", rangeEnd)
       .order("created_at", { ascending: true }),
+    // Private training — folded into the subscriptions totals (see daily report).
+    supabase
+      .from("private_sessions")
+      .select("created_at, paid_amount, currency, exchange_rate, cash_session_id")
+      .gte("created_at", rangeStart)
+      .lte("created_at", rangeEnd)
+      .is("cancelled_at", null),
   ]);
 
   function shiftLabel(openedAt: string): string {
@@ -901,17 +959,22 @@ export async function fetchMonthlyReport(
   const saleRows = (salesRes.data ?? []) as unknown as Record<string, unknown>[];
   const ibRows   = (inbodyRes.data ?? []) as unknown as Record<string, unknown>[];
   const expRows  = (expensesRes.data ?? []) as unknown as Record<string, unknown>[];
+  const privRows = (privateRes.data ?? []) as unknown as Record<string, unknown>[];
 
   const shifts: ShiftBreakdown[] = sessionRows.map((s) => {
     const sid = String(s.id);
     const openedAt = String(s.opened_at ?? "");
     const subsForSession   = subRows.filter((r) => String(r.cash_session_id ?? "") === sid);
+    const privForSession   = privRows.filter((r) => String(r.cash_session_id ?? "") === sid);
     const ibForSession     = ibRows.filter((r) => String(r.cash_session_id ?? "") === sid);
     const expForSession    = expRows.filter((r) => String(r.cash_session_id ?? "") === sid);
     const storeForSession  = saleRows.filter((r) => String(r.cash_session_id ?? "") === sid && String(r.source ?? "store") === "store");
     const kitchenForSession = saleRows.filter((r) => String(r.cash_session_id ?? "") === sid && String(r.source ?? "store") === "kitchen");
 
+    // Private training paid_amount rolls into the subscriptions line.
     const subsUSD = subsForSession.reduce((a, r) =>
+      a + toUSD(Number(r.paid_amount ?? 0), String(r.currency ?? "usd"), Number(r.exchange_rate ?? 0)), 0)
+      + privForSession.reduce((a, r) =>
       a + toUSD(Number(r.paid_amount ?? 0), String(r.currency ?? "usd"), Number(r.exchange_rate ?? 0)), 0);
     const ibUSD = ibForSession.reduce((a, r) =>
       a + toUSD(Number(r.amount ?? 0), String(r.currency ?? "usd"), Number(r.exchange_rate ?? 0)), 0);
@@ -940,7 +1003,7 @@ export async function fetchMonthlyReport(
       incomeUSD:        Number(incomeUSD.toFixed(2)),
       netUSD:           Number((incomeUSD - expUSD).toFixed(2)),
       counts: {
-        subscriptions: subsForSession.length,
+        subscriptions: subsForSession.length + privForSession.length,
         storeSales:    storeForSession.length,
         kitchenSales:  kitchenForSession.length,
         inbody:        ibForSession.length,
@@ -965,6 +1028,11 @@ export async function fetchMonthlyReport(
     return r;
   };
   for (const r of subRows) {
+    const d = damascusCalendarDate(String(r.created_at ?? ""));
+    ensureDay(d).subscriptionsUSD += toUSD(Number(r.paid_amount ?? 0), String(r.currency ?? "usd"), Number(r.exchange_rate ?? 0));
+  }
+  // Private training paid_amount rolls into the per-day subscriptions line.
+  for (const r of privRows) {
     const d = damascusCalendarDate(String(r.created_at ?? ""));
     ensureDay(d).subscriptionsUSD += toUSD(Number(r.paid_amount ?? 0), String(r.currency ?? "usd"), Number(r.exchange_rate ?? 0));
   }
@@ -1063,7 +1131,7 @@ export async function fetchMonthlyReport(
       netUSD:           Number((incomeUSD - expensesUSD).toFixed(2)),
     },
     counts: {
-      subscriptions: subRows.length,
+      subscriptions: subRows.length + privRows.length,
       storeSales:    saleRows.filter((r) => String(r.source ?? "store") === "store").length,
       kitchenSales:  saleRows.filter((r) => String(r.source ?? "store") === "kitchen").length,
       inbody:        ibRows.length,
@@ -1082,6 +1150,7 @@ const REALTIME_TABLES = [
   "gym_subscriptions",
   "item_sales",
   "inbody_sessions",
+  "private_sessions",
   "cash_sessions",
   "catalog_items",
 ] as const;
@@ -1453,7 +1522,7 @@ export async function fetchManagerDashboardSummary(
   const privateRows = (privateRes.data  ?? []) as unknown as Row[];
   const expRows     = (expensesRes.data ?? []) as unknown as Row[];
 
-  const subscriptions = bucketise(subRows, "paid_amount");
+  const subscriptionsBase = bucketise(subRows, "paid_amount");
   const inbody        = bucketise(inbodyRows, "amount");
   const storeRows     = saleRows.filter((r) => String(r.source ?? "store") === "store");
   const kitchenRows   = saleRows.filter((r) => String(r.source ?? "store") === "kitchen");
@@ -1462,7 +1531,13 @@ export async function fetchManagerDashboardSummary(
   const privateSessions = bucketise(privateRows, "paid_amount");
   const expenses      = bucketise(expRows, "amount");
 
-  const totalRevenue = bucketSum(subscriptions, inbody, store, kitchen, privateSessions);
+  // Private-coach ("جلسات خاصة") revenue is folded INTO the subscriptions line,
+  // so registering a private coach raises "إيرادات الاشتراكات" — matching how the
+  // cash-session running total counts it (session.ts → fetchSessionIncome).
+  // `privateSessions` is still returned for the informational breakdown card; it
+  // is a SUBSET of `subscriptions`, so the grand total counts the money once.
+  const subscriptions = bucketSum(subscriptionsBase, privateSessions);
+  const totalRevenue = bucketSum(subscriptions, inbody, store, kitchen);
   const netIncome    = bucketSubtract(totalRevenue, expenses);
 
   // ── active members (point-in-time, NOT range-filtered) ────────────────────

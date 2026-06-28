@@ -130,6 +130,26 @@ export async function fetchSessionIncome(sessionId: string): Promise<SessionInco
     );
   };
 
+  // Private training sessions ("تدريب خاص") are their own table and carry
+  // paid_amount in USD. They're folded into the subscriptions line below so
+  // the cashier's running total reflects them — matching how fetchLiveKPI
+  // and closeCashSession count them. No member_name column here, so no
+  // test-name filter applies.
+  const sumPrivateUSD = async (): Promise<number> => {
+    const { data } = await supabase
+      .from("private_sessions")
+      .select("paid_amount, currency, exchange_rate")
+      .eq("cash_session_id", sessionId)
+      .is("cancelled_at", null);
+    return (data ?? []).reduce((a: number, r: unknown) => {
+      const row    = r as Record<string, unknown>;
+      const amount = Number(row.paid_amount ?? 0);
+      const cur    = String(row.currency ?? "usd");
+      const rate   = Number(row.exchange_rate ?? 1) || 1;
+      return a + (cur === "syp" ? amount / rate : amount);
+    }, 0);
+  };
+
   // Expenses live in their own table and have no member_name filter, so
   // sumLegacyUSD can't be reused. Inline a similar reducer. SYP rows divide
   // by their snapshotted exchange_rate (the rate at write time, per
@@ -149,13 +169,16 @@ export async function fetchSessionIncome(sessionId: string): Promise<SessionInco
     }, 0);
   };
 
-  const [sub, store, meals, inbody, expensesTotal] = await Promise.all([
+  const [subsBase, store, meals, inbody, priv, expensesTotal] = await Promise.all([
     sumLegacyUSD("gym_subscriptions", "paid_amount"),
     sumItemSalesUSD("store"),
     sumItemSalesUSD("kitchen"),
     sumLegacyUSD("inbody_sessions", "amount"),
+    sumPrivateUSD(),
     sumExpensesUSD(),
   ]);
+  // Private training money rolls into the subscriptions line.
+  const sub = subsBase + priv;
   const totalIncome = sub + store + meals + inbody;
   return {
     subsIncome:    Number(sub.toFixed(2)),

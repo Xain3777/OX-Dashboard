@@ -401,7 +401,7 @@ function DashboardContent() {
             </CollapsibleSection>
             <CollapsibleSection title="المراجعة الشهرية" collapsed={collapsed.monthly} onToggle={() => toggle("monthly")}>
               <MonthlyReview
-                data={{ month: "أبريل", year: 2026, totalRevenue: 8620, totalExpenses: 12350, netProfit: -3730, subscriptionRevenue: 5790, storeRevenue: store.sales.filter(s => !s.isReversal).reduce((a, b) => a + b.total, 0), expenseBreakdown: { salaries: 6700, rent: 5000, equipment: 0, maintenance: 320, utilities: 150, supplies: 120, marketing: 0, miscellaneous: 60 }, topProducts: [{ name: "كوب بروتين (طازج)", quantity: 48, revenue: 720 }, { name: "مشروب BCAA (بارد)", quantity: 38, revenue: 380 }, { name: "واي بروتين ٢ كجم", quantity: 6, revenue: 1080 }], activeSubscriptions: 7, expiredSubscriptions: 1, locked: false }}
+                data={{ month: "أبريل", year: 2026, totalRevenue: 8620, totalExpenses: 12350, netProfit: -3730, subscriptionRevenue: 5790, storeRevenue: store.sales.filter(s => !s.isReversal).reduce((a, b) => a + b.total, 0), expenseBreakdown: { salaries: 6700, rent: 5000, equipment: 0, maintenance: 320, utilities: 150, supplies: 120, marketing: 0, miscellaneous: 60, inventory_purchase: 0 }, topProducts: [{ name: "كوب بروتين (طازج)", quantity: 48, revenue: 720 }, { name: "مشروب BCAA (بارد)", quantity: 38, revenue: 380 }, { name: "واي بروتين ٢ كجم", quantity: 6, revenue: 1080 }], activeSubscriptions: 7, expiredSubscriptions: 1, locked: false }}
                 onLock={() => console.log("تم قفل الشهر")}
               />
             </CollapsibleSection>

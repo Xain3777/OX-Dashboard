@@ -73,12 +73,14 @@ export default function KPIStrip({ hideProfit }: KPIStripProps) {
       data-loading={loading}
     >
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8">
-        <KPICard
-          label="إيرادات اليوم"
-          value={fmtUSD(kpi.todayRevenueUSD)}
-          icon={<DollarSign size={14} />}
-          accent="gold"
-        />
+        {!hideProfit && (
+          <KPICard
+            label="إيرادات اليوم"
+            value={fmtUSD(kpi.todayRevenueUSD)}
+            icon={<DollarSign size={14} />}
+            accent="gold"
+          />
+        )}
         <KPICard
           label={`غير مكتمل الدفع${kpi.partiallyPaidRemainingUSD > 0 ? ` — متبقي ${fmtUSD(kpi.partiallyPaidRemainingUSD)}` : ""}`}
           value={String(kpi.partiallyPaidCount)}

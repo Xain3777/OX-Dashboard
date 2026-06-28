@@ -55,6 +55,8 @@ export interface Coach {
   kind: CoachKind;
   sharePercentage: number | null;
   isActive: boolean;
+  // App activation code — 2 letters + 6 digits, auto-assigned DB-side (0060).
+  activationCode: string | null;
   notes: string | null;
   createdAt: string;
   createdBy: string | null;
@@ -258,7 +260,8 @@ export type ExpenseCategory =
   | "utilities"
   | "supplies"
   | "marketing"
-  | "miscellaneous";
+  | "miscellaneous"
+  | "inventory_purchase"; // mirrored row for a purchase_invoices entry
 
 export type ExpenseFrequency = "monthly" | "weekly" | "daily" | "one_time";
 
@@ -282,7 +285,71 @@ export interface Expense {
   createdByName?: string;
   note?: string | null;
   source?: ExpenseSource;
+  /** رقم الإيصال — receipt number for plain expenses; mirrors the invoice
+   *  number for purchase-backed rows. */
+  receiptNumber?: string | null;
+  /** Set on the one expense row mirrored from a purchase_invoices entry.
+   *  The manager's plain-expenses list filters these out (shown under the
+   *  Purchases section) but totals still include them. */
+  purchaseInvoiceId?: string | null;
   lockedAt?: string;
+}
+
+// --- RAW MATERIALS (warehouse / المستودع) ---
+// A purchasable stock item held in the warehouse, distinct from a sellable
+// CatalogItem. Stock moves via purchase invoices (increment) and manual
+// manager edits in Phase 1; recipe-driven depletion on sale is Phase 2.
+export interface RawMaterial {
+  id: string;
+  name: string;
+  unit: string;              // الواحدة — piece / kg / litre / box …
+  currentQuantity: number;
+  lastPurchasePrice: number | null;
+  costCurrency: Currency | null;
+  lowStockThreshold: number;
+  notes: string | null;
+  isActive: boolean;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// --- PURCHASE INVOICES (فواتير المشتريات) ---
+// An inventory-affecting expense: an invoice header plus material lines that
+// increase warehouse stock. The intake layer also mirrors the total into one
+// expenses row (category 'inventory_purchase') for reporting + cash close.
+export interface PurchaseInvoiceLine {
+  id: string;
+  invoiceId: string;
+  rawMaterialId: string | null;
+  materialNameSnapshot: string;
+  quantity: number;
+  unit: string;
+  unitPurchasePrice: number;
+  lineTotal: number;         // generated quantity × unit_purchase_price
+  notes: string | null;
+  createdAt: string;
+}
+
+export interface PurchaseInvoice {
+  id: string;
+  invoiceNumber: string | null;
+  invoiceDate: string;
+  supplier: string | null;
+  notes: string | null;
+  total: number;
+  currency: Currency;
+  exchangeRate: number | null;
+  amountSyp: number | null;
+  cashSessionId: string | null;
+  source: ExpenseSource;
+  createdBy: string;
+  createdByName: string | null;
+  createdAt: string;
+  cancelledAt: string | null;
+  cancelledBy: string | null;
+  cancelledReason: string | null;
+  lines: PurchaseInvoiceLine[];
 }
 
 // --- CASH SESSION / RECONCILIATION ---

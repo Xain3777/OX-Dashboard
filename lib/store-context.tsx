@@ -13,6 +13,7 @@ import {
   Product, Sale, Expense, ExpenseCategory, ExpenseFrequency, PaymentMethod, Subscription, FoodItem, FoodItemCategory,
   CatalogItem, CatalogItemCategory, CatalogItemType, ItemSale,
   PlanType, OfferType, PaymentStatus, SubStatus, Currency, Coach, CoachKind, CoachTrainee,
+  RawMaterial, PurchaseInvoice, PurchaseInvoiceLine,
 } from "./types";
 import { PRODUCTS, FOOD_ITEMS } from "./mock-data";
 import { generateId, calculateRemainingDays } from "./business-logic";
@@ -29,8 +30,16 @@ import {
   fetchCoachTrainees as fetchCoachTraineesRemote,
   addCoachTrainees as addCoachTraineesRemote,
   deactivateCoachTrainee as deactivateCoachTraineeRemote,
+  fetchRawMaterials as fetchRawMaterialsRemote,
+  pushRawMaterial as pushRawMaterialRemote,
+  updateRawMaterial as updateRawMaterialRemote,
+  pushPurchaseInvoice as pushPurchaseInvoiceRemote,
+  cancelPurchaseInvoice as cancelPurchaseInvoiceRemote,
+  cancelPrivateSession as cancelPrivateSessionRemote,
   CoachRow,
   CoachTraineeRow,
+  RawMaterialRow,
+  PurchaseLineInput,
 } from "./supabase/intake";
 
 // Row → domain mappers for the coach roster, reused across hydration,
@@ -43,6 +52,7 @@ function mapCoachRow(c: CoachRow): Coach {
     kind: c.kind === "gym" ? "gym" : "private",
     sharePercentage: c.share_percentage,
     isActive: c.is_active,
+    activationCode: c.activation_code ?? null,
     notes: c.notes,
     createdAt: c.created_at,
     createdBy: c.created_by,
@@ -64,6 +74,64 @@ function mapTraineeRow(t: CoachTraineeRow): CoachTrainee {
     notes: t.notes,
     createdAt: t.created_at,
     createdByName: t.created_by_name,
+  };
+}
+
+function mapRawMaterialRow(r: RawMaterialRow): RawMaterial {
+  return {
+    id: r.id,
+    name: r.name,
+    unit: r.unit,
+    currentQuantity: Number(r.current_quantity ?? 0),
+    lastPurchasePrice: r.last_purchase_price == null ? null : Number(r.last_purchase_price),
+    costCurrency: r.cost_currency == null ? null : (r.cost_currency as Currency),
+    lowStockThreshold: Number(r.low_stock_threshold ?? 0),
+    notes: r.notes,
+    isActive: r.is_active,
+    createdBy: r.created_by,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+type PurchaseRow = Record<string, unknown>;
+
+function mapPurchaseLineRow(row: PurchaseRow): PurchaseInvoiceLine {
+  return {
+    id: String(row.id),
+    invoiceId: String(row.invoice_id ?? ""),
+    rawMaterialId: row.raw_material_id == null ? null : String(row.raw_material_id),
+    materialNameSnapshot: String(row.material_name_snapshot ?? ""),
+    quantity: Number(row.quantity ?? 0),
+    unit: String(row.unit ?? ""),
+    unitPurchasePrice: Number(row.unit_purchase_price ?? 0),
+    lineTotal: Number(row.line_total ?? 0),
+    notes: row.notes == null ? null : String(row.notes),
+    createdAt: String(row.created_at ?? ""),
+  };
+}
+
+function mapPurchaseInvoiceRow(row: PurchaseRow): PurchaseInvoice {
+  const rawLines = Array.isArray(row.purchase_invoice_lines) ? (row.purchase_invoice_lines as PurchaseRow[]) : [];
+  return {
+    id: String(row.id),
+    invoiceNumber: row.invoice_number == null ? null : String(row.invoice_number),
+    invoiceDate: String(row.invoice_date ?? ""),
+    supplier: row.supplier == null ? null : String(row.supplier),
+    notes: row.notes == null ? null : String(row.notes),
+    total: Number(row.total ?? 0),
+    currency: String(row.currency ?? "syp") as Currency,
+    exchangeRate: row.exchange_rate == null ? null : Number(row.exchange_rate),
+    amountSyp: row.amount_syp == null ? null : Number(row.amount_syp),
+    cashSessionId: row.cash_session_id == null ? null : String(row.cash_session_id),
+    source: (String(row.source ?? "manager") === "reception_daily" ? "reception_daily" : "manager") as PurchaseInvoice["source"],
+    createdBy: String(row.created_by ?? ""),
+    createdByName: row.created_by_name == null ? null : String(row.created_by_name),
+    createdAt: String(row.created_at ?? ""),
+    cancelledAt: row.cancelled_at == null ? null : String(row.cancelled_at),
+    cancelledBy: row.cancelled_by == null ? null : String(row.cancelled_by),
+    cancelledReason: row.cancelled_reason == null ? null : String(row.cancelled_reason),
+    lines: rawLines.map(mapPurchaseLineRow).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
   };
 }
 
@@ -164,6 +232,10 @@ export interface StoreState {
   coaches: Coach[];
   coachTrainees: CoachTrainee[];
 
+  // Inventory subsystem (warehouse + purchases)
+  rawMaterials: RawMaterial[];
+  purchaseInvoices: PurchaseInvoice[];
+
   // Legacy compat fields — derived from catalogItems / itemSales for any
   // component that still reads them. Will be removed once the cutover is
   // complete.
@@ -218,7 +290,14 @@ export interface StoreContextType extends StoreState {
   reloadCoaches: () => Promise<void>;
   addCoachTrainees: (input: { coachId: string | null; coachName: string; source: "private" | "coach_private"; players: { name: string; phone: string; amount?: number | null }[]; privateSessionId?: string | null; subscriptionId?: string | null }) => Promise<{ data?: CoachTrainee[]; error?: string }>;
   deactivateCoachTrainee: (id: string) => Promise<{ error?: string }>;
+  cancelPrivateSession: (privateSessionId: string) => Promise<{ error?: string }>;
   reloadCoachTrainees: () => Promise<void>;
+  addRawMaterial: (input: { name: string; unit: string; lowStockThreshold?: number; costCurrency?: Currency | null; lastPurchasePrice?: number | null; notes?: string | null }) => Promise<{ data?: RawMaterial; error?: string }>;
+  updateRawMaterial: (id: string, fields: { name?: string; unit?: string; currentQuantity?: number; lowStockThreshold?: number; costCurrency?: Currency | null; lastPurchasePrice?: number | null; notes?: string | null; isActive?: boolean }) => Promise<{ error?: string }>;
+  reloadRawMaterials: () => Promise<void>;
+  addPurchaseInvoice: (input: { invoiceNumber?: string | null; invoiceDate?: string; supplier?: string | null; notes?: string | null; currency: Currency; lines: PurchaseLineInput[]; source?: "manager" | "reception_daily" }) => Promise<{ error?: string }>;
+  cancelPurchaseInvoice: (id: string) => Promise<{ error?: string }>;
+  reloadPurchaseInvoices: () => Promise<void>;
   addInBodySession: (session: InBodySession) => void;
   cancelInBodySession: (id: string) => void;
   updateInBodyPrices: (member: number, nonMember: number) => void;
@@ -265,6 +344,8 @@ const INITIAL_STATE: StoreState = {
   lastClosedByName: "",
   coaches: [],
   coachTrainees: [],
+  rawMaterials: [],
+  purchaseInvoices: [],
 };
 
 // ─── Row mappers + legacy adapters (shared by hydration + realtime) ──────────
@@ -427,7 +508,7 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
     const supabase = supabaseBrowser();
     const today = new Date().toISOString().slice(0, 10);
 
-    const [subsRes, salesRes, inbodyRes, expensesRes, catalogRes, rateRes, activeSession, lastClosed, coachesRes, coachTraineesRes] = await Promise.all([
+    const [subsRes, salesRes, inbodyRes, expensesRes, catalogRes, rateRes, activeSession, lastClosed, coachesRes, coachTraineesRes, rawMaterialsRes, purchasesRes] = await Promise.all([
       supabase
         .from("gym_subscriptions")
         .select("*")
@@ -459,6 +540,12 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       getLastClosedSession(),
       fetchCoachesRemote(),
       fetchCoachTraineesRemote(),
+      fetchRawMaterialsRemote(),
+      supabase
+        .from("purchase_invoices")
+        .select("*, purchase_invoice_lines(*)")
+        .is("cancelled_at", null)
+        .order("created_at", { ascending: false }),
     ]);
 
     type Row = Record<string, unknown>;
@@ -541,6 +628,8 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       createdByName: row.created_by_name == null ? undefined : String(row.created_by_name),
       note: row.note == null ? null : String(row.note),
       source: (String(row.source ?? "manager") === "reception_daily" ? "reception_daily" : "manager") as Expense["source"],
+      receiptNumber: row.receipt_number == null ? null : String(row.receipt_number),
+      purchaseInvoiceId: row.purchase_invoice_id == null ? null : String(row.purchase_invoice_id),
       lockedAt: String(row.created_at ?? ""),
     }));
 
@@ -580,6 +669,8 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
 
     const coaches: Coach[] = (coachesRes?.data ?? []).map(mapCoachRow);
     const coachTrainees: CoachTrainee[] = (coachTraineesRes?.data ?? []).map(mapTraineeRow);
+    const rawMaterials: RawMaterial[] = (rawMaterialsRes?.data ?? []).map(mapRawMaterialRow);
+    const purchaseInvoices: PurchaseInvoice[] = ((purchasesRes?.data ?? []) as PurchaseRow[]).map(mapPurchaseInvoiceRow);
 
     return {
       catalogItems,
@@ -593,6 +684,8 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       lastClosedByName,
       coaches,
       coachTrainees,
+      rawMaterials,
+      purchaseInvoices,
       // Legacy compat fields derived from canonical state
       foodItems,
       products,
@@ -632,7 +725,14 @@ const StoreContext = createContext<StoreContextType>({
   reloadCoaches: async () => {},
   addCoachTrainees: async () => ({}),
   deactivateCoachTrainee: async () => ({}),
+  cancelPrivateSession: async () => ({}),
   reloadCoachTrainees: async () => {},
+  addRawMaterial: async () => ({}),
+  updateRawMaterial: async () => ({}),
+  reloadRawMaterials: async () => {},
+  addPurchaseInvoice: async () => ({}),
+  cancelPurchaseInvoice: async () => ({}),
+  reloadPurchaseInvoices: async () => {},
   addInBodySession: () => {},
   cancelInBodySession: () => {},
   updateInBodyPrices: () => {},
@@ -927,6 +1027,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // from migration 0030 enforces that reception can only change
     // sell_price/stock_quantity/low_stock_threshold; managers can change
     // both price and cost. The error surface is the same as before.
+    const r = await updateCatalogItem(productId, {
+      sellPrice: price,
+      ...(Number.isFinite(cost) ? { costPrice: cost } : {}),
+    });
+    // Only mirror the edit into the local feed once the write actually
+    // succeeded, and attribute it to the real signed-in user — not a
+    // hardcoded "المدير". (The persistent سجل المراجعة row is written by
+    // persistCatalogItemUpdate with the same user; this is just the live feed.)
+    if (r.error) return r;
     const entry: ActivityEntry = {
       id: generateId(),
       type: "price_edit",
@@ -934,19 +1043,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         ? `تعديل سعر — تكلفة: ${cost}، بيع: ${price}`
         : `تعديل سعر — بيع: ${price}`,
       amountUSD: price,
-      userId: "manager",
-      userName: "المدير",
+      userId: user?.id ?? "",
+      userName: user?.displayName ?? "—",
       timestamp: new Date().toISOString(),
     };
     setState((prev) => ({
       ...prev,
       activityFeed: [entry, ...prev.activityFeed].slice(0, 100),
     }));
-    return updateCatalogItem(productId, {
-      sellPrice: price,
-      ...(Number.isFinite(cost) ? { costPrice: cost } : {}),
-    });
-  }, [setState, updateCatalogItem]);
+    return {};
+  }, [setState, updateCatalogItem, user]);
 
   const adjustStock = useCallback(async (productId: string, delta: number): Promise<{ error?: string }> => {
     const current = stateRef.current.catalogItems.find((c) => c.id === productId);
@@ -1242,6 +1348,124 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return {};
   }, [setState, user]);
 
+  // Cancel a private training session (revenue) and drop its roster players.
+  // Income KPIs update on their own via the private_sessions realtime channel.
+  const cancelPrivateSession = useCallback(async (privateSessionId: string) => {
+    if (!user) return { error: "غير مسجل الدخول" };
+    const res = await cancelPrivateSessionRemote({ user: { id: user.id, displayName: user.displayName }, id: privateSessionId });
+    if (res.error) return { error: res.error };
+    setState((prev) => ({
+      ...prev,
+      coachTrainees: prev.coachTrainees.filter((t) => t.privateSessionId !== privateSessionId),
+    }));
+    return {};
+  }, [setState, user]);
+
+  // ── Inventory: raw materials + purchase invoices ────────────────────────────
+
+  const reloadRawMaterials = useCallback(async () => {
+    const res = await fetchRawMaterialsRemote();
+    if (res.error || !res.data) return;
+    setState((prev) => ({ ...prev, rawMaterials: res.data!.map(mapRawMaterialRow) }));
+  }, [setState]);
+
+  const reloadPurchaseInvoices = useCallback(async () => {
+    const supabase = supabaseBrowser();
+    const { data, error } = await supabase
+      .from("purchase_invoices")
+      .select("*, purchase_invoice_lines(*)")
+      .is("cancelled_at", null)
+      .order("created_at", { ascending: false });
+    if (error || !data) return;
+    setState((prev) => ({ ...prev, purchaseInvoices: (data as PurchaseRow[]).map(mapPurchaseInvoiceRow) }));
+  }, [setState]);
+
+  // Internal: refetch the expenses array so a mirrored purchase expense shows
+  // up in the manager list/totals without a full re-hydrate.
+  const reloadExpenses = useCallback(async () => {
+    const supabase = supabaseBrowser();
+    const { data, error } = await supabase
+      .from("expenses")
+      .select("*")
+      .is("cancelled_at", null)
+      .order("created_at", { ascending: false });
+    if (error || !data) return;
+    setState((prev) => ({
+      ...prev,
+      expenses: (data as Record<string, unknown>[]).map((row) => ({
+        id: String(row.id),
+        description: String(row.description ?? ""),
+        category: String(row.category ?? "miscellaneous") as ExpenseCategory,
+        amount: Number(row.amount ?? 0),
+        paymentMethod: "cash" as PaymentMethod,
+        currency: String(row.currency ?? "usd") as Currency,
+        frequency: "one_time" as ExpenseFrequency,
+        date: String(row.created_at ?? new Date().toISOString()).slice(0, 10),
+        createdAt: String(row.created_at ?? ""),
+        createdBy: String(row.created_by ?? ""),
+        createdByName: row.created_by_name == null ? undefined : String(row.created_by_name),
+        note: row.note == null ? null : String(row.note),
+        source: (String(row.source ?? "manager") === "reception_daily" ? "reception_daily" : "manager") as Expense["source"],
+        receiptNumber: row.receipt_number == null ? null : String(row.receipt_number),
+        purchaseInvoiceId: row.purchase_invoice_id == null ? null : String(row.purchase_invoice_id),
+        lockedAt: String(row.created_at ?? ""),
+      })),
+    }));
+  }, [setState]);
+
+  const addRawMaterial = useCallback(async (input: { name: string; unit: string; lowStockThreshold?: number; costCurrency?: Currency | null; lastPurchasePrice?: number | null; notes?: string | null }) => {
+    if (!user) return { error: "غير مسجل الدخول" };
+    const res = await pushRawMaterialRemote({
+      user: { id: user.id, displayName: user.displayName },
+      name: input.name,
+      unit: input.unit,
+      lowStockThreshold: input.lowStockThreshold,
+      costCurrency: input.costCurrency ?? null,
+      lastPurchasePrice: input.lastPurchasePrice ?? null,
+      notes: input.notes ?? null,
+    });
+    if (res.error || !res.data) return { error: res.error };
+    const material = mapRawMaterialRow(res.data);
+    setState((prev) => ({ ...prev, rawMaterials: [material, ...prev.rawMaterials] }));
+    return { data: material };
+  }, [setState, user]);
+
+  const updateRawMaterial = useCallback(async (id: string, fields: { name?: string; unit?: string; currentQuantity?: number; lowStockThreshold?: number; costCurrency?: Currency | null; lastPurchasePrice?: number | null; notes?: string | null; isActive?: boolean }) => {
+    if (!user) return { error: "غير مسجل الدخول" };
+    const res = await updateRawMaterialRemote(id, fields, { id: user.id, displayName: user.displayName });
+    if (res.error || !res.data) return { error: res.error };
+    const material = mapRawMaterialRow(res.data);
+    setState((prev) => ({ ...prev, rawMaterials: prev.rawMaterials.map((m) => (m.id === id ? material : m)) }));
+    return {};
+  }, [setState, user]);
+
+  const addPurchaseInvoice = useCallback(async (input: { invoiceNumber?: string | null; invoiceDate?: string; supplier?: string | null; notes?: string | null; currency: Currency; lines: PurchaseLineInput[]; source?: "manager" | "reception_daily" }) => {
+    if (!user) return { error: "غير مسجل الدخول" };
+    const res = await pushPurchaseInvoiceRemote({
+      user: { id: user.id, displayName: user.displayName },
+      invoiceNumber: input.invoiceNumber ?? null,
+      invoiceDate: input.invoiceDate,
+      supplier: input.supplier ?? null,
+      notes: input.notes ?? null,
+      currency: input.currency,
+      exchangeRate: stateRef.current.exchangeRate,
+      lines: input.lines,
+      source: input.source,
+    });
+    if (res.error) return { error: res.error };
+    // Stock + the mirrored expense changed server-side — refresh all three.
+    await Promise.all([reloadPurchaseInvoices(), reloadRawMaterials(), reloadExpenses()]);
+    return {};
+  }, [user, reloadPurchaseInvoices, reloadRawMaterials, reloadExpenses]);
+
+  const cancelPurchaseInvoice = useCallback(async (id: string) => {
+    if (!user) return { error: "غير مسجل الدخول" };
+    const res = await cancelPurchaseInvoiceRemote({ user: { id: user.id, displayName: user.displayName }, id });
+    if (res.error) return { error: res.error };
+    await Promise.all([reloadPurchaseInvoices(), reloadRawMaterials(), reloadExpenses()]);
+    return {};
+  }, [user, reloadPurchaseInvoices, reloadRawMaterials, reloadExpenses]);
+
   const pushActivity = useCallback((entry: Omit<ActivityEntry, "id" | "timestamp">) => {
     const full: ActivityEntry = { ...entry, id: generateId(), timestamp: new Date().toISOString() };
     setState((prev) => ({
@@ -1312,6 +1536,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
   }, [userId, setState]);
+
+  // ── Inventory realtime: keep warehouse + purchases in sync across roles ──
+  useEffect(() => {
+    if (!userId) return;
+    const supabase = supabaseBrowser();
+    const channel = supabase
+      .channel(`inventory-${userId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "raw_materials" }, () => void reloadRawMaterials())
+      .on("postgres_changes", { event: "*", schema: "public", table: "purchase_invoices" }, () => void reloadPurchaseInvoices())
+      .on("postgres_changes", { event: "*", schema: "public", table: "purchase_invoice_lines" }, () => void reloadPurchaseInvoices())
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [userId, reloadRawMaterials, reloadPurchaseInvoices]);
 
   // ── Local session ──────────────────────────────────────────────────────────
 
@@ -1389,7 +1626,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     reloadCoaches,
     addCoachTrainees,
     deactivateCoachTrainee,
+    cancelPrivateSession,
     reloadCoachTrainees,
+    addRawMaterial,
+    updateRawMaterial,
+    reloadRawMaterials,
+    addPurchaseInvoice,
+    cancelPurchaseInvoice,
+    reloadPurchaseInvoices,
     addInBodySession,
     cancelInBodySession,
     updateInBodyPrices,

@@ -212,6 +212,7 @@ export function getCategoryLabel(cat: string): string {
     supplies: "مستلزمات",
     marketing: "تسويق",
     miscellaneous: "متنوعة",
+    inventory_purchase: "مشتريات مخزون",
   };
   return expenseLabels[cat] || cat;
 }

@@ -9,6 +9,7 @@ import {
   Users, Dumbbell, Clock, Edit2, ShoppingBag, DollarSign,
   TrendingUp, TrendingDown, Banknote, Activity, CreditCard,
   Calendar, Snowflake, CalendarX, CalendarClock, DoorOpen,
+  Layers, Boxes, FileText,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
@@ -29,6 +30,10 @@ import DailyExportButton from "@/components/DailyExportButton";
 import MonthlyExportButton from "@/components/MonthlyExportButton";
 import InventoryActivityPanel from "@/components/InventoryActivityPanel";
 import AccountabilityBlock from "@/components/AccountabilityBlock";
+import ProfitReportBlock from "@/components/ProfitReportBlock";
+import ItemsManager from "@/components/ItemsManager";
+import WarehouseManager from "@/components/WarehouseManager";
+import PurchasesManager from "@/components/PurchasesManager";
 import AuditLog from "@/components/AuditLog";
 import { findStaffByEmail } from "@/lib/staff-accounts";
 import { supabaseBrowser } from "@/lib/supabase/client";
@@ -44,7 +49,7 @@ import {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-type ManagerSection = "sessions" | "subscriptions" | "inbody" | "store" | "kitchen" | "expenses" | "gate" | "audit" | "activity";
+type ManagerSection = "sessions" | "subscriptions" | "inbody" | "items" | "warehouse" | "purchases" | "store" | "kitchen" | "profit" | "expenses" | "gate" | "audit" | "activity";
 
 const FOOD_CATEGORIES: FoodItemCategory[] = ["meals", "meal_addons", "other", "breakfast", "salads", "drinks", "snacks", "food"];
 const FOOD_CAT_LABELS: Record<FoodItemCategory, string> = {
@@ -1027,17 +1032,23 @@ function ExpensesManager() {
   const [amount, setAmount] = useState("");
   const [currency, setCurrency] = useState<Currency>("usd");
   const [frequency, setFrequency] = useState<ExpenseFrequency>("monthly");
+  const [receiptNumber, setReceiptNumber] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDescription, setEditDescription] = useState("");
   const [editCategory, setEditCategory] = useState<ExpenseCategory>("salaries");
   const [editAmount, setEditAmount] = useState("");
   const [editCurrency, setEditCurrency] = useState<Currency>("usd");
   const [editFrequency, setEditFrequency] = useState<ExpenseFrequency>("one_time");
+  const [editReceiptNumber, setEditReceiptNumber] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
+  // Exclude rows mirrored from a purchase invoice — those show under the
+  // Purchases section. Their amounts still count in totals / cash close.
   const sorted = useMemo(
-    () => [...expenses].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    () => expenses
+      .filter((e) => e.purchaseInvoiceId == null)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [expenses]
   );
   // Totals tracked per currency so reception-entered SYP rows aren't summed
@@ -1064,6 +1075,7 @@ function ExpensesManager() {
       currency,
       category,
       exchangeRate,
+      receiptNumber: receiptNumber.trim() || null,
       source: "manager",
     });
     if (r.error) { setError(r.error); return; }
@@ -1080,10 +1092,11 @@ function ExpensesManager() {
       createdAt: String(row.created_at ?? new Date().toISOString()),
       createdBy: user.id,
       createdByName: user.displayName,
+      receiptNumber: receiptNumber.trim() || null,
       source: "manager",
     };
     addExpense(full);
-    setDescription(""); setAmount("");
+    setDescription(""); setAmount(""); setReceiptNumber("");
     setSuccess("تم تسجيل المصروف."); setTimeout(() => setSuccess(""), 2000);
   }
 
@@ -1096,6 +1109,7 @@ function ExpensesManager() {
     setEditAmount(String(expense.amount));
     setEditCurrency((expense.currency ?? "usd") as Currency);
     setEditFrequency(expense.frequency ?? "one_time");
+    setEditReceiptNumber(expense.receiptNumber ?? "");
   }
 
   function cancelEdit() {
@@ -1105,6 +1119,7 @@ function ExpensesManager() {
     setEditCurrency("usd");
     setEditFrequency("one_time");
     setEditCategory("salaries");
+    setEditReceiptNumber("");
   }
 
   async function handleSaveEdit(expense: Expense) {
@@ -1124,6 +1139,7 @@ function ExpensesManager() {
       currency: editCurrency,
       category: editCategory,
       exchangeRate,
+      receiptNumber: editReceiptNumber.trim() || null,
     });
     if (r.error) { setError(r.error); return; }
     updateExpenseLocal(expense.id, {
@@ -1132,6 +1148,7 @@ function ExpensesManager() {
       currency: editCurrency,
       category: editCategory,
       frequency: editFrequency,
+      receiptNumber: editReceiptNumber.trim() || null,
     });
     cancelEdit();
     setSuccess("تم تعديل المصروف.");
@@ -1181,6 +1198,7 @@ function ExpensesManager() {
               <option key={f} value={f}>{FREQ_LABELS[f]}</option>
             ))}
           </select>
+          <input value={receiptNumber} onChange={(e) => setReceiptNumber(e.target.value)} placeholder="رقم الإيصال (اختياري)" className={`w-40 ${INPUT}`} />
           <button onClick={handleAdd} className={BTN_ADD}><Plus size={12} />تسجيل</button>
         </div>
         {error   && <p className="mt-2 text-[11px] font-mono text-[#FF3333]">{error}</p>}
@@ -1193,7 +1211,7 @@ function ExpensesManager() {
         <>
           <div className="overflow-x-auto max-h-64 overflow-y-auto">
             <table className="w-full text-xs">
-              <THead className="sticky top-0" cols={["التاريخ", "الوصف", "ملاحظة", "الفئة", "المبلغ", "المصدر", "التكرار", ""]} />
+              <THead className="sticky top-0" cols={["التاريخ", "الوصف", "ملاحظة", "الإيصال", "الفئة", "المبلغ", "المصدر", "التكرار", ""]} />
               <tbody className="divide-y divide-[#252525]/60">
                 {sorted.map((exp) => {
                   const editing = editingId === exp.id;
@@ -1225,6 +1243,11 @@ function ExpensesManager() {
                       </td>
                       <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA] max-w-[220px] truncate">
                         {exp.note ? exp.note : <span className="text-[#555555]">—</span>}
+                      </td>
+                      <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA] whitespace-nowrap">
+                        {editing ? (
+                          <input value={editReceiptNumber} onChange={(e) => setEditReceiptNumber(e.target.value)} placeholder="—" className={`w-28 ${INPUT}`} />
+                        ) : exp.receiptNumber ? exp.receiptNumber : <span className="text-[#555555]">—</span>}
                       </td>
                       <td className="px-4 py-2.5 font-mono text-[10px] text-[#AAAAAA] whitespace-nowrap">
                         {editing ? (
@@ -1519,7 +1542,8 @@ function RevenueSummaryCards({
       />
       <SummaryCard
         label="جلسات خاصة" syp={s.privateSessions.syp} usd={s.privateSessions.usd}
-        icon={<Activity size={14} />} skipped={bucketSkipped(s.privateSessions)}
+        icon={<Activity size={14} />} subtitle="ضمن الاشتراكات"
+        skipped={bucketSkipped(s.privateSessions)}
       />
       <SummaryCard
         label="المصاريف" syp={s.expenses.syp} usd={s.expenses.usd}
@@ -2103,7 +2127,8 @@ export default function ManagerDashboard() {
   const [showLogout, setShowLogout] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<ManagerSection, boolean>>({
     sessions: true, subscriptions: true, inbody: true,
-    store: true, kitchen: true, expenses: true, gate: true, audit: true, activity: false,
+    items: true, warehouse: true, purchases: true,
+    store: true, kitchen: true, profit: true, expenses: true, gate: true, audit: true, activity: false,
   });
   const [ovCollapsed, setOvCollapsed] = useState<Record<OverviewSection, boolean>>({
     revenue: false, subs: false, members: false, other: false, expensesNet: false,
@@ -2224,6 +2249,21 @@ export default function ManagerDashboard() {
           <InBodyLog />
         </Section>
 
+        <Section title="إدارة الأصناف — الأسعار والمعلومات الناقصة" icon={<Layers size={18} className="text-[#F5C100]" />}
+          collapsed={collapsed.items} onToggle={() => toggle("items")}>
+          <ItemsManager />
+        </Section>
+
+        <Section title="المستودع — المواد والكميات" icon={<Boxes size={18} className="text-[#F5C100]" />}
+          collapsed={collapsed.warehouse} onToggle={() => toggle("warehouse")}>
+          <WarehouseManager />
+        </Section>
+
+        <Section title="المشتريات — فواتير المخزون" icon={<FileText size={18} className="text-[#F5C100]" />}
+          collapsed={collapsed.purchases} onToggle={() => toggle("purchases")}>
+          <PurchasesManager />
+        </Section>
+
         <Section title="المتجر — المبيعات والمخزون" icon={<Package size={18} className="text-[#F5C100]" />}
           collapsed={collapsed.store} onToggle={() => toggle("store")}>
           <div className="space-y-4">
@@ -2235,6 +2275,11 @@ export default function ManagerDashboard() {
         <Section title="المطبخ — الطلبات والأصناف" icon={<ChefHat size={18} className="text-[#F5C100]" />}
           collapsed={collapsed.kitchen} onToggle={() => toggle("kitchen")}>
           <KitchenDashboard />
+        </Section>
+
+        <Section title="تقرير الأرباح" icon={<TrendingUp size={18} className="text-[#F5C100]" />}
+          collapsed={collapsed.profit} onToggle={() => toggle("profit")}>
+          <ProfitReportBlock />
         </Section>
 
         <Section title="المصاريف" icon={<ReceiptText size={18} className="text-[#F5C100]" />}

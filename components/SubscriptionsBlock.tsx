@@ -31,7 +31,10 @@ import {
   updateSubscription,
   renewSubscription,
   upsertAnvizMemberMap,
+  updateAnvizMemberMap,
+  deleteAnvizMemberMap,
 } from "@/lib/supabase/intake";
+import { supabaseBrowser } from "@/lib/supabase/client";
 import PaymentFields, { computePayment } from "@/components/PaymentFields";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -154,7 +157,12 @@ type MainTab  = "subscriptions" | "offers";
 type SubType  = "normal" | "private" | "coach_private";
 type OfferTab = "couple" | "referral" | "corporate" | "college" | "owner_family" | "custom_registration";
 type SortMode = "alpha" | "date";
-type FilterTab = "all" | "active" | "expiring" | "unpaid" | "expired" | "partial" | "renew" | "coaches";
+type FilterTab = "all" | "active" | "expiring" | "unpaid" | "expired" | "partial" | "renew" | "groups" | "coaches";
+
+// Group-offer membership: the 5-/9-person offers (and their legacy referral_*
+// names). Used by the "عروض المجموعات" tab and its counter.
+const GROUP_OFFERS: OfferType[] = ["group_5", "group_9", "referral_4", "referral_9"];
+const isGroupOffer = (offer: OfferType) => GROUP_OFFERS.includes(offer);
 // ─── Form state ───────────────────────────────────────────────────────────────
 
 interface FormState {
@@ -407,10 +415,72 @@ function CoachPicker({
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
+type GateEntry = { id: string; anvizUserid: number };
+
 export default function SubscriptionsBlock() {
-  const { subscriptions, addSubscription, replaceSubscription, cancelSubscriptionLocal, markSubscriptionRenewed, coaches, coachTrainees, addCoachTrainees, deactivateCoachTrainee } = useStore();
+  const { subscriptions, addSubscription, replaceSubscription, cancelSubscriptionLocal, markSubscriptionRenewed, coaches, coachTrainees, addCoachTrainees, deactivateCoachTrainee, cancelPrivateSession } = useStore();
   const { user, isManager } = useAuth();
   const { exchangeRate } = useCurrency();
+
+  // ── Gate numbers (Anviz map) ───────────────────────────────────────────────
+  // Mirror of anviz_member_map keyed by normalized member name, so every
+  // subscriber row shows its linked gate number and (managers only) can edit it
+  // inline. Read is open to any authenticated user; writes are RLS-restricted to
+  // managers. Realtime-subscribed so changes from the Gate tab appear live.
+  const [gateByName, setGateByName] = useState<Map<string, GateEntry>>(new Map());
+  const loadGateMap = useCallback(async () => {
+    const { data } = await supabaseBrowser()
+      .from("anviz_member_map")
+      .select("id, anviz_userid, member_name");
+    if (!data) return;
+    const m = new Map<string, GateEntry>();
+    for (const r of data) {
+      m.set(String(r.member_name).toLocaleLowerCase("ar-SY").trim(),
+            { id: String(r.id), anvizUserid: Number(r.anviz_userid) });
+    }
+    setGateByName(m);
+  }, []);
+  useEffect(() => {
+    void loadGateMap();
+    const supabase = supabaseBrowser();
+    const ch = supabase
+      .channel("subs-anviz-map")
+      .on("postgres_changes", { event: "*", schema: "public", table: "anviz_member_map" }, () => { void loadGateMap(); })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [loadGateMap]);
+
+  // Inline gate-number editing (manager-only). Empty input clears the link.
+  const [gateEditId, setGateEditId] = useState<string | null>(null);
+  const [gateInput, setGateInput] = useState("");
+  const [gateBusy, setGateBusy] = useState(false);
+  const startGateEdit = (subId: string, current?: number) => {
+    setGateEditId(subId);
+    setGateInput(current != null ? String(current) : "");
+  };
+  const cancelGateEdit = () => { setGateEditId(null); setGateInput(""); };
+  const saveGate = async (sub: Subscription) => {
+    if (!user) return;
+    const u = { id: user.id, displayName: user.displayName };
+    const existing = gateByName.get(sub.memberName.toLocaleLowerCase("ar-SY").trim());
+    const raw = gateInput.trim();
+    setGateBusy(true);
+    try {
+      if (!raw) {
+        if (existing) await deleteAnvizMemberMap({ user: u, id: existing.id });
+      } else {
+        const num = parseInt(raw, 10);
+        if (!Number.isInteger(num) || num <= 0) return;
+        if (existing) await updateAnvizMemberMap({ user: u, id: existing.id, anvizUserid: num, memberName: sub.memberName });
+        else          await upsertAnvizMemberMap({ user: u, anvizUserid: num, memberName: sub.memberName });
+      }
+      await loadGateMap();
+    } finally {
+      setGateBusy(false);
+      setGateEditId(null);
+      setGateInput("");
+    }
+  };
 
   // ── Main view tabs ─────────────────────────────────────────────────────────
   const [mainTab, setMainTab] = useState<MainTab>("subscriptions");
@@ -765,6 +835,7 @@ export default function SubscriptionsBlock() {
       if (activeFilter === "partial")  return sub.paymentStatus === "partial";
       if (activeFilter === "expiring") return sub.status === "active" && sub.remainingDays > 0 && sub.remainingDays <= 7;
       if (activeFilter === "renew")    return sub.status === "expired" || sub.status === "renewed";
+      if (activeFilter === "groups")   return isGroupOffer(sub.offer);
       return true;
     });
     if (sortMode === "alpha") {
@@ -809,6 +880,7 @@ export default function SubscriptionsBlock() {
     partial:  subscriptions.filter((s) => s.paymentStatus === "partial" && s.status !== "cancelled" && s.status !== "renewed").length,
     expired:  subscriptions.filter((s) => s.status === "expired").length,
     renew:    subscriptions.filter((s) => s.status === "expired").length,
+    groups:   subscriptions.filter((s) => s.status !== "cancelled" && s.status !== "renewed" && isGroupOffer(s.offer)).length,
     coaches:  coaches.filter((c) => c.isActive).length,
   };
 
@@ -837,6 +909,49 @@ export default function SubscriptionsBlock() {
     }
     return { rows, orphans: Array.from(orphans.entries()) };
   }, [coaches, coachTrainees]);
+
+  // ── Membership lookup for coach-roster players ─────────────────────────────
+  // Match each coach player to their gym subscription by normalized name, so the
+  // coaches tab can show whether they hold an active membership. Normalization
+  // folds Arabic letter/diacritic variants and drops spaces, so minor spelling
+  // differences (and middle names, via the contains fallback) still match.
+  const nameKey = (s: string) =>
+    s.toLocaleLowerCase("ar-SY")
+     .replace(/[ًٌٍَُِّْـ]/g, "")
+     .replace(/[أإآٱ]/g, "ا").replace(/[ىئ]/g, "ي").replace(/ؤ/g, "و").replace(/ة/g, "ه")
+     .replace(/\s+/g, "");
+  const membershipsByKey = useMemo(() => {
+    const byKey = new Map<string, Subscription>();
+    for (const s of subscriptions) {
+      if (s.status === "cancelled" || s.status === "renewed") continue;
+      const k = nameKey(s.memberName);
+      const cur = byKey.get(k);
+      // Prefer the membership with the most days left (active over expired).
+      if (!cur || s.remainingDays > cur.remainingDays) byKey.set(k, s);
+    }
+    return byKey;
+  }, [subscriptions]);
+  const membershipFor = useCallback((playerName: string): Subscription | null => {
+    const k = nameKey(playerName);
+    if (membershipsByKey.has(k)) return membershipsByKey.get(k)!;
+    for (const [mk, sub] of membershipsByKey) {
+      if (mk.includes(k) || k.includes(mk)) return sub;
+    }
+    return null;
+  }, [membershipsByKey]);
+  const MembershipBadge = ({ playerName }: { playerName: string }) => {
+    const m = membershipFor(playerName);
+    const base = "font-mono text-[9px] px-1.5 py-0.5 rounded border whitespace-nowrap";
+    if (!m) return (
+      <span className={`${base} bg-red/10 text-red border-red/20`}>لا يوجد اشتراك</span>
+    );
+    if (m.remainingDays > 0) return (
+      <span className={`${base} bg-success/10 text-success border-success/20`}>عضو نشط · {m.remainingDays} يوم</span>
+    );
+    return (
+      <span className={`${base} bg-gunmetal text-secondary border-gunmetal`}>اشتراك منتهٍ</span>
+    );
+  };
 
   // ── Normal subscription submit ─────────────────────────────────────────────
   const handleSubmit = async (e: React.FormEvent) => {
@@ -1060,11 +1175,16 @@ export default function SubscriptionsBlock() {
       { name: coachPrivateName.trim(), phone: (coachPrivatePhone || "").trim() },
       ...cpExtraPlayers.map((p) => ({ name: p.name.trim(), phone: p.phone.trim() })),
     ].filter((p) => p.name);
+    // Record each player's share of the payment on the roster (informational).
+    // Without this the coach's players show no amount in the coaches tab.
+    const cpPerPlayer = rosterPlayers.length > 0
+      ? Number((pay.totalNum / rosterPlayers.length).toFixed(2))
+      : null;
     const tr = await addCoachTrainees({
       coachId: coachPrivateCoachId,
       coachName: coachPrivateCoach.trim(),
       source: "coach_private",
-      players: rosterPlayers,
+      players: rosterPlayers.map((p) => ({ ...p, amount: cpPerPlayer })),
       privateSessionId: privateRow.data ? String(privateRow.data.id) : null,
       subscriptionId: String(row.id),
     });
@@ -1503,6 +1623,7 @@ export default function SubscriptionsBlock() {
     { key: "partial",  label: "جزئي" },
     { key: "expired",  label: "منتهي" },
     { key: "renew",    label: "تجديد" },
+    { key: "groups",   label: "عروض المجموعات" },
     { key: "coaches",  label: "المدربون" },
   ];
 
@@ -1991,7 +2112,7 @@ export default function SubscriptionsBlock() {
               <table className="w-full min-w-[860px] border-collapse">
                 <thead className="sticky top-0 z-10">
                   <tr className="bg-charcoal">
-                    {["اسم العضو","الهاتف","الكوتش","الخطة","العرض","تاريخ البدء","تاريخ الانتهاء","الأيام المتبقية","المبلغ","الدفع","الحالة","رمز التفعيل",""].map((col, i) => (
+                    {["اسم العضو","الهاتف","الكوتش","الخطة","العرض","تاريخ البدء","تاريخ الانتهاء","الأيام المتبقية","المبلغ","الدفع","الحالة","رمز التفعيل","رقم البوابة",""].map((col, i) => (
                       <th key={i} className="px-3.5 py-2.5 text-right font-mono text-[10px] text-secondary uppercase tracking-wider whitespace-nowrap">
                         {col}
                       </th>
@@ -2001,7 +2122,7 @@ export default function SubscriptionsBlock() {
                 <tbody>
                   {filtered.length === 0 && (
                     <tr>
-                      <td colSpan={13} className="px-4 py-10 text-center font-mono text-xs text-slate uppercase tracking-wider">
+                      <td colSpan={14} className="px-4 py-10 text-center font-mono text-xs text-slate uppercase tracking-wider">
                         {subscriptions.length === 0 ? "لا توجد اشتراكات" : (searchQuery ? "لا توجد نتائج للبحث" : "لا توجد اشتراكات تطابق هذا الفلتر")}
                       </td>
                     </tr>
@@ -2012,6 +2133,7 @@ export default function SubscriptionsBlock() {
                     const groupIndex  = isGrouped ? mates!.findIndex((m) => m.id === sub.id) : -1;
                     const isGroupLast = isGrouped && groupIndex === mates!.length - 1;
                     const partners    = isGrouped ? mates!.filter((m) => m.id !== sub.id).map((m) => m.memberName) : [];
+                    const gateNum     = gateByName.get(sub.memberName.toLocaleLowerCase("ar-SY").trim())?.anvizUserid;
                     return (
                     <tr key={sub.id}
                       className={`ox-table-row transition-colors duration-100 hover:bg-gunmetal/60 ${
@@ -2058,6 +2180,44 @@ export default function SubscriptionsBlock() {
                       <td className="px-3.5 py-3"><SubStatusChip status={sub.status} /></td>
                       <td className="px-3.5 py-3 font-mono text-xs text-ghost tabular-nums whitespace-nowrap" dir="ltr">
                         {sub.activationCode ? sub.activationCode : <span className="text-slate">—</span>}
+                      </td>
+                      <td className="px-3.5 py-3 whitespace-nowrap text-center" dir="ltr">
+                        {gateEditId === sub.id ? (
+                          <div className="flex items-center justify-center gap-1">
+                            <input
+                              autoFocus
+                              type="number"
+                              min="1"
+                              value={gateInput}
+                              onChange={(e) => setGateInput(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") void saveGate(sub);
+                                if (e.key === "Escape") cancelGateEdit();
+                              }}
+                              disabled={gateBusy}
+                              placeholder="—"
+                              className="w-14 bg-void border border-gold/40 rounded px-1.5 py-0.5 font-mono text-xs text-offwhite tabular-nums text-center focus:outline-none focus:border-gold"
+                            />
+                            <button onClick={() => void saveGate(sub)} disabled={gateBusy}
+                              className="p-0.5 text-emerald-400 hover:text-emerald-300 cursor-pointer disabled:opacity-50" title="حفظ">✓</button>
+                            <button onClick={cancelGateEdit} disabled={gateBusy}
+                              className="p-0.5 text-slate hover:text-offwhite cursor-pointer disabled:opacity-50" title="إلغاء">✕</button>
+                          </div>
+                        ) : isManager ? (
+                          <button
+                            onClick={() => startGateEdit(sub.id, gateNum)}
+                            className="group inline-flex items-center justify-center font-mono text-xs tabular-nums cursor-pointer"
+                            title="تعديل رقم البوابة"
+                          >
+                            <span className={gateNum != null ? "text-gold group-hover:text-gold/80" : "text-slate group-hover:text-gold"}>
+                              {gateNum != null ? gateNum : "—"}
+                            </span>
+                          </button>
+                        ) : (
+                          <span className="font-mono text-xs text-gold tabular-nums">
+                            {gateNum != null ? gateNum : <span className="text-slate">—</span>}
+                          </span>
+                        )}
                       </td>
                       <td className="px-3.5 py-3 text-center">
                         <div className="flex items-center justify-center gap-1.5">
@@ -2153,8 +2313,25 @@ export default function SubscriptionsBlock() {
                           {coach.kind === "gym" ? "مدرب الصالة" : "مدرب خاص"}
                         </span>
                         {coach.phone && <span className="font-mono text-[11px] text-secondary tabular-nums" dir="ltr">{coach.phone}</span>}
+                        {coach.activationCode && (
+                          <span
+                            className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-gunmetal text-gold tracking-wider cursor-pointer tabular-nums"
+                            dir="ltr"
+                            title="رمز تفعيل التطبيق — اضغط للنسخ"
+                            onClick={() => { navigator.clipboard?.writeText(coach.activationCode!); setToastMessage(`نُسخ رمز التفعيل: ${coach.activationCode}`); }}
+                          >
+                            رمز: {coach.activationCode}
+                          </span>
+                        )}
                       </div>
-                      <span className="font-mono text-[10px] text-slate">{trainees.length} لاعب</span>
+                      <div className="flex items-center gap-3">
+                        {trainees.reduce((s, t) => s + (t.amount ?? 0), 0) > 0 && (
+                          <span className="font-mono text-[11px] text-gold tabular-nums" dir="ltr">
+                            {formatCurrency(trainees.reduce((s, t) => s + (t.amount ?? 0), 0))} $
+                          </span>
+                        )}
+                        <span className="font-mono text-[10px] text-slate">{trainees.length} لاعب</span>
+                      </div>
                     </div>
                     {trainees.length === 0 ? (
                       <p className="px-4 py-3 font-mono text-[11px] text-slate">لا يوجد لاعبون تحت هذا الكوتش</p>
@@ -2165,13 +2342,37 @@ export default function SubscriptionsBlock() {
                             <div className="flex items-center gap-3 flex-wrap">
                               <span className="font-body text-sm text-ghost">{t.name}</span>
                               <span className="font-mono text-[11px] text-secondary tabular-nums" dir="ltr">{t.phone}</span>
+                              <MembershipBadge playerName={t.name} />
                               <span className="font-mono text-[9px] text-slate">{t.source === "coach_private" ? "مع مدربينا" : "تدريب خاص"} — {formatDate(t.createdAt)}</span>
                             </div>
-                            <button type="button"
-                              onClick={() => { if (window.confirm(`إزالة ${t.name} من قائمة ${coach.name}؟`)) deactivateCoachTrainee(t.id); }}
-                              className="px-2 py-0.5 font-mono text-[10px] text-red/80 hover:text-red border border-red/20 hover:border-red/40 rounded transition-colors">
-                              إزالة
-                            </button>
+                            <div className="flex items-center gap-3">
+                              <span className="font-mono text-xs text-gold tabular-nums" dir="ltr">
+                                {t.amount != null ? `${formatCurrency(t.amount)} $` : <span className="text-slate">—</span>}
+                              </span>
+                              {/* Delete the whole private session: cancels its revenue and
+                                  removes every player attached to it. Only shown for rows
+                                  tied to a private_sessions row. */}
+                              {t.privateSessionId && (
+                                <button type="button"
+                                  onClick={async () => {
+                                    const sid = t.privateSessionId!;
+                                    const players = coachTrainees.filter((x) => x.privateSessionId === sid);
+                                    const names = players.map((p) => p.name).join("، ") || t.name;
+                                    if (!window.confirm(`حذف جلسة التدريب الخاص؟\nسيُلغى المبلغ ويُزال اللاعبون: ${names}`)) return;
+                                    const r = await cancelPrivateSession(sid);
+                                    if (r.error) { setToastMessage(`تعذّر حذف الجلسة: ${r.error}`); return; }
+                                    setToastMessage("تم حذف جلسة التدريب الخاص");
+                                  }}
+                                  className="px-2 py-0.5 font-mono text-[10px] text-red hover:text-red-bright border border-red/30 hover:border-red/60 bg-red/10 rounded transition-colors">
+                                  حذف الجلسة
+                                </button>
+                              )}
+                              <button type="button"
+                                onClick={() => { if (window.confirm(`إزالة ${t.name} من قائمة ${coach.name}؟`)) deactivateCoachTrainee(t.id); }}
+                                className="px-2 py-0.5 font-mono text-[10px] text-red/80 hover:text-red border border-red/20 hover:border-red/40 rounded transition-colors">
+                                إزالة
+                              </button>
+                            </div>
                           </li>
                         ))}
                       </ul>
@@ -2190,6 +2391,7 @@ export default function SubscriptionsBlock() {
                           <div className="flex items-center gap-3 flex-wrap">
                             <span className="font-body text-sm text-ghost">{t.name}</span>
                             <span className="font-mono text-[11px] text-secondary tabular-nums" dir="ltr">{t.phone}</span>
+                            <MembershipBadge playerName={t.name} />
                           </div>
                           <button type="button"
                             onClick={() => { if (window.confirm(`إزالة ${t.name}؟`)) deactivateCoachTrainee(t.id); }}

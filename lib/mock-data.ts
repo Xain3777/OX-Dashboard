@@ -228,6 +228,7 @@ export const MONTHLY_REVIEW: MonthlyReview = {
     supplies: 120,
     marketing: 0,
     miscellaneous: 60,
+    inventory_purchase: 0,
   },
   topProducts: [
     { name: "كوب بروتين (طازج)", quantity: 48, revenue: 720 },
