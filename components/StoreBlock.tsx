@@ -29,6 +29,7 @@ import {
 import { STAFF } from "@/lib/mock-data";
 import { useAuth } from "@/lib/auth-context";
 import { useStore } from "@/lib/store-context";
+import { isCurrentBusinessDay } from "@/lib/utils/time";
 import { useCurrency } from "@/lib/currency-context";
 import { pushItemSale, cancelTransaction } from "@/lib/supabase/intake";
 import type { ItemSale, PaymentMethod } from "@/lib/types";
@@ -97,10 +98,10 @@ const CATEGORY_GROUP_ORDER: ProductCategory[] = [
   "other",
 ];
 
-const TODAY = new Date().toISOString().slice(0, 10);
-
+// "Today" follows the gym's 6 AM → 6 AM business day (see lib/utils/time.ts),
+// so after-midnight sales stay on the previous day and the list is clean at 6 AM.
 function isTodaySale(sale: Sale): boolean {
-  return sale.createdAt.startsWith(TODAY);
+  return isCurrentBusinessDay(sale.createdAt);
 }
 
 function CategoryBadge({ category }: { category: ProductCategory }) {

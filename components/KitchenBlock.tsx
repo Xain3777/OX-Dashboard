@@ -7,7 +7,7 @@ import { useStore } from "@/lib/store-context";
 import { useCurrency } from "@/lib/currency-context";
 import { pushItemSale, cancelTransaction } from "@/lib/supabase/intake";
 import type { ItemSale, PaymentMethod } from "@/lib/types";
-import { formatTime } from "@/lib/utils/time";
+import { formatTime, isCurrentBusinessDay } from "@/lib/utils/time";
 import { recipeAvailability } from "@/lib/inventory";
 
 interface QtyMap { [id: string]: number }
@@ -53,8 +53,6 @@ export default function KitchenBlock() {
   const [error,   setError]   = useState("");
   const [success, setSuccess] = useState("");
 
-  const today = new Date().toISOString().slice(0, 10);
-
   // Kitchen UI shows catalog items whose item_type is meal / water / drink.
   // Currency comes from the catalog row (sellCurrency); the cashier never
   // picks it. Zero-priced rows still render — they're sub-portion add-ons
@@ -84,9 +82,9 @@ export default function KitchenBlock() {
 
   const todayKitchenSales = useMemo(
     () => itemSales
-      .filter((s) => s.source === "kitchen" && s.createdAt.startsWith(today))
+      .filter((s) => s.source === "kitchen" && isCurrentBusinessDay(s.createdAt))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-    [itemSales, today]
+    [itemSales]
   );
 
   // SYP-only ordering total (kitchen items today are all SYP-priced).

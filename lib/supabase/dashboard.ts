@@ -5,6 +5,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { supabaseBrowser } from "./client";
+import { businessDayStartUTC, businessDayWindowUTC } from "../utils/time";
 
 
 export interface LiveKPI {
@@ -31,9 +32,6 @@ const ZERO: LiveKPI = {
   partiallyPaidRemainingUSD: 0,
 };
 
-function startOfTodayISO() {
-  const d = new Date(); d.setHours(0, 0, 0, 0); return d.toISOString();
-}
 function startOfMonthISO() {
   const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d.toISOString();
 }
@@ -103,7 +101,7 @@ async function sumItemSalesUSD(
 
 export async function fetchLiveKPI(): Promise<LiveKPI> {
   const supabase = supabaseBrowser();
-  const today = startOfTodayISO();
+  const today = businessDayStartUTC();
   const month = startOfMonthISO();
 
   const [
@@ -368,12 +366,6 @@ export interface DailyReport {
 // the runtime's local TZ.
 const DAMASCUS_OFFSET = "+03:00";
 
-function damascusDayWindowUTC(date: string): { start: string; end: string } {
-  const start = new Date(`${date}T00:00:00.000${DAMASCUS_OFFSET}`).toISOString();
-  const end   = new Date(`${date}T23:59:59.999${DAMASCUS_OFFSET}`).toISOString();
-  return { start, end };
-}
-
 function toUSD(amount: number, currency: string, rate: number): number {
   if (currency === "syp" && rate > 0) return amount / rate;
   return amount;
@@ -381,7 +373,7 @@ function toUSD(amount: number, currency: string, rate: number): number {
 
 export async function fetchDailyReport(date: string): Promise<DailyReport> {
   const supabase = supabaseBrowser();
-  const { start: dayStart, end: dayEnd } = damascusDayWindowUTC(date);
+  const { start: dayStart, end: dayEnd } = businessDayWindowUTC(date);
 
   const { data: profiles } = await supabase
     .from("profiles")

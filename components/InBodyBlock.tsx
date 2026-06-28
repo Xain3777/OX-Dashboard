@@ -7,6 +7,7 @@ import { useStore, type InBodyMemberType, type InBodySession } from "@/lib/store
 import { useCurrency } from "@/lib/currency-context";
 import { pushInBody, cancelTransaction } from "@/lib/supabase/intake";
 import { supabaseBrowser } from "@/lib/supabase/client";
+import { isCurrentBusinessDay } from "@/lib/utils/time";
 
 const MEMBER_PRICE_USD     = 5;
 const NON_MEMBER_PRICE_USD = 8;
@@ -156,10 +157,9 @@ export default function InBodyBlock() {
 
   const priceUSD = memberType === "gym_member" ? MEMBER_PRICE_USD : NON_MEMBER_PRICE_USD;
 
-  const today = new Date().toISOString().slice(0, 10);
   const todaySessions = useMemo(
-    () => inBodySessions.filter((s) => s.createdAt.startsWith(today)),
-    [inBodySessions, today]
+    () => inBodySessions.filter((s) => isCurrentBusinessDay(s.createdAt)),
+    [inBodySessions]
   );
   const todayTotalUSD = useMemo(
     () => todaySessions.filter(s => !s.cancelled).reduce((sum, s) => sum + s.priceUSD, 0),

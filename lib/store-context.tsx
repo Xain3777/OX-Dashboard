@@ -17,6 +17,7 @@ import {
 } from "./types";
 import { PRODUCTS, FOOD_ITEMS } from "./mock-data";
 import { generateId, calculateRemainingDays } from "./business-logic";
+import { businessDayStartUTC } from "./utils/time";
 import { useAuth } from "./auth-context";
 import { supabaseBrowser } from "./supabase/client";
 import { fetchSessionIncome, SessionIncome, getActiveSession, getLastClosedSession } from "./supabase/session";
@@ -550,7 +551,10 @@ function deriveLegacyFromCatalog(
 async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
   try {
     const supabase = supabaseBrowser();
-    const today = new Date().toISOString().slice(0, 10);
+    // Live "today" = the current business day (6 AM → 6 AM Damascus), so
+    // after-midnight activity stays on the previous day and the new day is
+    // clean at 6 AM. See lib/utils/time.ts.
+    const dayStart = businessDayStartUTC();
 
     const [subsRes, salesRes, inbodyRes, expensesRes, catalogRes, rateRes, activeSession, lastClosed, coachesRes, coachTraineesRes, rawMaterialsRes, purchasesRes, recipesRes, adjustmentsRes] = await Promise.all([
       supabase
@@ -562,12 +566,12 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       supabase
         .from("item_sales")
         .select("*")
-        .gte("created_at", today + "T00:00:00")
+        .gte("created_at", dayStart)
         .order("created_at", { ascending: true }),
       supabase
         .from("inbody_sessions")
         .select("*")
-        .gte("created_at", today + "T00:00:00")
+        .gte("created_at", dayStart)
         .not("member_name", "ilike", "%test%"),
       supabase
         .from("expenses")

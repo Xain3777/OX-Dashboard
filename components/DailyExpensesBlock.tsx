@@ -9,6 +9,7 @@ import { pushExpense, cancelTransaction } from "@/lib/supabase/intake";
 import { formatTime } from "@/lib/utils/time";
 import type { Currency, Expense, ExpenseCategory, ExpenseFrequency, PaymentMethod } from "@/lib/types";
 import PurchaseInvoiceForm from "@/components/PurchaseInvoiceForm";
+import { isCurrentBusinessDay, currentBusinessDate } from "@/lib/utils/time";
 
 // Reception-side daily expenses. Writes go into the same public.expenses
 // table that the manager dashboard reads — so totals roll into the live
@@ -20,8 +21,6 @@ const CURRENCY_LABEL: Record<Currency, string> = {
   syp: "ل.س",
   usd: "$",
 };
-
-const TODAY = new Date().toISOString().slice(0, 10);
 
 export default function DailyExpensesBlock() {
   const { user } = useAuth();
@@ -45,7 +44,7 @@ export default function DailyExpensesBlock() {
       expenses
         .filter((e) =>
           e.source === "reception_daily"
-          && e.createdAt.startsWith(TODAY)
+          && isCurrentBusinessDay(e.createdAt)
           && (user ? e.createdBy === user.id : false))
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [expenses, user]
@@ -96,7 +95,7 @@ export default function DailyExpensesBlock() {
       paymentMethod: "cash" as PaymentMethod,
       currency,
       frequency: "one_time" as ExpenseFrequency,
-      date: TODAY,
+      date: currentBusinessDate(),
       createdAt: String(row.created_at ?? new Date().toISOString()),
       createdBy: user.id,
       createdByName: user.displayName,
