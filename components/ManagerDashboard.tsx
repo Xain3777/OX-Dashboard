@@ -1810,9 +1810,12 @@ function ExpensesNetSection({
   if (!expenses || !summary) return null;
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         <SummaryCard label="إجمالي الإيرادات" syp={summary.totalRevenue.syp} usd={summary.totalRevenue.usd}
           icon={<TrendingUp size={14} />} accent="green" skipped={bucketSkipped(summary.totalRevenue)} />
+        <SummaryCard label="الربح (بضائع)" syp={summary.goodsProfit.syp} usd={summary.goodsProfit.usd}
+          icon={<DollarSign size={14} />} accent="gold" subtitle="بيع − تكلفة (متجر + مطبخ)"
+          skipped={bucketSkipped(summary.goodsProfit)} />
         <SummaryCard label="إجمالي المصاريف" syp={expenses.total.syp} usd={expenses.total.usd}
           icon={<TrendingDown size={14} />} accent="red" skipped={bucketSkipped(expenses.total)} />
         <SummaryCard label="صافي الدخل" syp={summary.netIncome.syp} usd={summary.netIncome.usd}

@@ -37,6 +37,7 @@ import {
   pushPurchaseInvoice as pushPurchaseInvoiceRemote,
   cancelPurchaseInvoice as cancelPurchaseInvoiceRemote,
   cancelPrivateSession as cancelPrivateSessionRemote,
+  renewPrivateSession as renewPrivateSessionRemote,
   fetchItemRecipes as fetchItemRecipesRemote,
   pushItemRecipe as pushItemRecipeRemote,
   updateItemRecipe as updateItemRecipeRemote,
@@ -328,6 +329,7 @@ export interface StoreContextType extends StoreState {
   addCoachTrainees: (input: { coachId: string | null; coachName: string; source: "private" | "coach_private"; players: { name: string; phone: string; amount?: number | null }[]; privateSessionId?: string | null; subscriptionId?: string | null }) => Promise<{ data?: CoachTrainee[]; error?: string }>;
   deactivateCoachTrainee: (id: string) => Promise<{ error?: string }>;
   cancelPrivateSession: (privateSessionId: string) => Promise<{ error?: string }>;
+  renewPrivateSession: (oldPrivateSessionId: string) => Promise<{ error?: string }>;
   reloadCoachTrainees: () => Promise<void>;
   addRawMaterial: (input: { name: string; unit: string; lowStockThreshold?: number; costCurrency?: Currency | null; lastPurchasePrice?: number | null; notes?: string | null }) => Promise<{ data?: RawMaterial; error?: string }>;
   updateRawMaterial: (id: string, fields: { name?: string; unit?: string; currentQuantity?: number; lowStockThreshold?: number; costCurrency?: Currency | null; lastPurchasePrice?: number | null; notes?: string | null; isActive?: boolean }) => Promise<{ error?: string }>;
@@ -780,6 +782,7 @@ const StoreContext = createContext<StoreContextType>({
   addCoachTrainees: async () => ({}),
   deactivateCoachTrainee: async () => ({}),
   cancelPrivateSession: async () => ({}),
+  renewPrivateSession: async () => ({}),
   reloadCoachTrainees: async () => {},
   addRawMaterial: async () => ({}),
   updateRawMaterial: async () => ({}),
@@ -1421,6 +1424,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return {};
   }, [setState, user]);
 
+  // Re-book a private-coaching charge into the current shift (monthly renew).
+  // The new private_sessions row is picked up by the income realtime channel,
+  // so running cash updates on its own.
+  const renewPrivateSession = useCallback(async (oldPrivateSessionId: string) => {
+    if (!user) return { error: "غير مسجل الدخول" };
+    const res = await renewPrivateSessionRemote({
+      user: { id: user.id, displayName: user.displayName },
+      oldPrivateSessionId,
+      exchangeRate: stateRef.current.exchangeRate,
+    });
+    if (res.error) return { error: res.error };
+    return {};
+  }, [user]);
+
   // ── Inventory: raw materials + purchase invoices ────────────────────────────
 
   const reloadRawMaterials = useCallback(async () => {
@@ -1629,6 +1646,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .on("postgres_changes", { event: "*", schema: "public", table: "sales",           filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
       .on("postgres_changes", { event: "*", schema: "public", table: "item_sales",      filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
       .on("postgres_changes", { event: "*", schema: "public", table: "gym_subscriptions", filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
+      .on("postgres_changes", { event: "*", schema: "public", table: "private_sessions",  filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
       .on("postgres_changes", { event: "*", schema: "public", table: "inbody_sessions", filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
       .on("postgres_changes", { event: "*", schema: "public", table: "expenses",        filter: `cash_session_id=eq.${sid}` }, () => void refreshIncome(sid))
       .subscribe();
@@ -1756,6 +1774,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     addCoachTrainees,
     deactivateCoachTrainee,
     cancelPrivateSession,
+    renewPrivateSession,
     reloadCoachTrainees,
     addRawMaterial,
     updateRawMaterial,

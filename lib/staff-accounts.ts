@@ -17,6 +17,10 @@ export interface StaffAccount {
   email: string;       // auth.users email (never shown to the user)
   displayName: string; // shown wherever a name is needed
   role: StaffRole;
+  /** Reception accounts stay locked out of cost prices by the catalog trigger
+   *  (migration 0030). This per-user flag unlocks cost editing for them —
+   *  mirrored in DB by profiles.can_edit_cost (migration 0068). */
+  canEditCost?: boolean;
 }
 
 export const STAFF_ACCOUNTS: StaffAccount[] = accounts as StaffAccount[];

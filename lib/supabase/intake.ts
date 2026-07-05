@@ -2979,6 +2979,85 @@ export async function cancelPrivateSession(opts: {
   }
 }
 
+// Monthly renew of a private-coaching charge. Private-training money
+// (تدريب خاص) and the مع مدربينا $100 coaching add-on are both
+// private_sessions rows and are counted in cash only when first entered —
+// there was no way to re-book next month's payment. This re-records the same
+// coaching charge (same coach / players / prices) into the ACTIVE cash
+// session so recurring monthly money is captured. Money-only: it does NOT
+// touch the coach_trainees roster (the players stay as-is).
+export async function renewPrivateSession(opts: {
+  user: CurrentUser;
+  oldPrivateSessionId: string;
+  exchangeRate?: number;
+}): Promise<{ data?: DbRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.oldPrivateSessionId) return { error: "معرّف الجلسة مفقود" };
+
+    const session = await getActiveSession();
+    if (!session) return { error: "لا توجد جلسة نقدية مفتوحة — افتح جلسة أولاً" };
+    const supabase = supabaseBrowser();
+
+    const { data: old, error: readErr } = await supabase
+      .from("private_sessions")
+      .select("*")
+      .eq("id", opts.oldPrivateSessionId)
+      .maybeSingle();
+    if (readErr) { logError("private_sessions", "select-for-renew", readErr); return { error: readErr.message }; }
+    if (!old) return { error: "الجلسة غير موجودة" };
+
+    const o = old as DbRow;
+    const totalPrice = Number(o.total_price ?? 0);
+    const players = Array.isArray(o.player_names) ? (o.player_names as string[]) : [];
+    const coach = (o.private_coach_name as string | null) ?? null;
+    const rate = opts.exchangeRate && opts.exchangeRate > 0
+      ? opts.exchangeRate
+      : (Number(o.exchange_rate ?? 0) || 1);
+    const amountSYP = Math.round(totalPrice * rate);
+
+    const { data, error } = await supabase
+      .from("private_sessions")
+      .insert({
+        number_of_players: Number(o.number_of_players ?? players.length ?? 1),
+        player_names: players,
+        base_trainer_fee: Number(o.base_trainer_fee ?? 0),
+        group_price: Number(o.group_price ?? 0),
+        total_price: totalPrice,
+        paid_amount: totalPrice,            // a renewal is a fresh, fully-paid month
+        payment_status: "paid",
+        currency: "usd",
+        exchange_rate: rate,
+        amount_syp: amountSYP,
+        group_id: o.group_id ?? null,
+        notes: `تجديد شهري${coach ? ` — ${coach}` : ""}`,
+        private_coach_name: coach,
+        cash_session_id: session.id,
+        created_by: opts.user.id,
+        created_by_name: opts.user.displayName,
+      })
+      .select()
+      .single();
+
+    if (error) { logError("private_sessions", "renew-insert", error); return { error: error.message }; }
+    if (!data) { logError("private_sessions", "renew-insert", "no row returned"); return { error: "لم يُسجَّل التجديد — تحقق من RLS" }; }
+    logSuccess("private_sessions", "renew", data);
+
+    await pushActivity({
+      user: opts.user,
+      action: "private_session_renew",
+      description: `تجديد تدريب خاص${coach ? ` — ${coach}` : ""} — $${totalPrice}`,
+      amountUSD: totalPrice,
+      entityType: "private_session",
+      entityId: (data as DbRow).id as string,
+    });
+    return { data: data as DbRow };
+  } catch (e) {
+    logError("private_sessions", "renew", e);
+    return { error: String(e) };
+  }
+}
+
 // ── Group offers metadata ─────────────────────────────────────
 
 export async function pushGroupOffer(opts: {

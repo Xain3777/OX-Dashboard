@@ -18,6 +18,9 @@ export interface AuthUser {
   email: string;
   displayName: string;
   role: AppRole;
+  /** Per-user unlock: reception accounts flagged canEditCost may edit item
+   *  cost prices (managers always can). See lib/staff-accounts.ts + 0068. */
+  canEditCost?: boolean;
 }
 
 interface AuthContextType {
@@ -26,6 +29,8 @@ interface AuthContextType {
   signIn: (email: string, password: string) => Promise<{ error?: string }>;
   signOut: () => Promise<void>;
   isManager: boolean;
+  /** True for managers, or reception accounts with the per-user cost unlock. */
+  canEditCost: boolean;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -34,6 +39,7 @@ const AuthContext = createContext<AuthContextType>({
   signIn: async () => ({}),
   signOut: async () => {},
   isManager: false,
+  canEditCost: false,
 });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -52,6 +58,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           email,
           displayName: staff.displayName,
           role: staff.role,
+          canEditCost: staff.canEditCost ?? false,
         };
       }
 
@@ -141,7 +148,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, loading, signIn, signOut, isManager: user?.role === "manager" }}
+      value={{
+        user,
+        loading,
+        signIn,
+        signOut,
+        isManager: user?.role === "manager",
+        canEditCost: user?.role === "manager" || !!user?.canEditCost,
+      }}
     >
       {children}
     </AuthContext.Provider>

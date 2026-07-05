@@ -1328,6 +1328,10 @@ export interface ManagerSummary {
   expenses: CurrencyBucket;
   totalRevenue: CurrencyBucket;
   netIncome: CurrencyBucket;
+  /** Gross profit on goods = (store + kitchen) revenue − cost of goods sold.
+   *  Items with no recorded cost contribute 0 cost (profit = full sale),
+   *  matching ProfitReportBlock. Subscriptions/InBody have no cost basis. */
+  goodsProfit: CurrencyBucket;
   activeMembers: {
     /** Distinct member_id (with normalised-name fallback) of currently active subs. */
     distinct: number;
@@ -1357,7 +1361,7 @@ const SUB_SELECT =
 // row, so the bucket builder can just read them. We keep `original_*`
 // columns around for the optional native-currency display.
 const ITEM_SALE_SELECT =
-  "id, source, original_total, original_currency, exchange_rate_to_syp, " +
+  "id, source, catalog_item_id, quantity, original_total, original_currency, exchange_rate_to_syp, " +
   "amount_syp, amount_usd, cancelled_at, created_at";
 const INBODY_SELECT =
   "id, member_id, member_name, session_type, amount, currency, exchange_rate, amount_syp, cancelled_at, created_at";
@@ -1532,6 +1536,39 @@ export async function fetchManagerDashboardSummary(
   const totalRevenue = bucketSum(subscriptions, inbody, store, kitchen);
   const netIncome    = bucketSubtract(totalRevenue, expenses);
 
+  // ── Gross profit on goods (store + kitchen sell − cost) ───────────────────
+  // Cost per unit lives on catalog_items in cost_currency; convert to SYP/USD
+  // using each sale's snapshot rate. Unknown cost → 0 (profit = full sale),
+  // matching ProfitReportBlock so the numbers reconcile.
+  const { data: catalogCostRows } = await supabase
+    .from("catalog_items")
+    .select("id, cost_price, cost_currency, sell_currency");
+  const costById = new Map<string, Row>();
+  for (const c of (catalogCostRows ?? []) as unknown as Row[]) costById.set(String(c.id), c);
+
+  const costOfSaleRow = (r: Row): { syp: number; usd: number } => {
+    const cat = costById.get(String(r.catalog_item_id ?? ""));
+    if (!cat || cat.cost_price == null) return { syp: 0, usd: 0 };
+    const qty = Number(r.quantity ?? 0);
+    const costPrice = Number(cat.cost_price);
+    const costCur = String(cat.cost_currency ?? cat.sell_currency ?? "usd");
+    const rate = Number(r.exchange_rate_to_syp ?? 0);
+    const unitSYP = costCur === "syp" ? costPrice : rate > 0 ? costPrice * rate : 0;
+    const unitUSD = costCur === "usd" ? costPrice : rate > 0 ? costPrice / rate : 0;
+    return { syp: unitSYP * qty, usd: unitUSD * qty };
+  };
+
+  let goodsCostSyp = 0;
+  let goodsCostUsd = 0;
+  for (const r of storeRows) { const c = costOfSaleRow(r); goodsCostSyp += c.syp; goodsCostUsd += c.usd; }
+  for (const r of kitchenRows) { const c = costOfSaleRow(r); goodsCostSyp += c.syp; goodsCostUsd += c.usd; }
+  const goodsRevenue = bucketSum(store, kitchen);
+  const goodsProfit: CurrencyBucket = {
+    syp: goodsRevenue.syp - goodsCostSyp,
+    usd: goodsRevenue.usd - goodsCostUsd,
+    skippedUSD: goodsRevenue.skippedUSD,
+  };
+
   // ── active members (point-in-time, NOT range-filtered) ────────────────────
   const activeRows = (activeSubsRes.data ?? []) as Row[];
   const idents = new Set<string>();
@@ -1615,6 +1652,7 @@ export async function fetchManagerDashboardSummary(
     expenses,
     totalRevenue,
     netIncome,
+    goodsProfit,
     activeMembers: { distinct: idents.size, unattached },
     totalMembers: totalMembersRes.count ?? 0,
     partiallyPaid: {

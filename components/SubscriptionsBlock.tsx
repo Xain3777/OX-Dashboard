@@ -418,7 +418,7 @@ function CoachPicker({
 type GateEntry = { id: string; anvizUserid: number };
 
 export default function SubscriptionsBlock() {
-  const { subscriptions, addSubscription, replaceSubscription, cancelSubscriptionLocal, markSubscriptionRenewed, coaches, coachTrainees, addCoachTrainees, deactivateCoachTrainee, cancelPrivateSession } = useStore();
+  const { subscriptions, addSubscription, replaceSubscription, cancelSubscriptionLocal, markSubscriptionRenewed, coaches, coachTrainees, addCoachTrainees, deactivateCoachTrainee, cancelPrivateSession, renewPrivateSession } = useStore();
   const { user, isManager } = useAuth();
   const { exchangeRate } = useCurrency();
 
@@ -2349,6 +2349,21 @@ export default function SubscriptionsBlock() {
                               <span className="font-mono text-xs text-gold tabular-nums" dir="ltr">
                                 {t.amount != null ? `${formatCurrency(t.amount)} $` : <span className="text-slate">—</span>}
                               </span>
+                              {/* Monthly renew: re-books this private-coaching charge into
+                                  the current shift so recurring months are counted. */}
+                              {t.privateSessionId && (
+                                <button type="button"
+                                  onClick={async () => {
+                                    const sid = t.privateSessionId!;
+                                    if (!window.confirm(`تسجيل تجديد شهري للتدريب الخاص لـ ${t.name}؟\nسيُسجَّل المبلغ في الوردية الحالية.`)) return;
+                                    const r = await renewPrivateSession(sid);
+                                    if (r.error) { setToastMessage(`تعذّر التجديد: ${r.error}`); return; }
+                                    setToastMessage("تم تسجيل تجديد التدريب الخاص");
+                                  }}
+                                  className="px-2 py-0.5 font-mono text-[10px] text-gold hover:text-gold/80 border border-gold/30 hover:border-gold/60 bg-gold/10 rounded transition-colors">
+                                  تجديد الشهر
+                                </button>
+                              )}
                               {/* Delete the whole private session: cancels its revenue and
                                   removes every player attached to it. Only shown for rows
                                   tied to a private_sessions row. */}

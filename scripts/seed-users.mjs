@@ -88,11 +88,11 @@ async function ensureAuthUser(id, email, displayName, role) {
   return data.user.id;
 }
 
-async function upsertProfile(id, displayName, role) {
+async function upsertProfile(id, displayName, role, canEditCost) {
   const { error } = await admin
     .from("profiles")
     .upsert(
-      { id, display_name: displayName, role, active: true },
+      { id, display_name: displayName, role, active: true, can_edit_cost: !!canEditCost },
       { onConflict: "id" }
     );
   if (error) throw new Error(`profile ${displayName}: ${error.message}`);
@@ -102,7 +102,7 @@ async function main() {
   console.log(`Seeding ${STAFF.length} staff accounts (default password fallback: ${DEFAULT_PASSWORD})\n`);
   for (const s of STAFF) {
     const id = await ensureAuthUser(s.id, s.email, s.displayName, s.role);
-    await upsertProfile(id, s.displayName, s.role);
+    await upsertProfile(id, s.displayName, s.role, s.canEditCost);
     console.log(`  → profile ${s.role.padEnd(10)} ${s.displayName}`);
   }
   console.log("\nDone. Tell each user to change their password after first login.");

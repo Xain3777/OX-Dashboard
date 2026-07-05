@@ -1,6 +1,6 @@
 [
   { "id": "adham",   "email": "adham@ox.local",   "displayName": "كوتش احمد - كوتش ادهم",      "role": "manager"   },
-  { "id": "haidar",  "email": "haidar@ox.local",  "displayName": "حيدر",            "role": "reception" },
+  { "id": "haidar",  "email": "haidar@ox.local",  "displayName": "حيدر",            "role": "reception", "canEditCost": true },
   { "id": "morning", "email": "morning@ox.local", "displayName": "استقبال صباحي",  "role": "reception" },
   { "id": "noon",    "email": "noon@ox.local",    "displayName": "استقبال ظهر",    "role": "reception" },
   { "id": "night",   "email": "night@ox.local",   "displayName": "استقبال مسائي",  "role": "reception" }

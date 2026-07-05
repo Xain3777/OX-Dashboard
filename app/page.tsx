@@ -23,6 +23,7 @@ import CalculationsBlock from "@/components/CalculationsBlock";
 import InBodyBlock from "@/components/InBodyBlock";
 import KitchenBlock from "@/components/KitchenBlock";
 import DailyExpensesBlock from "@/components/DailyExpensesBlock";
+import CostEditorBlock from "@/components/CostEditorBlock";
 import LoginScreen from "@/components/LoginScreen";
 import ManagerDashboard from "@/components/ManagerDashboard";
 import {
@@ -52,7 +53,8 @@ type Section =
   | "weekly"
   | "monthly"
   | "audit"
-  | "livefeed";
+  | "livefeed"
+  | "itemCosts";
 
 // ── Root ──────────────────────────────────────────────────────────────────────
 
@@ -220,7 +222,7 @@ function exportMonthlyExcel(ctx: {
 
 function DashboardContent() {
   const { exchangeRate, openRateModal } = useCurrency();
-  const { user, signOut, isManager } = useAuth();
+  const { user, signOut, isManager, canEditCost } = useAuth();
   const store = useStore();
 
   const [showLogoutModal, setShowLogoutModal] = useState(false);
@@ -239,6 +241,7 @@ function DashboardContent() {
     monthly: true,
     audit: false,
     livefeed: false,
+    itemCosts: false,
   });
 
   const toggle = (section: Section) =>
@@ -382,6 +385,13 @@ function DashboardContent() {
         <CollapsibleSection title="المتجر والمخزون" collapsed={collapsed.store} onToggle={() => toggle("store")}>
           <StoreBlock />
         </CollapsibleSection>
+
+        {/* أسعار التكلفة — لحسابات الاستقبال المخوّلة (canEditCost) فقط */}
+        {canEditCost && (
+          <CollapsibleSection title="أسعار التكلفة" collapsed={collapsed.itemCosts} onToggle={() => toggle("itemCosts")}>
+            <CostEditorBlock />
+          </CollapsibleSection>
+        )}
 
         {/* المطبخ — طلبات الاستقبال */}
         <CollapsibleSection title="المطبخ" collapsed={collapsed.kitchen} onToggle={() => toggle("kitchen")}>
