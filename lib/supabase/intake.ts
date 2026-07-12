@@ -6,6 +6,8 @@
 
 import { supabaseBrowser } from "./client";
 import { getActiveSession, getLastClosedSession } from "./session";
+import { fetchAllRows } from "./fetch-all";
+import { ptGroupPrice, PT_BASE_TRAINER_FEE } from "../business-logic";
 import type { PaymentMethod } from "../types";
 
 export type Currency = "syp" | "usd";
@@ -1004,13 +1006,17 @@ export interface CoachTraineeRow {
 export async function fetchCoachTrainees(): Promise<{ data?: CoachTraineeRow[]; error?: string }> {
   try {
     const supabase = supabaseBrowser();
-    const { data, error } = await supabase
-      .from("coach_trainees")
-      .select("id, coach_id, coach_name, name, phone, source, private_session_id, subscription_id, amount, is_active, notes, created_at, created_by_name")
-      .eq("is_active", true)
-      .order("created_at", { ascending: false });
-    if (error) { logError("coach_trainees", "select", error); return { error: error.message }; }
-    return { data: (data ?? []) as CoachTraineeRow[] };
+    // Paged — the active roster is already >550 rows and Supabase caps a
+    // single query at 1000; without paging players silently vanish.
+    const { data, error } = await fetchAllRows<CoachTraineeRow>((from, to) =>
+      supabase
+        .from("coach_trainees")
+        .select("id, coach_id, coach_name, name, phone, source, private_session_id, subscription_id, amount, is_active, notes, created_at, created_by_name")
+        .eq("is_active", true)
+        .order("created_at", { ascending: false })
+        .range(from, to));
+    if (error) { logError("coach_trainees", "select", error); return { error }; }
+    return { data };
   } catch (e) {
     logError("coach_trainees", "select", e);
     return { error: String(e) };
@@ -1459,6 +1465,41 @@ export interface CatalogItemDb {
   updated_at: string;
 }
 
+// Atomically adjust a stock-tracked catalog item's quantity by a signed
+// delta (0074 RPC: stock = greatest(0, stock + delta), single statement, so
+// concurrent sales can't lose an update). Falls back to the legacy
+// read-modify-write when the RPC isn't deployed yet, so migration order
+// never blocks the POS. Errors are logged, never thrown.
+async function adjustCatalogStock(catalogItemId: string, delta: number): Promise<void> {
+  if (!catalogItemId || !Number.isFinite(delta) || delta === 0) return;
+  const supabase = supabaseBrowser();
+  const { error } = await supabase.rpc("adjust_catalog_stock", {
+    p_item_id: catalogItemId,
+    p_delta: delta,
+  });
+  if (!error) return;
+  // PGRST202 / 42883 — function not found (0074 not applied yet).
+  if (!/adjust_catalog_stock|PGRST202|does not exist/i.test(error.message)) {
+    logError("catalog_items", "stock-adjust-rpc", error);
+    return;
+  }
+  logError("catalog_items", "stock-adjust-rpc-missing (run migration 0074)", error);
+  const { data: rowData, error: readErr } = await supabase
+    .from("catalog_items")
+    .select("track_stock, stock_quantity")
+    .eq("id", catalogItemId)
+    .maybeSingle();
+  if (readErr) { logError("catalog_items", "stock-adjust-read", readErr); return; }
+  const row = rowData as { track_stock?: boolean; stock_quantity?: number } | null;
+  if (!row?.track_stock) return;
+  const next = Math.max(0, Number(row.stock_quantity ?? 0) + delta);
+  const { error: writeErr } = await supabase
+    .from("catalog_items")
+    .update({ stock_quantity: next })
+    .eq("id", catalogItemId);
+  if (writeErr) logError("catalog_items", "stock-adjust-write", writeErr);
+}
+
 export async function pushItemSale(opts: {
   user: CurrentUser;
   catalogItem: {
@@ -1468,6 +1509,11 @@ export async function pushItemSale(opts: {
     itemType: string;
     sellCurrency: "syp" | "usd";
     sellPrice: number;
+    /** Cost of goods at sale time — snapshotted onto the sale row (0073) so
+     *  profit reports stay correct even if the catalog cost changes or the
+     *  item is deleted later. Omit/null when the cost isn't recorded yet. */
+    costPrice?: number | null;
+    costCurrency?: "syp" | "usd" | null;
   };
   quantity: number;
   /** Live USD↔SYP rate at sale time. Required for SYP items; for USD
@@ -1489,6 +1535,12 @@ export async function pushItemSale(opts: {
     const unitPrice = Number(opts.catalogItem.sellPrice);
     const originalTotal = Number((unitPrice * opts.quantity).toFixed(4));
 
+    // Snapshot the unit cost so profit = sell − cost survives later catalog
+    // edits/deletes. NULL (not 0) when the cost isn't recorded — read paths
+    // fall back to the live catalog for those rows.
+    const costPrice = opts.catalogItem.costPrice;
+    const hasCost = costPrice != null && Number.isFinite(Number(costPrice)) && Number(costPrice) >= 0;
+
     const payload = {
       catalog_item_id: opts.catalogItem.id,
       item_name_snapshot: opts.catalogItem.name,
@@ -1498,6 +1550,8 @@ export async function pushItemSale(opts: {
       unit_price: unitPrice,
       original_currency: opts.catalogItem.sellCurrency,
       original_total: originalTotal,
+      cost_price_snapshot: hasCost ? Number(costPrice) : null,
+      cost_currency_snapshot: hasCost ? (opts.catalogItem.costCurrency ?? opts.catalogItem.sellCurrency) : null,
       exchange_rate_to_syp: opts.exchangeRate,
       source: opts.source,
       payment_method: opts.paymentMethod ?? "cash",
@@ -1507,35 +1561,31 @@ export async function pushItemSale(opts: {
     };
     console.log("Supabase insert payload:", { table: "item_sales", payload });
 
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("item_sales")
       .insert(payload)
       .select()
       .single();
 
+    // Migration-order safety: if 0073 isn't applied yet the snapshot columns
+    // don't exist and PostgREST rejects the insert. Never block the POS on
+    // that — retry once without them (profit falls back to the live catalog).
+    if (error && /cost_(price|currency)_snapshot/i.test(error.message)) {
+      logError("item_sales", "insert-snapshot-retry", error);
+      const { cost_price_snapshot: _cp, cost_currency_snapshot: _cc, ...legacyPayload } = payload;
+      void _cp; void _cc;
+      ({ data, error } = await supabase.from("item_sales").insert(legacyPayload).select().single());
+    }
+
     if (error) { logError("item_sales", "insert", error); return { error: error.message }; }
     if (!data) { logError("item_sales", "insert", "no row returned"); return { error: "لم يتم حفظ البيع — تحقق من RLS" }; }
     logSuccess("item_sales", "insert", data);
 
-    // Decrement stock when the catalog item tracks inventory. We don't
-    // gate this on currency or item_type — the catalog row's track_stock
-    // is the source of truth. Failure here is logged but not surfaced
-    // to the cashier (the sale already landed; stock can be reconciled).
-    void supabase
-      .from("catalog_items")
-      .select("track_stock, stock_quantity")
-      .eq("id", opts.catalogItem.id)
-      .maybeSingle()
-      .then(async ({ data: rowData }) => {
-        const row = rowData as { track_stock?: boolean; stock_quantity?: number } | null;
-        if (!row?.track_stock) return;
-        const next = Math.max(0, Number(row.stock_quantity ?? 0) - opts.quantity);
-        const { error: stockErr } = await supabase
-          .from("catalog_items")
-          .update({ stock_quantity: next })
-          .eq("id", opts.catalogItem.id);
-        if (stockErr) logError("catalog_items", "stock-decrement", stockErr);
-      });
+    // Decrement stock when the catalog item tracks inventory (the RPC no-ops
+    // for track_stock=false rows). Atomic server-side (0074) so two cashiers
+    // selling the same item concurrently can't lose a decrement. Failure is
+    // logged but not surfaced (the sale already landed; stock reconciles).
+    void adjustCatalogStock(opts.catalogItem.id, -opts.quantity);
 
     const rowAny = data as DbRow & { amount_usd?: number; amount_syp?: number };
     const usd = Number(rowAny.amount_usd ?? 0);
@@ -1860,31 +1910,14 @@ export async function cancelTransaction(opts: {
     logSuccess(opts.table, "cancel", data);
 
     if (opts.table === "item_sales") {
+      // Restore stock atomically (0074) — same race-free path as the sale-time
+      // decrement. The cancel itself already landed; a stock hiccup is logged
+      // rather than failing the cancellation.
       const sale = row as DbRow;
       const catalogItemId = sale.catalog_item_id == null ? null : String(sale.catalog_item_id);
       const quantity = Number(sale.quantity ?? 0);
       if (catalogItemId && quantity > 0) {
-        const { data: item, error: itemErr } = await supabase
-          .from("catalog_items")
-          .select("track_stock, stock_quantity")
-          .eq("id", catalogItemId)
-          .maybeSingle();
-        if (itemErr) {
-          logError("catalog_items", "select-stock-restore", itemErr);
-          return { error: itemErr.message };
-        }
-        const catalogItem = item as { track_stock?: boolean; stock_quantity?: number } | null;
-        if (catalogItem?.track_stock) {
-          const restoredStock = Number(catalogItem.stock_quantity ?? 0) + quantity;
-          const { error: stockErr } = await supabase
-            .from("catalog_items")
-            .update({ stock_quantity: restoredStock })
-            .eq("id", catalogItemId);
-          if (stockErr) {
-            logError("catalog_items", "stock-restore", stockErr);
-            return { error: stockErr.message };
-          }
-        }
+        await adjustCatalogStock(catalogItemId, quantity);
       }
     }
 
@@ -2851,9 +2884,9 @@ export async function closeCashSession(
 
 // ── Private training sessions ─────────────────────────────────
 
-function ptGroupPrice(n: number): number {
-  return n <= 2 ? 10 : n <= 5 ? 15 : 18;
-}
+// Private-coach tier table: imported from lib/business-logic.ts at the top of
+// this file (single source of truth shared with the subscription form and the
+// coaches-tab modals).
 
 export async function pushPrivateSession(opts: {
   user: CurrentUser;
@@ -2876,10 +2909,9 @@ export async function pushPrivateSession(opts: {
     if (!opts.exchangeRate || opts.exchangeRate <= 0) return { error: "سعر الصرف غير صالح" };
     if (opts.numberOfPlayers <= 0) return { error: "عدد اللاعبين يجب أن يكون أكبر من صفر" };
 
-    const BASE_TRAINER_FEE = 18;
     const trainerFee = opts.baseTrainerFeeOverride != null && opts.baseTrainerFeeOverride >= 0
       ? opts.baseTrainerFeeOverride
-      : BASE_TRAINER_FEE;
+      : PT_BASE_TRAINER_FEE;
     const groupPrice = opts.groupPriceOverride != null && opts.groupPriceOverride >= 0
       ? opts.groupPriceOverride
       : ptGroupPrice(opts.numberOfPlayers);
@@ -3054,6 +3086,223 @@ export async function renewPrivateSession(opts: {
     return { data: data as DbRow };
   } catch (e) {
     logError("private_sessions", "renew", e);
+    return { error: String(e) };
+  }
+}
+
+// Add one month to a 'YYYY-MM-DD' date (UTC-safe), used for private-coach cycles.
+function addMonthsISO(dateStr: string, months: number): string {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() + months);
+  return d.toISOString().slice(0, 10);
+}
+
+// ── Private-coach monthly cycles (0072) ───────────────────────
+//
+// A private coach is billed on a monthly cycle: base fee (once) + a group
+// tier by total players. These two functions implement the two things the
+// old model couldn't do:
+//   • addPrivateCoachPlayers — a player joins mid-month → charge only HIS
+//     share (نسبته) as a standalone 'addition' row (base = 0) and add him to
+//     the roster, without opening a new subscription.
+//   • renewPrivateCoach — start next month → charge base + tier(full roster)
+//     as a 'renewal' row, refusing a double-renew of the same month.
+
+// Add players mid-cycle and charge their share on its own.
+export async function addPrivateCoachPlayers(opts: {
+  user: CurrentUser;
+  coachId: string;
+  coachName: string;
+  players: { name: string; phone: string }[];
+  shareAmount: number;               // نسبة اللاعب(ين) — editable; UI defaults to the tier delta
+  paidAmount?: number;
+  paymentStatus?: "paid" | "partial" | "unpaid";
+  exchangeRate: number;
+}): Promise<{ data?: { session: DbRow; trainees: CoachTraineeRow[] }; error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.coachId) return { error: "معرّف الكوتش مفقود" };
+    if (!opts.exchangeRate || opts.exchangeRate <= 0) return { error: "سعر الصرف غير صالح" };
+    const players = opts.players.map((p) => ({ name: p.name.trim(), phone: (p.phone ?? "").trim() })).filter((p) => p.name);
+    if (players.length === 0) return { error: "أدخل لاعباً واحداً على الأقل" };
+    const share = opts.shareAmount >= 0 ? opts.shareAmount : 0;
+
+    const session = await getActiveSession();
+    if (!session) return { error: "لا توجد جلسة نقدية مفتوحة — افتح جلسة أولاً" };
+    const supabase = supabaseBrowser();
+
+    // Inherit the coach's current open cycle; if none, open one from today.
+    const { data: latest } = await supabase
+      .from("private_sessions")
+      .select("period_start, period_end")
+      .eq("coach_id", opts.coachId)
+      .is("cancelled_at", null)
+      .order("period_start", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const today = new Date().toISOString().slice(0, 10);
+    const periodStart = (latest?.period_start as string) ?? today;
+    const periodEnd = (latest?.period_end as string) ?? addMonthsISO(periodStart, 1);
+
+    const total = share;
+    const paid = opts.paidAmount != null && opts.paidAmount >= 0 ? opts.paidAmount : total;
+    if (paid > total && total > 0) return { error: "المبلغ المدفوع أكبر من المبلغ الإجمالي" };
+    const paymentStatus = opts.paymentStatus ?? (paid <= 0 ? "unpaid" : paid >= total ? "paid" : "partial");
+    const amountSYP = Math.round(total * opts.exchangeRate);
+
+    const { data, error } = await supabase
+      .from("private_sessions")
+      .insert({
+        number_of_players: players.length,
+        player_names: players.map((p) => p.name),
+        base_trainer_fee: 0,                 // base already paid this cycle
+        group_price: share,
+        total_price: total,
+        paid_amount: paid,
+        payment_status: paymentStatus,
+        currency: "usd",
+        exchange_rate: opts.exchangeRate,
+        amount_syp: amountSYP,
+        coach_id: opts.coachId,
+        private_coach_name: opts.coachName.trim() || null,
+        charge_type: "addition",
+        period_start: periodStart,
+        period_end: periodEnd,
+        notes: `إضافة لاعب — ${players.map((p) => p.name).join("، ")}`,
+        cash_session_id: session.id,
+        created_by: opts.user.id,
+        created_by_name: opts.user.displayName,
+      })
+      .select()
+      .single();
+    if (error) { logError("private_sessions", "add-players-insert", error); return { error: error.message }; }
+    if (!data) { logError("private_sessions", "add-players-insert", "no row returned"); return { error: "لم تُسجَّل الإضافة — تحقق من RLS" }; }
+    logSuccess("private_sessions", "add-players", data);
+
+    // Roster: one coach_trainees row per added player, split the share for info.
+    const perShare = players.length > 0 ? Number((share / players.length).toFixed(2)) : null;
+    const roster = await addCoachTrainees({
+      user: opts.user,
+      coachId: opts.coachId,
+      coachName: opts.coachName,
+      source: "private",
+      players: players.map((p) => ({ name: p.name, phone: p.phone, amount: perShare })),
+      privateSessionId: (data as DbRow).id as string,
+      exchangeRate: opts.exchangeRate,
+    });
+    if (roster.error) logError("coach_trainees", "add-players-roster", roster.error);
+
+    await pushActivity({
+      user: opts.user,
+      action: "private_session_add_players",
+      description: `إضافة ${players.length} لاعب للكوتش ${opts.coachName} — $${total}`,
+      amountUSD: paid,
+      entityType: "private_session",
+      entityId: (data as DbRow).id as string,
+    });
+    return { data: { session: data as DbRow, trainees: roster.data ?? [] } };
+  } catch (e) {
+    logError("private_sessions", "add-players", e);
+    return { error: String(e) };
+  }
+}
+
+// Renew a private coach for the next month (base + tier of the full roster).
+export async function renewPrivateCoach(opts: {
+  user: CurrentUser;
+  coachId: string;
+  coachName: string;
+  playerCount: number;               // current active roster count
+  rosterNames?: string[];
+  baseFee?: number;                  // editable; default 18
+  groupPrice?: number;               // editable; default tier(playerCount)
+  paidAmount?: number;
+  paymentStatus?: "paid" | "partial" | "unpaid";
+  exchangeRate: number;
+}): Promise<{ data?: DbRow; error?: string }> {
+  try {
+    assertUser(opts.user);
+    if (!opts.coachId) return { error: "معرّف الكوتش مفقود" };
+    if (!opts.exchangeRate || opts.exchangeRate <= 0) return { error: "سعر الصرف غير صالح" };
+
+    const session = await getActiveSession();
+    if (!session) return { error: "لا توجد جلسة نقدية مفتوحة — افتح جلسة أولاً" };
+    const supabase = supabaseBrowser();
+
+    const { data: latest } = await supabase
+      .from("private_sessions")
+      .select("id, period_start, period_end")
+      .eq("coach_id", opts.coachId)
+      .is("cancelled_at", null)
+      .order("period_start", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const today = new Date().toISOString().slice(0, 10);
+    const nextStart = (latest?.period_end as string) ?? today;
+    const nextEnd = addMonthsISO(nextStart, 1);
+
+    // Guard: don't renew the same cycle twice.
+    const { data: clash } = await supabase
+      .from("private_sessions")
+      .select("id")
+      .eq("coach_id", opts.coachId)
+      .is("cancelled_at", null)
+      .eq("period_start", nextStart)
+      .in("charge_type", ["initial", "renewal"])
+      .limit(1)
+      .maybeSingle();
+    if (clash) return { error: "تم تجديد هذا الشهر مسبقاً لهذا الكوتش" };
+
+    const base = opts.baseFee != null && opts.baseFee >= 0 ? opts.baseFee : PT_BASE_TRAINER_FEE;
+    const group = opts.groupPrice != null && opts.groupPrice >= 0 ? opts.groupPrice : ptGroupPrice(opts.playerCount);
+    const total = base + group;
+    const paid = opts.paidAmount != null && opts.paidAmount >= 0 ? opts.paidAmount : total;
+    if (paid > total && total > 0) return { error: "المبلغ المدفوع أكبر من المبلغ الإجمالي" };
+    const paymentStatus = opts.paymentStatus ?? (paid <= 0 ? "unpaid" : paid >= total ? "paid" : "partial");
+    const amountSYP = Math.round(total * opts.exchangeRate);
+
+    const { data, error } = await supabase
+      .from("private_sessions")
+      .insert({
+        number_of_players: opts.playerCount,
+        player_names: opts.rosterNames ?? [],
+        base_trainer_fee: base,
+        group_price: group,
+        total_price: total,
+        paid_amount: paid,
+        payment_status: paymentStatus,
+        currency: "usd",
+        exchange_rate: opts.exchangeRate,
+        amount_syp: amountSYP,
+        coach_id: opts.coachId,
+        private_coach_name: opts.coachName.trim() || null,
+        charge_type: "renewal",
+        period_start: nextStart,
+        period_end: nextEnd,
+        renewed_from_id: (latest?.id as string) ?? null,
+        notes: `تجديد شهري — ${opts.coachName}`,
+        cash_session_id: session.id,
+        created_by: opts.user.id,
+        created_by_name: opts.user.displayName,
+      })
+      .select()
+      .single();
+    if (error) { logError("private_sessions", "renew-coach-insert", error); return { error: error.message }; }
+    if (!data) { logError("private_sessions", "renew-coach-insert", "no row returned"); return { error: "لم يُسجَّل التجديد — تحقق من RLS" }; }
+    logSuccess("private_sessions", "renew-coach", data);
+
+    await pushActivity({
+      user: opts.user,
+      action: "private_session_renew",
+      description: `تجديد شهر الكوتش ${opts.coachName} — $${total} (${opts.playerCount} لاعب)`,
+      amountUSD: paid,
+      entityType: "private_session",
+      entityId: (data as DbRow).id as string,
+    });
+    return { data: data as DbRow };
+  } catch (e) {
+    logError("private_sessions", "renew-coach", e);
     return { error: String(e) };
   }
 }

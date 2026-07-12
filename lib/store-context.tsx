@@ -20,6 +20,7 @@ import { generateId, calculateRemainingDays } from "./business-logic";
 import { businessDayStartUTC } from "./utils/time";
 import { useAuth } from "./auth-context";
 import { supabaseBrowser } from "./supabase/client";
+import { fetchAllRows } from "./supabase/fetch-all";
 import { fetchSessionIncome, SessionIncome, getActiveSession, getLastClosedSession } from "./supabase/session";
 import {
   persistCatalogItemInsert,
@@ -38,6 +39,8 @@ import {
   cancelPurchaseInvoice as cancelPurchaseInvoiceRemote,
   cancelPrivateSession as cancelPrivateSessionRemote,
   renewPrivateSession as renewPrivateSessionRemote,
+  addPrivateCoachPlayers as addPrivateCoachPlayersRemote,
+  renewPrivateCoach as renewPrivateCoachRemote,
   fetchItemRecipes as fetchItemRecipesRemote,
   pushItemRecipe as pushItemRecipeRemote,
   updateItemRecipe as updateItemRecipeRemote,
@@ -330,6 +333,8 @@ export interface StoreContextType extends StoreState {
   deactivateCoachTrainee: (id: string) => Promise<{ error?: string }>;
   cancelPrivateSession: (privateSessionId: string) => Promise<{ error?: string }>;
   renewPrivateSession: (oldPrivateSessionId: string) => Promise<{ error?: string }>;
+  addPrivateCoachPlayers: (input: { coachId: string; coachName: string; players: { name: string; phone: string }[]; shareAmount: number; paidAmount?: number; paymentStatus?: "paid" | "partial" | "unpaid" }) => Promise<{ error?: string }>;
+  renewPrivateCoach: (input: { coachId: string; coachName: string; playerCount: number; rosterNames?: string[]; baseFee?: number; groupPrice?: number; paidAmount?: number; paymentStatus?: "paid" | "partial" | "unpaid" }) => Promise<{ error?: string }>;
   reloadCoachTrainees: () => Promise<void>;
   addRawMaterial: (input: { name: string; unit: string; lowStockThreshold?: number; costCurrency?: Currency | null; lastPurchasePrice?: number | null; notes?: string | null }) => Promise<{ data?: RawMaterial; error?: string }>;
   updateRawMaterial: (id: string, fields: { name?: string; unit?: string; currentQuantity?: number; lowStockThreshold?: number; costCurrency?: Currency | null; lastPurchasePrice?: number | null; notes?: string | null; isActive?: boolean }) => Promise<{ error?: string }>;
@@ -558,13 +563,22 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
     // clean at 6 AM. See lib/utils/time.ts.
     const dayStart = businessDayStartUTC();
 
+    // Expenses feed only the reception daily block (which filters to today) —
+    // hydrating all-time rows just slows login as history grows. 35 days is
+    // plenty; the manager expense reports fetch their own ranges.
+    const expensesSince = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString();
+
+    // The big lists page through fetchAllRows — Supabase caps single queries
+    // at 1000 rows and the subscriptions list already exceeds it.
     const [subsRes, salesRes, inbodyRes, expensesRes, catalogRes, rateRes, activeSession, lastClosed, coachesRes, coachTraineesRes, rawMaterialsRes, purchasesRes, recipesRes, adjustmentsRes] = await Promise.all([
-      supabase
-        .from("gym_subscriptions")
-        .select("*")
-        .is("cancelled_at", null)
-        .not("member_name", "ilike", "%test%")
-        .order("created_at", { ascending: false }),
+      fetchAllRows<Record<string, unknown>>((from, to) =>
+        supabase
+          .from("gym_subscriptions")
+          .select("*")
+          .is("cancelled_at", null)
+          .not("member_name", "ilike", "%test%")
+          .order("created_at", { ascending: false })
+          .range(from, to)),
       supabase
         .from("item_sales")
         .select("*")
@@ -579,8 +593,10 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
         .from("expenses")
         .select("*")
         .is("cancelled_at", null)
+        .gte("created_at", expensesSince)
         .order("created_at", { ascending: false }),
-      supabase.from("catalog_items").select("*"),
+      fetchAllRows<Record<string, unknown>>((from, to) =>
+        supabase.from("catalog_items").select("*").order("created_at", { ascending: true }).range(from, to)),
       supabase
         .from("app_settings")
         .select("value")
@@ -591,11 +607,13 @@ async function hydrateFromSupabase(): Promise<Partial<StoreState>> {
       fetchCoachesRemote(),
       fetchCoachTraineesRemote(),
       fetchRawMaterialsRemote(),
-      supabase
-        .from("purchase_invoices")
-        .select("*, purchase_invoice_lines(*)")
-        .is("cancelled_at", null)
-        .order("created_at", { ascending: false }),
+      fetchAllRows<Record<string, unknown>>((from, to) =>
+        supabase
+          .from("purchase_invoices")
+          .select("*, purchase_invoice_lines(*)")
+          .is("cancelled_at", null)
+          .order("created_at", { ascending: false })
+          .range(from, to)),
       fetchItemRecipesRemote(),
       fetchStockAdjustmentsRemote(),
     ]);
@@ -783,6 +801,8 @@ const StoreContext = createContext<StoreContextType>({
   deactivateCoachTrainee: async () => ({}),
   cancelPrivateSession: async () => ({}),
   renewPrivateSession: async () => ({}),
+  addPrivateCoachPlayers: async () => ({}),
+  renewPrivateCoach: async () => ({}),
   reloadCoachTrainees: async () => {},
   addRawMaterial: async () => ({}),
   updateRawMaterial: async () => ({}),
@@ -1438,6 +1458,46 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return {};
   }, [user]);
 
+  // Add player(s) to a private coach mid-cycle and charge their share on its
+  // own (base already paid this month). Roster updates locally.
+  const addPrivateCoachPlayers = useCallback(async (input: { coachId: string; coachName: string; players: { name: string; phone: string }[]; shareAmount: number; paidAmount?: number; paymentStatus?: "paid" | "partial" | "unpaid" }) => {
+    if (!user) return { error: "غير مسجل الدخول" };
+    const res = await addPrivateCoachPlayersRemote({
+      user: { id: user.id, displayName: user.displayName },
+      coachId: input.coachId,
+      coachName: input.coachName,
+      players: input.players,
+      shareAmount: input.shareAmount,
+      paidAmount: input.paidAmount,
+      paymentStatus: input.paymentStatus,
+      exchangeRate: stateRef.current.exchangeRate,
+    });
+    if (res.error || !res.data) return { error: res.error };
+    const trainees = res.data.trainees.map(mapTraineeRow);
+    setState((prev) => ({ ...prev, coachTrainees: [...trainees, ...prev.coachTrainees] }));
+    return {};
+  }, [setState, user]);
+
+  // Renew a private coach for next month (base + tier of the full roster).
+  // Money-only; the roster carries over. Income KPIs update via realtime.
+  const renewPrivateCoach = useCallback(async (input: { coachId: string; coachName: string; playerCount: number; rosterNames?: string[]; baseFee?: number; groupPrice?: number; paidAmount?: number; paymentStatus?: "paid" | "partial" | "unpaid" }) => {
+    if (!user) return { error: "غير مسجل الدخول" };
+    const res = await renewPrivateCoachRemote({
+      user: { id: user.id, displayName: user.displayName },
+      coachId: input.coachId,
+      coachName: input.coachName,
+      playerCount: input.playerCount,
+      rosterNames: input.rosterNames,
+      baseFee: input.baseFee,
+      groupPrice: input.groupPrice,
+      paidAmount: input.paidAmount,
+      paymentStatus: input.paymentStatus,
+      exchangeRate: stateRef.current.exchangeRate,
+    });
+    if (res.error) return { error: res.error };
+    return {};
+  }, [user]);
+
   // ── Inventory: raw materials + purchase invoices ────────────────────────────
 
   const reloadRawMaterials = useCallback(async () => {
@@ -1775,6 +1835,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     deactivateCoachTrainee,
     cancelPrivateSession,
     renewPrivateSession,
+    addPrivateCoachPlayers,
+    renewPrivateCoach,
     reloadCoachTrainees,
     addRawMaterial,
     updateRawMaterial,

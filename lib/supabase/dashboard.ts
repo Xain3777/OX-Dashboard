@@ -5,6 +5,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { supabaseBrowser } from "./client";
+import { fetchAllRows } from "./fetch-all";
 import { businessDayStartUTC, businessDayWindowUTC } from "../utils/time";
 
 
@@ -408,7 +409,7 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
       .select(
         "created_at, source, catalog_item_id, item_name_snapshot, quantity, unit_price, original_total, " +
         "original_currency, exchange_rate_to_syp, amount_usd, payment_method, " +
-        "created_by, created_by_name, cash_session_id"
+        "cost_price_snapshot, cost_currency_snapshot, created_by, created_by_name, cash_session_id"
       )
       .gte("created_at", dayStart)
       .lte("created_at", dayEnd)
@@ -695,17 +696,27 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
   const catalogById = new Map<string, Record<string, unknown>>();
   for (const c of catalogRows) catalogById.set(String(c.id), c);
 
-  // Per-unit cost expressed in the item's *sell* currency. Converts from the
-  // catalog row's cost_currency using the sale's snapshot rate when they
-  // differ. Returns null when the catalog row has no cost recorded.
+  // Per-unit cost expressed in the item's *sell* currency. The sale row's
+  // cost SNAPSHOT (0073) wins; rows without one fall back to the catalog's
+  // current cost. Converts across currencies using the sale's snapshot rate.
+  // Returns null when no cost is recorded anywhere.
   function unitCostInSellCurrency(
+    sale: Record<string, unknown>,
     cat: Record<string, unknown> | undefined,
     rate: number
   ): number | null {
-    if (!cat || cat.cost_price == null) return null;
-    const costPrice = Number(cat.cost_price);
-    const costCur = String(cat.cost_currency ?? cat.sell_currency ?? "usd");
-    const sellCur = String(cat.sell_currency ?? "usd");
+    const snap = sale.cost_price_snapshot == null ? null : Number(sale.cost_price_snapshot);
+    let costPrice: number;
+    let costCur: string;
+    if (snap != null && Number.isFinite(snap)) {
+      costPrice = snap;
+      costCur = String(sale.cost_currency_snapshot ?? "usd");
+    } else {
+      if (!cat || cat.cost_price == null) return null;
+      costPrice = Number(cat.cost_price);
+      costCur = String(cat.cost_currency ?? cat.sell_currency ?? "usd");
+    }
+    const sellCur = String(cat?.sell_currency ?? sale.original_currency ?? "usd");
     if (costCur === sellCur) return costPrice;
     if (costCur === "usd" && sellCur === "syp") return rate > 0 ? costPrice * rate : null;
     if (costCur === "syp" && sellCur === "usd") return rate > 0 ? costPrice / rate : null;
@@ -719,7 +730,7 @@ export async function fetchDailyReport(date: string): Promise<DailyReport> {
     const qty = Number(r.quantity ?? 0);
     const rate = Number(r.exchange_rate_to_syp ?? 0);
     const revenue = Number(r.original_total ?? 0);
-    const unitCost = unitCostInSellCurrency(cat, rate);
+    const unitCost = unitCostInSellCurrency(r, cat, rate);
     const key = catId || `name:${String(r.item_name_snapshot ?? "")}`;
     const bucket = catId ? salesByCatalogId : salesByName;
     const acc = bucket.get(key) ?? {
@@ -1362,7 +1373,7 @@ const SUB_SELECT =
 // columns around for the optional native-currency display.
 const ITEM_SALE_SELECT =
   "id, source, catalog_item_id, quantity, original_total, original_currency, exchange_rate_to_syp, " +
-  "amount_syp, amount_usd, cancelled_at, created_at";
+  "amount_syp, amount_usd, cost_price_snapshot, cost_currency_snapshot, cancelled_at, created_at";
 const INBODY_SELECT =
   "id, member_id, member_name, session_type, amount, currency, exchange_rate, amount_syp, cancelled_at, created_at";
 const PRIVATE_SELECT =
@@ -1455,56 +1466,80 @@ export async function fetchManagerDashboardSummary(
     partialSubsRes,
     openSessionRes,
   ] = await Promise.all([
-    supabase
-      .from("gym_subscriptions")
-      .select(SUB_SELECT)
-      .gte("created_at", range.startUTC)
-      .lte("created_at", range.endUTC)
-      .is("cancelled_at", null)
-      .not("member_name", "ilike", "%test%"),
-    supabase
-      .from("item_sales")
-      .select(ITEM_SALE_SELECT)
-      .gte("created_at", range.startUTC)
-      .lte("created_at", range.endUTC)
-      .is("cancelled_at", null),
-    supabase
-      .from("inbody_sessions")
-      .select(INBODY_SELECT)
-      .gte("created_at", range.startUTC)
-      .lte("created_at", range.endUTC)
-      .is("cancelled_at", null)
-      .not("member_name", "ilike", "%test%"),
-    supabase
-      .from("private_sessions")
-      .select(PRIVATE_SELECT)
-      .gte("created_at", range.startUTC)
-      .lte("created_at", range.endUTC)
-      .is("cancelled_at", null),
-    supabase
-      .from("expenses")
-      .select(EXPENSE_SELECT)
-      .gte("created_at", range.startUTC)
-      .lte("created_at", range.endUTC)
-      .is("cancelled_at", null),
-    supabase
-      .from("gym_subscriptions")
-      .select("id, member_id, member_name, end_date, status, cancelled_at")
-      .eq("status", "active")
-      .is("cancelled_at", null)
-      .gte("end_date", today)
-      .not("member_name", "ilike", "%test%"),
+    // Range/list queries page through fetchAllRows — Supabase caps a single
+    // SELECT at 1000 rows, and a month of sales (or the active-subs list)
+    // already exceeds that; without paging the totals silently undercount.
+    fetchAllRows<Row>((from, to) =>
+      supabase
+        .from("gym_subscriptions")
+        .select(SUB_SELECT)
+        .gte("created_at", range.startUTC)
+        .lte("created_at", range.endUTC)
+        .is("cancelled_at", null)
+        .not("member_name", "ilike", "%test%")
+        .order("created_at", { ascending: true })
+        .range(from, to)),
+    fetchAllRows<Row>((from, to) =>
+      supabase
+        .from("item_sales")
+        .select(ITEM_SALE_SELECT)
+        .gte("created_at", range.startUTC)
+        .lte("created_at", range.endUTC)
+        .is("cancelled_at", null)
+        .order("created_at", { ascending: true })
+        .range(from, to)),
+    fetchAllRows<Row>((from, to) =>
+      supabase
+        .from("inbody_sessions")
+        .select(INBODY_SELECT)
+        .gte("created_at", range.startUTC)
+        .lte("created_at", range.endUTC)
+        .is("cancelled_at", null)
+        .not("member_name", "ilike", "%test%")
+        .order("created_at", { ascending: true })
+        .range(from, to)),
+    fetchAllRows<Row>((from, to) =>
+      supabase
+        .from("private_sessions")
+        .select(PRIVATE_SELECT)
+        .gte("created_at", range.startUTC)
+        .lte("created_at", range.endUTC)
+        .is("cancelled_at", null)
+        .order("created_at", { ascending: true })
+        .range(from, to)),
+    fetchAllRows<Row>((from, to) =>
+      supabase
+        .from("expenses")
+        .select(EXPENSE_SELECT)
+        .gte("created_at", range.startUTC)
+        .lte("created_at", range.endUTC)
+        .is("cancelled_at", null)
+        .order("created_at", { ascending: true })
+        .range(from, to)),
+    fetchAllRows<Row>((from, to) =>
+      supabase
+        .from("gym_subscriptions")
+        .select("id, member_id, member_name, end_date, status, cancelled_at")
+        .eq("status", "active")
+        .is("cancelled_at", null)
+        .gte("end_date", today)
+        .not("member_name", "ilike", "%test%")
+        .order("created_at", { ascending: true })
+        .range(from, to)),
     supabase
       .from("gym_subscriptions")
       .select("id", { count: "exact", head: true })
       .is("cancelled_at", null)
       .not("member_name", "ilike", "%test%"),
-    supabase
-      .from("gym_subscriptions")
-      .select("id, amount, paid_amount, currency, exchange_rate, amount_syp, cancelled_at")
-      .eq("payment_status", "partial")
-      .is("cancelled_at", null)
-      .not("member_name", "ilike", "%test%"),
+    fetchAllRows<Row>((from, to) =>
+      supabase
+        .from("gym_subscriptions")
+        .select("id, amount, paid_amount, currency, exchange_rate, amount_syp, cancelled_at")
+        .eq("payment_status", "partial")
+        .is("cancelled_at", null)
+        .not("member_name", "ilike", "%test%")
+        .order("created_at", { ascending: true })
+        .range(from, to)),
     supabase
       .from("cash_sessions")
       .select("id, opening_cash")
@@ -1537,22 +1572,36 @@ export async function fetchManagerDashboardSummary(
   const netIncome    = bucketSubtract(totalRevenue, expenses);
 
   // ── Gross profit on goods (store + kitchen sell − cost) ───────────────────
-  // Cost per unit lives on catalog_items in cost_currency; convert to SYP/USD
-  // using each sale's snapshot rate. Unknown cost → 0 (profit = full sale),
-  // matching ProfitReportBlock so the numbers reconcile.
-  const { data: catalogCostRows } = await supabase
-    .from("catalog_items")
-    .select("id, cost_price, cost_currency, sell_currency");
+  // Cost basis per sale row (0073): the cost SNAPSHOT taken at sale time wins;
+  // rows without one (cost entered later / legacy) fall back to the current
+  // catalog cost. Unknown cost → 0 (profit = full sale), matching
+  // ProfitReportBlock so the numbers reconcile.
+  const [{ data: catalogCostRows }, kpiRateRes] = await Promise.all([
+    supabase.from("catalog_items").select("id, cost_price, cost_currency, sell_currency"),
+    supabase.from("app_settings").select("value").eq("key", "exchange_rate_usd_syp").maybeSingle(),
+  ]);
   const costById = new Map<string, Row>();
   for (const c of (catalogCostRows ?? []) as unknown as Row[]) costById.set(String(c.id), c);
+  // Legacy rows may lack exchange_rate_to_syp — fall back to the live rate
+  // rather than dropping the cost to 0 (which silently inflates profit).
+  const kpiRateRaw = Number((kpiRateRes.data as { value?: unknown } | null)?.value);
+  const fallbackRate = Number.isFinite(kpiRateRaw) && kpiRateRaw > 0 ? kpiRateRaw : 0;
 
   const costOfSaleRow = (r: Row): { syp: number; usd: number } => {
-    const cat = costById.get(String(r.catalog_item_id ?? ""));
-    if (!cat || cat.cost_price == null) return { syp: 0, usd: 0 };
+    let costPrice: number;
+    let costCur: string;
+    const snap = r.cost_price_snapshot == null ? null : Number(r.cost_price_snapshot);
+    if (snap != null && Number.isFinite(snap)) {
+      costPrice = snap;
+      costCur = String(r.cost_currency_snapshot ?? "usd");
+    } else {
+      const cat = costById.get(String(r.catalog_item_id ?? ""));
+      if (!cat || cat.cost_price == null) return { syp: 0, usd: 0 };
+      costPrice = Number(cat.cost_price);
+      costCur = String(cat.cost_currency ?? cat.sell_currency ?? "usd");
+    }
     const qty = Number(r.quantity ?? 0);
-    const costPrice = Number(cat.cost_price);
-    const costCur = String(cat.cost_currency ?? cat.sell_currency ?? "usd");
-    const rate = Number(r.exchange_rate_to_syp ?? 0);
+    const rate = Number(r.exchange_rate_to_syp ?? 0) || fallbackRate;
     const unitSYP = costCur === "syp" ? costPrice : rate > 0 ? costPrice * rate : 0;
     const unitUSD = costCur === "usd" ? costPrice : rate > 0 ? costPrice / rate : 0;
     return { syp: unitSYP * qty, usd: unitUSD * qty };

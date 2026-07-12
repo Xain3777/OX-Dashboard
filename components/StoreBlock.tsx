@@ -397,6 +397,8 @@ export default function StoreBlock() {
         itemType: catalogRow.itemType,
         sellCurrency: catalogRow.sellCurrency,
         sellPrice: Number(catalogRow.sellPrice),
+        costPrice: catalogRow.costPrice,
+        costCurrency: catalogRow.costCurrency,
       },
       quantity: saleQty,
       exchangeRate,

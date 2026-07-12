@@ -9,6 +9,7 @@ import {
   PaymentStatus,
   SubStatus,
   CoachKind,
+  type Coach,
 } from "@/lib/types";
 import {
   formatCurrency,
@@ -18,6 +19,8 @@ import {
   calculateEndDate,
   calculateRemainingDays,
   calculateDiscountedPrice,
+  ptGroupPrice,
+  PT_BASE_TRAINER_FEE,
 } from "@/lib/business-logic";
 import { useStore } from "@/lib/store-context";
 import { useAuth } from "@/lib/auth-context";
@@ -146,9 +149,11 @@ function splitPaidAmount(paid: number, total: number, part: number): number {
 }
 
 
+// Tier table + base fee live in lib/business-logic.ts — one source of truth
+// with the intake write paths (pushPrivateSession / renewPrivateCoach).
 function ptCalc(n: number) {
-  const groupPrice = n <= 2 ? 10 : n <= 5 ? 15 : 18;
-  return { groupPrice, trainerFee: 18, total: groupPrice + 18 };
+  const groupPrice = ptGroupPrice(n);
+  return { groupPrice, trainerFee: PT_BASE_TRAINER_FEE, total: groupPrice + PT_BASE_TRAINER_FEE };
 }
 
 // ─── Local types ──────────────────────────────────────────────────────────────
@@ -418,7 +423,7 @@ function CoachPicker({
 type GateEntry = { id: string; anvizUserid: number };
 
 export default function SubscriptionsBlock() {
-  const { subscriptions, addSubscription, replaceSubscription, cancelSubscriptionLocal, markSubscriptionRenewed, coaches, coachTrainees, addCoachTrainees, deactivateCoachTrainee, cancelPrivateSession, renewPrivateSession } = useStore();
+  const { subscriptions, addSubscription, replaceSubscription, cancelSubscriptionLocal, markSubscriptionRenewed, coaches, coachTrainees, addCoachTrainees, deactivateCoachTrainee, cancelPrivateSession, addPrivateCoachPlayers, renewPrivateCoach } = useStore();
   const { user, isManager } = useAuth();
   const { exchangeRate } = useCurrency();
 
@@ -602,6 +607,119 @@ export default function SubscriptionsBlock() {
   const [renewBusy,   setRenewBusy]   = useState(false);
   const [renewError,  setRenewError]  = useState<string | null>(null);
   const [renewCustom, setRenewCustom] = useState(false);
+
+  // ── Private-coach add-player / renew modal state (0072) ────────────────────
+  const [pcAddCoach,   setPcAddCoach]   = useState<Coach | null>(null);
+  const [pcAddPlayers, setPcAddPlayers] = useState<{ name: string; phone: string }[]>([{ name: "", phone: "" }]);
+  const [pcAddShare,   setPcAddShare]   = useState("0");
+  const [pcAddPaid,    setPcAddPaid]    = useState("0");
+  const [pcAddBusy,    setPcAddBusy]    = useState(false);
+  const [pcAddError,   setPcAddError]   = useState<string | null>(null);
+
+  // Latest billed cycle end per private coach (from private_sessions, 0072) —
+  // drives the "مجدَّد ✓ / مستحق ⚠" badge in the coaches tab. Refetched when
+  // the tab opens and after every renew/add (pcCycleRefresh bump).
+  const [pcCycleEnd, setPcCycleEnd] = useState<Map<string, string>>(new Map());
+  const [pcCycleRefresh, setPcCycleRefresh] = useState(0);
+
+  const [pcRenewCoach, setPcRenewCoach] = useState<Coach | null>(null);
+  const [pcRenewCount, setPcRenewCount] = useState(0);
+  const [pcRenewNames, setPcRenewNames] = useState<string[]>([]);
+  const [pcRenewBase,  setPcRenewBase]  = useState(String(PT_BASE_TRAINER_FEE));
+  const [pcRenewGroup, setPcRenewGroup] = useState("0");
+  const [pcRenewPaid,  setPcRenewPaid]  = useState("0");
+  const [pcRenewBusy,  setPcRenewBusy]  = useState(false);
+  const [pcRenewError, setPcRenewError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (activeFilter !== "coaches") return;
+    let cancelled = false;
+    (async () => {
+      const supabase = supabaseBrowser();
+      // Needs migration 0072 (period_end). If it isn't applied yet the query
+      // errors → data null → no badges, gracefully.
+      const { data } = await supabase
+        .from("private_sessions")
+        .select("coach_id, period_end")
+        .is("cancelled_at", null)
+        .not("coach_id", "is", null)
+        .not("period_end", "is", null);
+      if (cancelled || !data) return;
+      const m = new Map<string, string>();
+      for (const r of data as { coach_id: string; period_end: string }[]) {
+        const cur = m.get(r.coach_id);
+        if (!cur || r.period_end > cur) m.set(r.coach_id, r.period_end);
+      }
+      setPcCycleEnd(m);
+    })();
+    return () => { cancelled = true; };
+  }, [activeFilter, pcCycleRefresh]);
+
+  // Open "add player" for a private coach. Default share = the group-tier
+  // delta of adding one player (base already paid this month); editable.
+  const openPcAdd = (coach: Coach, currentCount: number) => {
+    const delta = ptCalc(currentCount + 1).groupPrice - ptCalc(currentCount).groupPrice;
+    setPcAddCoach(coach);
+    setPcAddPlayers([{ name: "", phone: "" }]);
+    setPcAddShare(String(delta));
+    setPcAddPaid(String(delta));
+    setPcAddError(null);
+  };
+  const submitPcAdd = async () => {
+    if (!pcAddCoach) return;
+    const players = pcAddPlayers.map((p) => ({ name: p.name.trim(), phone: p.phone.trim() })).filter((p) => p.name);
+    if (players.length === 0) { setPcAddError("أدخل اسم لاعب واحد على الأقل"); return; }
+    const share = Number(pcAddShare) || 0;
+    const paidNum = Number(pcAddPaid);
+    setPcAddBusy(true); setPcAddError(null);
+    const r = await addPrivateCoachPlayers({
+      coachId: pcAddCoach.id,
+      coachName: pcAddCoach.name,
+      players,
+      shareAmount: share,
+      paidAmount: Number.isFinite(paidNum) ? paidNum : share,
+    });
+    setPcAddBusy(false);
+    if (r.error) { setPcAddError(r.error); return; }
+    setToastMessage(`تمت إضافة ${players.length} لاعب للكوتش ${pcAddCoach.name} — $${share}`);
+    setPcAddCoach(null);
+    setPcCycleRefresh((n) => n + 1);
+  };
+
+  // Open "renew month" for a private coach. Default = base $18 + tier(roster).
+  const openPcRenew = (coach: Coach, trainees: { name: string }[]) => {
+    const count = trainees.length;
+    const group = ptCalc(count).groupPrice;
+    setPcRenewCoach(coach);
+    setPcRenewCount(count);
+    setPcRenewNames(trainees.map((t) => t.name));
+    setPcRenewBase(String(PT_BASE_TRAINER_FEE));
+    setPcRenewGroup(String(group));
+    setPcRenewPaid(String(PT_BASE_TRAINER_FEE + group));
+    setPcRenewError(null);
+  };
+  const submitPcRenew = async () => {
+    if (!pcRenewCoach) return;
+    const base = Number(pcRenewBase) || 0;
+    const group = Number(pcRenewGroup) || 0;
+    const total = base + group;
+    const paidNum = Number(pcRenewPaid);
+    setPcRenewBusy(true); setPcRenewError(null);
+    const r = await renewPrivateCoach({
+      coachId: pcRenewCoach.id,
+      coachName: pcRenewCoach.name,
+      playerCount: pcRenewCount,
+      rosterNames: pcRenewNames,
+      baseFee: base,
+      groupPrice: group,
+      paidAmount: Number.isFinite(paidNum) ? paidNum : total,
+    });
+    setPcRenewBusy(false);
+    if (r.error) { setPcRenewError(r.error); return; }
+    setToastMessage(`تم تجديد شهر الكوتش ${pcRenewCoach.name} — $${total} (${pcRenewCount} لاعب)`);
+    setPcRenewCoach(null);
+    setPcCycleRefresh((n) => n + 1);
+  };
 
   const openRenewModal = useCallback((sub: Subscription, mode: "quick" | "custom") => {
     // Renewal always counts from the renewal date (today), whether the sub is
@@ -2330,6 +2448,33 @@ export default function SubscriptionsBlock() {
                             {formatCurrency(trainees.reduce((s, t) => s + (t.amount ?? 0), 0))} $
                           </span>
                         )}
+                        {coach.kind === "private" && (
+                          <>
+                            {(() => {
+                              // Cycle badge: paid through period_end → مجدَّد; past it → مستحق.
+                              const end = pcCycleEnd.get(coach.id);
+                              if (!end) return null;
+                              const today = new Date().toISOString().slice(0, 10);
+                              return end >= today ? (
+                                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-success/10 text-success border border-success/25">
+                                  مجدَّد حتى {formatDate(end)} ✓
+                                </span>
+                              ) : (
+                                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-red/10 text-red border border-red/25">
+                                  مستحق منذ {formatDate(end)} ⚠
+                                </span>
+                              );
+                            })()}
+                            <button type="button" onClick={() => openPcAdd(coach, trainees.length)}
+                              className="px-2 py-0.5 font-mono text-[10px] text-success hover:text-success/80 border border-success/30 hover:border-success/60 bg-success/10 rounded transition-colors">
+                              + إضافة لاعب
+                            </button>
+                            <button type="button" onClick={() => openPcRenew(coach, trainees)}
+                              className="px-2 py-0.5 font-mono text-[10px] text-gold hover:text-gold/80 border border-gold/30 hover:border-gold/60 bg-gold/10 rounded transition-colors">
+                              تجديد الشهر
+                            </button>
+                          </>
+                        )}
                         <span className="font-mono text-[10px] text-slate">{trainees.length} لاعب</span>
                       </div>
                     </div>
@@ -2349,21 +2494,6 @@ export default function SubscriptionsBlock() {
                               <span className="font-mono text-xs text-gold tabular-nums" dir="ltr">
                                 {t.amount != null ? `${formatCurrency(t.amount)} $` : <span className="text-slate">—</span>}
                               </span>
-                              {/* Monthly renew: re-books this private-coaching charge into
-                                  the current shift so recurring months are counted. */}
-                              {t.privateSessionId && (
-                                <button type="button"
-                                  onClick={async () => {
-                                    const sid = t.privateSessionId!;
-                                    if (!window.confirm(`تسجيل تجديد شهري للتدريب الخاص لـ ${t.name}؟\nسيُسجَّل المبلغ في الوردية الحالية.`)) return;
-                                    const r = await renewPrivateSession(sid);
-                                    if (r.error) { setToastMessage(`تعذّر التجديد: ${r.error}`); return; }
-                                    setToastMessage("تم تسجيل تجديد التدريب الخاص");
-                                  }}
-                                  className="px-2 py-0.5 font-mono text-[10px] text-gold hover:text-gold/80 border border-gold/30 hover:border-gold/60 bg-gold/10 rounded transition-colors">
-                                  تجديد الشهر
-                                </button>
-                              )}
                               {/* Delete the whole private session: cancels its revenue and
                                   removes every player attached to it. Only shown for rows
                                   tied to a private_sessions row. */}
@@ -2956,6 +3086,120 @@ export default function SubscriptionsBlock() {
                     className="px-4 py-2.5 border border-gunmetal text-secondary hover:text-ghost font-body text-sm rounded transition-colors">
                     إلغاء
                   </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {/* ── Private coach: add player mid-month + charge his share ─────── */}
+        {pcAddCoach && typeof document !== "undefined" && createPortal(
+          <div className="fixed inset-0 z-[150] flex items-center justify-center bg-void/80 backdrop-blur-sm" dir="rtl">
+            <div className="bg-charcoal border border-gunmetal rounded clip-corner p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto" style={{ borderTop: "3px solid #5CC45C" }}>
+              <div className="flex items-center justify-between mb-5">
+                <h3 className="font-display text-lg tracking-widest text-offwhite">إضافة لاعب — {pcAddCoach.name}</h3>
+                <button onClick={() => setPcAddCoach(null)} className="text-secondary hover:text-offwhite cursor-pointer transition-colors">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 13L8 8M13 3L8 8M8 8L3 3M8 8L13 13" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+                </button>
+              </div>
+              <p className="font-mono text-[10px] text-secondary uppercase tracking-widest mb-4">
+                يُسجَّل مبلغ النسبة في الوردية الحالية — بدون فتح اشتراك جديد
+              </p>
+              <form onSubmit={(e) => { e.preventDefault(); void submitPcAdd(); }} className="space-y-4">
+                {pcAddPlayers.map((p, i) => (
+                  <div key={i} className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className={labelCls}>اسم اللاعب</label>
+                      <input className={inputCls} value={p.name}
+                        onChange={(e) => setPcAddPlayers((prev) => prev.map((x, j) => j === i ? { ...x, name: e.target.value } : x))} />
+                    </div>
+                    <div>
+                      <label className={labelCls}>الهاتف</label>
+                      <div className="flex gap-2">
+                        <input className={inputCls} value={p.phone} dir="ltr"
+                          onChange={(e) => setPcAddPlayers((prev) => prev.map((x, j) => j === i ? { ...x, phone: e.target.value } : x))} />
+                        {pcAddPlayers.length > 1 && (
+                          <button type="button" onClick={() => setPcAddPlayers((prev) => prev.filter((_, j) => j !== i))}
+                            className="px-2 text-red border border-red/30 rounded hover:border-red/60">×</button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                <button type="button" onClick={() => setPcAddPlayers((prev) => [...prev, { name: "", phone: "" }])}
+                  className="font-mono text-[10px] text-secondary hover:text-gold transition-colors">+ لاعب آخر</button>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className={labelCls}>النسبة (share) $</label>
+                    <input className={inputCls} type="number" min="0" step="0.5" dir="ltr" value={pcAddShare}
+                      onChange={(e) => setPcAddShare(e.target.value)} />
+                    <p className="font-mono text-[9px] text-slate mt-1">الافتراضي = فرق الشريحة عند إضافة لاعب — عدّله كما تريد</p>
+                  </div>
+                  <div>
+                    <label className={labelCls}>المدفوع $</label>
+                    <input className={inputCls} type="number" min="0" step="0.5" dir="ltr" value={pcAddPaid}
+                      onChange={(e) => setPcAddPaid(e.target.value)} />
+                  </div>
+                </div>
+                {pcAddError && <p className="font-mono text-[11px] text-red">{pcAddError}</p>}
+                <div className="flex items-center gap-3 pt-2">
+                  <button type="submit" disabled={pcAddBusy}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 bg-success hover:bg-success/90 text-void font-display text-sm tracking-widest uppercase clip-corner-sm transition-colors disabled:opacity-40">
+                    {pcAddBusy ? "جاري الحفظ…" : "إضافة وتسجيل النسبة"}
+                  </button>
+                  <button type="button" onClick={() => setPcAddCoach(null)}
+                    className="px-4 py-2.5 border border-gunmetal text-secondary hover:text-ghost font-body text-sm rounded transition-colors">إلغاء</button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {/* ── Private coach: renew the month (base + tier of full roster) ── */}
+        {pcRenewCoach && typeof document !== "undefined" && createPortal(
+          <div className="fixed inset-0 z-[150] flex items-center justify-center bg-void/80 backdrop-blur-sm" dir="rtl">
+            <div className="bg-charcoal border border-gunmetal rounded clip-corner p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto" style={{ borderTop: "3px solid #F5C100" }}>
+              <div className="flex items-center justify-between mb-5">
+                <h3 className="font-display text-lg tracking-widest text-offwhite">تجديد الشهر — {pcRenewCoach.name}</h3>
+                <button onClick={() => setPcRenewCoach(null)} className="text-secondary hover:text-offwhite cursor-pointer transition-colors">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 13L8 8M13 3L8 8M8 8L3 3M8 8L13 13" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+                </button>
+              </div>
+              <p className="font-mono text-[10px] text-secondary uppercase tracking-widest mb-4">
+                {pcRenewCount} لاعب على قائمة الكوتش — يُسجَّل الشهر الجديد في الوردية الحالية
+              </p>
+              <form onSubmit={(e) => { e.preventDefault(); void submitPcRenew(); }} className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className={labelCls}>الرسم الثابت (base) $</label>
+                    <input className={inputCls} type="number" min="0" step="0.5" dir="ltr" value={pcRenewBase}
+                      onChange={(e) => setPcRenewBase(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className={labelCls}>رسم اللاعبين (tier) $</label>
+                    <input className={inputCls} type="number" min="0" step="0.5" dir="ltr" value={pcRenewGroup}
+                      onChange={(e) => setPcRenewGroup(e.target.value)} />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between px-3 py-2 bg-gunmetal/40 rounded">
+                  <span className="font-mono text-[10px] text-secondary uppercase tracking-wider">الإجمالي</span>
+                  <span className="font-mono text-sm text-gold tabular-nums" dir="ltr">${(Number(pcRenewBase) || 0) + (Number(pcRenewGroup) || 0)}</span>
+                </div>
+                <div>
+                  <label className={labelCls}>المدفوع $</label>
+                  <input className={inputCls} type="number" min="0" step="0.5" dir="ltr" value={pcRenewPaid}
+                    onChange={(e) => setPcRenewPaid(e.target.value)} />
+                </div>
+                {pcRenewError && <p className="font-mono text-[11px] text-red">{pcRenewError}</p>}
+                <div className="flex items-center gap-3 pt-2">
+                  <button type="submit" disabled={pcRenewBusy}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 bg-gold hover:bg-gold-bright text-void font-display text-sm tracking-widest uppercase clip-corner-sm transition-colors disabled:opacity-40">
+                    <LockIcon size={13} />{pcRenewBusy ? "جاري الحفظ…" : "تأكيد التجديد"}
+                  </button>
+                  <button type="button" onClick={() => setPcRenewCoach(null)}
+                    className="px-4 py-2.5 border border-gunmetal text-secondary hover:text-ghost font-body text-sm rounded transition-colors">إلغاء</button>
                 </div>
               </form>
             </div>

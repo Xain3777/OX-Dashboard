@@ -16,8 +16,6 @@ import StoreBlock from "@/components/StoreBlock";
 import CashSessionBlock from "@/components/CashSessionBlock";
 import SessionTransactionsList from "@/components/SessionTransactionsList";
 import ManagerReportBlock from "@/components/ManagerReportBlock";
-import WeeklyReview from "@/components/WeeklyReview";
-import MonthlyReview from "@/components/MonthlyReview";
 import AuditLog from "@/components/AuditLog";
 import CalculationsBlock from "@/components/CalculationsBlock";
 import InBodyBlock from "@/components/InBodyBlock";
@@ -34,7 +32,6 @@ import {
   LogOut,
   FileSpreadsheet,
   AlertTriangle,
-  X,
   Activity,
   ShoppingCart,
   Dumbbell,
@@ -50,8 +47,6 @@ type Section =
   | "kitchen"
   | "dailyExpenses"
   | "calculations"
-  | "weekly"
-  | "monthly"
   | "audit"
   | "livefeed"
   | "itemCosts";
@@ -237,8 +232,6 @@ function DashboardContent() {
     kitchen: false,
     dailyExpenses: false,
     calculations: false,
-    weekly: true,
-    monthly: true,
     audit: false,
     livefeed: false,
     itemCosts: false,
@@ -403,20 +396,9 @@ function DashboardContent() {
           <DailyExpensesBlock />
         </CollapsibleSection>
 
-        {/* مراجعة أسبوعية + شهرية — manager only */}
-        {isManager && (
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-            <CollapsibleSection title="المراجعة الأسبوعية" collapsed={collapsed.weekly} onToggle={() => toggle("weekly")}>
-              <WeeklyReview data={{ weekStart: "2026-04-07", weekEnd: "2026-04-13", totalRevenue: 2850, totalExpenses: 780, subscriptionRevenue: 1630, storeRevenue: 1220, newSubscriptions: 2, expiredSubscriptions: 1, expiringThisWeek: 2, pendingPayments: 1, stockMovements: 34, unresolvedDiscrepancies: 0 }} />
-            </CollapsibleSection>
-            <CollapsibleSection title="المراجعة الشهرية" collapsed={collapsed.monthly} onToggle={() => toggle("monthly")}>
-              <MonthlyReview
-                data={{ month: "أبريل", year: 2026, totalRevenue: 8620, totalExpenses: 12350, netProfit: -3730, subscriptionRevenue: 5790, storeRevenue: store.sales.filter(s => !s.isReversal).reduce((a, b) => a + b.total, 0), expenseBreakdown: { salaries: 6700, rent: 5000, equipment: 0, maintenance: 320, utilities: 150, supplies: 120, marketing: 0, miscellaneous: 60, inventory_purchase: 0 }, topProducts: [{ name: "كوب بروتين (طازج)", quantity: 48, revenue: 720 }, { name: "مشروب BCAA (بارد)", quantity: 38, revenue: 380 }, { name: "واي بروتين ٢ كجم", quantity: 6, revenue: 1080 }], activeSubscriptions: 7, expiredSubscriptions: 1, locked: false }}
-                onLock={() => console.log("تم قفل الشهر")}
-              />
-            </CollapsibleSection>
-          </div>
-        )}
+        {/* المراجعة الأسبوعية/الشهرية were removed: they rendered HARDCODED
+            demo numbers (April 2026 mock data) as if they were live reports.
+            The real range-based reviews live in the manager dashboard. */}
 
         {/* سجل المراجعة — reads from Supabase activity_feed directly so it
             covers every event written via pushActivity(), cross-browser. */}

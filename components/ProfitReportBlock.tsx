@@ -6,17 +6,20 @@
 //   الكمية المباعة · التكلفة · البيع (الإجمالي) · الربح
 // in BOTH SYP and USD, for a selectable period (today / month / all-time).
 //
-// Cost basis: item_sales does not snapshot cost at sale time, so cost =
-// current catalog cost_price × quantity sold. Accurate while costs are stable.
-// Read-only; no writes.
+// Cost basis (0073): each sale row's cost_price_snapshot (taken at sale time)
+// wins; rows without one (legacy, or cost entered after the sale) fall back to
+// the current catalog cost_price. Unknown everywhere → cost 0, i.e. profit
+// shows the full sale until the cost is entered (see the orange checklist).
+// Read-only except the inline missing-cost editor.
 
 import { useEffect, useMemo, useState } from "react";
 import { Receipt, AlertTriangle } from "lucide-react";
 import { supabaseBrowser } from "@/lib/supabase/client";
+import { fetchAllRows } from "@/lib/supabase/fetch-all";
 import { useCurrency } from "@/lib/currency-context";
 import { useAuth } from "@/lib/auth-context";
 import { persistCatalogItemUpdate } from "@/lib/supabase/intake";
-import { formatDate } from "@/lib/utils/time";
+import { formatDate, businessDayStartUTC } from "@/lib/utils/time";
 
 type Currency = "syp" | "usd";
 type Period = "today" | "week" | "month" | "all";
@@ -29,6 +32,8 @@ type SaleRow = {
   quantity: number | null;
   amount_usd: number | null;
   amount_syp: number | null;
+  cost_price_snapshot: number | null;
+  cost_currency_snapshot: Currency | null;
 };
 type CatalogRow = {
   id: string; name: string; category: string | null;
@@ -56,6 +61,10 @@ const PERIODS: { key: Period; label: string }[] = [
 
 function periodStartISO(p: Period): string | null {
   if (p === "all") return null;
+  // "اليوم" = the business day (6 AM → 6 AM Damascus), matching the KPI strip
+  // and cash sessions — NOT local midnight, so after-midnight sales stay on
+  // the same working day here too.
+  if (p === "today") return businessDayStartUTC();
   const d = new Date();
   if (p === "week") d.setDate(d.getDate() - 6);   // last 7 days, including today
   else if (p === "month") d.setDate(1);
@@ -145,27 +154,43 @@ export default function ProfitReportBlock() {
     async function load() {
       setLoading(true);
       const start = periodStartISO(period);
-      let q = supabase
-        .from("item_sales")
-        .select("catalog_item_id, item_name_snapshot, category_snapshot, source, quantity, amount_usd, amount_syp")
-        .is("cancelled_at", null);
-      if (start) q = q.gte("created_at", start);
+      // Paged — "الكل" (and busy months) exceed Supabase's silent 1000-row
+      // cap; without paging the report undercounts without any error.
       const [salesRes, catRes] = await Promise.all([
-        q,
-        supabase.from("catalog_items").select("id, name, category, cost_price, cost_currency, sell_price, sell_currency, stock_quantity, track_stock, is_active, updated_at"),
+        fetchAllRows<SaleRow>((from, to) => {
+          let q = supabase
+            .from("item_sales")
+            .select("catalog_item_id, item_name_snapshot, category_snapshot, source, quantity, amount_usd, amount_syp, cost_price_snapshot, cost_currency_snapshot")
+            .is("cancelled_at", null);
+          if (start) q = q.gte("created_at", start);
+          return q.order("created_at", { ascending: true }).range(from, to);
+        }),
+        fetchAllRows<CatalogRow>((from, to) =>
+          supabase
+            .from("catalog_items")
+            .select("id, name, category, cost_price, cost_currency, sell_price, sell_currency, stock_quantity, track_stock, is_active, updated_at")
+            .order("created_at", { ascending: true })
+            .range(from, to)),
       ]);
       if (cancelled) return;
-      setSales((salesRes.data ?? []) as SaleRow[]);
-      setCatalog((catRes.data ?? []) as CatalogRow[]);
+      setSales(salesRes.data);
+      setCatalog(catRes.data);
       setLoading(false);
     }
     void load();
+    // Debounce realtime refetches — a multi-line kitchen order fires one
+    // event per row; coalesce the burst into a single reload.
+    let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleReload = () => {
+      if (reloadTimer) clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => { if (!cancelled) void load(); }, 700);
+    };
     const ch = supabase
       .channel("profit-report")
-      .on("postgres_changes", { event: "*", schema: "public", table: "item_sales" }, () => void load())
-      .on("postgres_changes", { event: "*", schema: "public", table: "catalog_items" }, () => void load())
+      .on("postgres_changes", { event: "*", schema: "public", table: "item_sales" }, scheduleReload)
+      .on("postgres_changes", { event: "*", schema: "public", table: "catalog_items" }, scheduleReload)
       .subscribe();
-    return () => { cancelled = true; void supabase.removeChannel(ch); };
+    return () => { cancelled = true; if (reloadTimer) clearTimeout(reloadTimer); void supabase.removeChannel(ch); };
   }, [period]);
 
   const { sections, grand, stockById, updatedById, missingCost } = useMemo(() => {
@@ -192,8 +217,19 @@ export default function ProfitReportBlock() {
       const name = String(s.item_name_snapshot ?? "—");
       const qty = Number(s.quantity ?? 0);
       const catId = s.catalog_item_id ?? null;
-      const cu = catId ? (costUSD.get(catId) ?? 0) : 0;
-      const cs = catId ? (costSYP.get(catId) ?? 0) : 0;
+      // Cost basis: the sale-time snapshot wins; fall back to the current
+      // catalog cost for legacy rows / costs entered after the sale.
+      let cu: number;
+      let cs: number;
+      if (s.cost_price_snapshot != null && Number.isFinite(Number(s.cost_price_snapshot))) {
+        const snapPrice = Number(s.cost_price_snapshot);
+        const snapCur: Currency = s.cost_currency_snapshot === "syp" ? "syp" : "usd";
+        cu = toUSD(snapPrice, snapCur, exchangeRate);
+        cs = toSYP(snapPrice, snapCur, exchangeRate);
+      } else {
+        cu = catId ? (costUSD.get(catId) ?? 0) : 0;
+        cs = catId ? (costSYP.get(catId) ?? 0) : 0;
+      }
       const m = buckets[sec];
       const cur = m.get(name) ?? { name, catId, qty: 0, costUSD: 0, costSYP: 0, revUSD: 0, revSYP: 0 };
       if (!cur.catId && catId) cur.catId = catId;

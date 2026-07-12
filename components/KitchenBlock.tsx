@@ -160,6 +160,8 @@ export default function KitchenBlock() {
           itemType: it.itemType,
           sellCurrency: it.sellCurrency,
           sellPrice: Number(it.sellPrice),
+          costPrice: it.costPrice,
+          costCurrency: it.costCurrency,
         },
         quantity: q,
         exchangeRate,

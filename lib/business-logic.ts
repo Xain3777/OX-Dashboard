@@ -94,6 +94,16 @@ export function calcGroupPerMember(basePrice: number, groupSize: 5 | 9): number 
     : Math.round(basePrice * 7 / 9);
 }
 
+// ── Private-coach (تدريب خاص) pricing — single source of truth ──
+// Monthly bill = PT_BASE_TRAINER_FEE (once per cycle) + ptGroupPrice(total
+// players). Used by the subscription form, the coaches-tab renew/add-player
+// modals, and the intake write paths. Change the tiers HERE only.
+export const PT_BASE_TRAINER_FEE = 18;
+
+export function ptGroupPrice(n: number): number {
+  return n <= 2 ? 10 : n <= 5 ? 15 : 18;
+}
+
 export function getPlanLabel(plan: PlanType): string {
   const labels: Record<PlanType, string> = {
     daily: "يومي",

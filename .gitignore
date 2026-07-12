@@ -37,6 +37,11 @@ yarn-error.log*
 # Stays on each developer's machine; never committed.
 data/staff-passwords.local.json
 
+# local data exports (member lists, subscription CSVs) — personal data,
+# never committed. Local DB backups too.
+/reports/
+/backups/
+
 # vercel
 .vercel
 
