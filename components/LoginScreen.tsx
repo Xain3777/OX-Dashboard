@@ -6,6 +6,21 @@ import { Shield, LogIn } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { STAFF_ACCOUNTS, findStaffById } from "@/lib/staff-accounts";
 
+// Phone keyboards set to Arabic type Eastern-Arabic digits (١٩٠٨ / ۱۹۰۸)
+// instead of ASCII (1908), and autofill / autocorrect can add stray
+// whitespace. Supabase compares bytes, so either one shows up as
+// "wrong password" even when the user typed the right characters.
+function normalizePassword(raw: string): string {
+  return raw
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+    .trim();
+}
+
+function isBadCredentials(error: string): boolean {
+  return error.includes("Invalid login") || error.includes("credentials");
+}
+
 export default function LoginScreen() {
   const { signIn } = useAuth();
   const [accountId, setAccountId] = useState("");
@@ -24,14 +39,16 @@ export default function LoginScreen() {
 
     setError("");
     setBusy(true);
-    const { error } = await signIn(account.email, password);
+    const normalized = normalizePassword(password);
+    let { error } = await signIn(account.email, normalized);
+    // Fallback: if normalizing changed anything and was rejected, try the
+    // password exactly as typed, in case it was stored that way.
+    if (error && isBadCredentials(error) && normalized !== password) {
+      ({ error } = await signIn(account.email, password));
+    }
     if (error) {
       setBusy(false);
-      setError(
-        error.includes("Invalid login") || error.includes("credentials")
-          ? "كلمة المرور غير صحيحة."
-          : error
-      );
+      setError(isBadCredentials(error) ? "كلمة المرور غير صحيحة." : error);
       return;
     }
 
@@ -96,6 +113,10 @@ export default function LoginScreen() {
               className="ox-input text-center font-mono text-lg tracking-[0.4em]"
               dir="ltr"
               autoComplete="current-password"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              inputMode="text"
             />
           </div>
 
